@@ -264,3 +264,295 @@ P25 core / P26 core / Activity / Economy / scheduler / 域权威。
 28. **需要新持久化吗？** **不需要**（`DB_VER = 24`）。
 29. **本阶段改动生产了吗？** **没有**（零 production 变更）。
 30. **接下来应该做什么？** 既有域的**真实产品需求**驱动；跨域需求出现时再按 §21 门禁启动提案。
+
+---
+## 31 P28-WM-P1 · Home Node Work Run Authority Amendment (2026-10-09)
+
+This is a narrow, explicit amendment for the new project.audit.readonly Work
+Mode vertical use case. P28's boundary remains frozen for all existing domains.
+
+- Home Node may persist work_runs, work_run_events, and work_run_idempotency in
+  its existing home-node.db; this is Home Node authority, not an Agent Runtime
+  store.
+- The Work Run API is under desktop /internal/work/runs and inherits the
+  existing desktop-token and loopback policy; it is not reachable through the
+  Mobile Gateway.
+- InternalBeyondDB remains at version 24. No browser Agent, session, plan, wake,
+  or queue store is added.
+- IB.runtime remains the shared single-model execution seam. Phase 1 does not
+  load P25-3A, add an Event Bus, invoke a model, execute tools, or change legacy
+  schedulers and domain writers.
+- Runtime Shell and Prompt Runtime are Phase 2 logical boundaries only; their
+  responsibilities and non-ownership are frozen in
+  docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_1.md.
+
+Accordingly, section 24's no-new-persistence decision remains true for the
+existing/global Agent Runtime proposal, with the sole scoped exception above.
+Any additional workflow, executable Agent loop, or cross-domain write still
+requires its own P28 adoption review and explicit authority contract.
+
+---
+## 32 P28-WM-P2 · Readonly Agent Loop Amendment (2026-10-09)
+
+This amendment admits one explicitly started `project.audit.readonly` loop.
+It does not reopen Shape D or generalize P25-3A:
+
+- The workflow-specific Runtime Shell owns only the Work Mode loop and uses
+  `IB.runtime.instance.resolveModel/execute` for single model turns. Provider
+  selection and credentials remain in the existing ModelPort path.
+- Middle Brain exposes a separate `IB.workModeCognition` plan/review port;
+  the frozen 56-key `IB.middleBrain` Chat/Role facade is unchanged. Middle
+  Brain never reads Workspace files or executes a tool.
+- The only capability is fileId-scoped `project.read_file` against the exact
+  Workspace project selected by the Run. Native tools, writes, arbitrary paths,
+  shell, Chat Memory, Role behavior, Agent Memory, Memory Exchange, Automation,
+  and generic Event Bus remain out of scope.
+- Home Node remains the sole durable Work Run authority. Only status Events
+  persist; source, prompts, tool payloads, credentials, and model output do not.
+- Runtime ownership currently requires the canonical desktop origin's Web
+  Lock plus Home Node CAS. More than one origin/remote Runtime requires an
+  explicit Home Node lease/heartbeat amendment before admission.
+
+Implementation and focused evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_2.md`. Existing
+Chat, Role, and autonomous-domain contracts above remain unchanged.
+
+---
+## 33 P28-WM-P3A · Work Result & Consent Closure Amendment (2026-10-09)
+
+- Home Node Work Run Authority owns the scoped consent ledger and the
+  independent `work_run_results` artifact table in its existing `home-node.db`.
+  This does not authorize Work Mode writes to Chat Memory, Role, or Agent Memory.
+- Project content is default-deny. Work Mode consent binds one Run/project,
+  explicit Workspace file IDs, both existing Provider destinations (Agent and
+  Middle Brain), exact provider/model/route fingerprint, and a finite expiry.
+  Middle Brain's Work Mode port and the Agent Runtime check before egress.
+- Only `completeRun` may transition to `completed`; it CAS-updates Run state,
+  inserts the sanitized Artifact, appends the state Event, stores idempotency,
+  and closes consent atomically. Generic transition-to-completed is rejected.
+- Result payload expiry/deletion keeps a tombstone. Run Events and idempotency
+  remain with terminal Runs and are purged only as a whole aggregate by the
+  explicit bounded Home Node cleanup API. Active Runs are never retention-deleted.
+- `test_middle_brain_seam.js` is isolated to an explicit local Memory test mode
+  with synthetic credentials; production Memory fail-closed behavior remains.
+- No real provider call was attempted without an identified project/file scope,
+  explicit grant, and attached credential session. Phase 3B must supply these.
+
+Implementation and lifecycle details are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3A.md`.
+
+---
+## 34 P28-WM-P3A.1 · Consent UI & Live Validation Amendment (2026-10-09)
+
+- The minimum `#work-mode` route is a desktop consent/result surface only. It does
+  not add a general Work Mode product, Shell/write tools, Automation, Subagents,
+  Agent Memory, Memory Exchange, or a new Runtime/Provider/Credential authority.
+- Provider/project/file/purpose/expiry are shown before consent. Per-file choices
+  default off. Egress authorization and acceptance of the current plaintext Result
+  storage risk are separately confirmed. Grant and Run start are separate actions.
+- Refresh only reconciles dangling Runs to terminal non-resumable states and reads
+  Home Node Run/Result metadata; it never restores authorization or resumes work.
+- Home Node Artifact Authority remains the sole Result read/delete owner. The
+  bounded Result index returns metadata only. Logical Result deletion does not
+  promise SQLite/WAL/backup physical erasure.
+- Consent terms are now `work-mode-egress-result-v2`; v1 grants are stale. Result
+  text remains plaintext in the shared `home-node.db`. No DB encryption or app-level
+  ACL enforcement is claimed. See the threat model and Phase 3B gate in
+  `docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3A_1.md`.
+- Real Provider validation remains NOT RUN until a user selects the actual project
+  and file scope and confirms through the consent UI with usable existing
+  credentials. Mock verification is not user consent and is not live evidence.
+
+---
+## 35 P28-WM-P3B.0 · Independent Agent Memory Foundation Admission Amendment (2026-10-10)
+
+This amendment changes the **phase admission relationship**, not the Work Mode
+enablement bar:
+
+- A real Provider + Middle Brain + readonly-tool + persisted-Result E2E remains a
+  mandatory gate for **formal Work Mode enablement**. It remains NOT RUN and is not
+  waived by this amendment.
+- That E2E is **not** a prerequisite for development of independent Agent Memory
+  infrastructure. Phase 3B.0 is admitted for Home Node-owned storage/contracts
+  only, without connecting the store to Work Mode or another Runtime.
+- Agent Memory uses a separate `agent-memory.db` file, schema, indexes, revisions,
+  private API, and lifecycle. It does not reuse `memory-store.js`, Chat Memory
+  tables/change log, browser Memory indexes, or their backups.
+- No Chat, Role, Middle Brain, Work Agent, Recall, or other Runtime consumer is
+  added. No automatic sync, import, cross-runtime write, or memory exchange is
+  admitted. Only direct, explicit calls to the new Home Node API may write.
+- Existing Chat JSON export and existing `home-node.db` backup continue to exclude
+  Agent Memory. Phase 3B.0 does not silently expand either export surface. A
+  separate Agent Memory backup/export policy is a Phase 3B.1 decision; until then,
+  the independent database has restart persistence but no automatic backup claim.
+
+Implementation details and test evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3B_0_AGENT_MEMORY.md`.
+
+---
+## 36 P28-WM-P3B.1 · Agent Memory Lifecycle & Recovery Amendment (2026-10-10)
+
+- Independent Agent Memory snapshots are SQLite online backups of
+  `agent-memory.db`, saved only under Home Node's dedicated
+  `agent-memory-backups` directory. Existing `home-node.db` backup and Chat JSON
+  export surfaces remain unchanged and continue to exclude Agent Memory.
+- Backup/export files are plaintext and sensitive. They have a 30-day retention
+  boundary with explicit cleanup and no background scheduler. Restore is an
+  explicit, whole-database replacement (never merge), protected by
+  `expectedStoreRevision` and `confirmed`; snapshots are integrity/schema checked,
+  staged, and rollback-backed before replacement. A future schema is rejected;
+  supported v1 snapshots migrate to v2 in staging.
+- Observation may carry `expiresAt`; once expired it is excluded from active
+  queries, and explicit bounded lifecycle cleanup clears its payload and records
+  an expired tombstone. Project and Procedure remain active until explicitly
+  superseded/retracted. Decision and Fact history remains linked by immutable
+  `supersedes` / `supersededBy` references and per-record revisions.
+- The only admitted future write path is a Work Result → transient
+  Memory Candidate → explicit user confirmation → existing Agent Memory Authority
+  call. No candidate API is wired to a Runtime in 3B.1; no automatic recall,
+  consolidation, import, or Memory Exchange is admitted.
+
+Details and evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3B_1_AGENT_MEMORY_LIFECYCLE.md`.
+
+---
+## 37 P28-WM-P3B.2 · Agent Memory First Consumer Amendment (2026-10-10)
+
+- Work Result is the single first Agent Memory **write** consumer. The user may select only
+  the Result summary or one finding; the first writer stores an Observation and
+  never imports a complete report. Its candidate binds the Result's project,
+  Result ID/schema, selected location, type, and `work_result_ref` provenance.
+- The UI rechecks that the Result's project exists in the current Workspace before
+  preview and commit. Home Node rereads the completed, available Result and derives
+  both project and selected text; callers cannot supply either. A deleted/expired
+  Result, invalid selection, missing local project, or stale Agent Memory
+  `storeRevision` fails closed. Same project/result/selection retries are idempotent.
+- A separate Agent Memory confirmation checkbox and explicit submit are required.
+  The private create/update/supersede/retract HTTP mutations also reject calls
+  without `confirmed: true`. Retraction is a separate explicit action that clears
+  payload and keeps a tombstone. This is not an automatic writer, Recall,
+  Consolidation, or Memory Exchange path. The local Home Node token remains the
+  transport trust boundary; this does not claim cryptographic proof against
+  another same-account process.
+- New Observations default to 30 days unless an explicit expiry is supplied.
+  Work Result candidates always use 30 days from commit. Superseded, retracted,
+  and expired tombstones remain eligible for bounded explicit purge 365 days after
+  their terminal timestamp; no scheduler is added. Retraction/purge is not secure
+  erasure from SQLite pages or backups.
+- Independent cross-install export/import and swap-failure rollback are validated
+  only with two temporary installation directories. No live Agent Memory data is
+  copied, restored, or acknowledged as safe. Database and exported snapshots stay
+  plaintext; sensitive-pattern rejection is best-effort, not DLP.
+- Real Provider E2E remains unverified and continues as the separate formal Work
+  Mode enablement gate.
+
+Details and evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3B_2_AGENT_MEMORY_FIRST_CONSUMER.md`.
+
+---
+## 38 P28-WM-P3B.3 · Agent Memory Readonly Recall Amendment (2026-10-10)
+
+- Work Agent Recall reads only through the independent Agent Memory Authority,
+  filtered by the Run's exact project. Only active, unexpired, unretracted,
+  unsuperseded records are eligible. The projection retains memory ID, type,
+  record revision, provenance and source references, with a 12-record / 6000
+  character context ceiling.
+- Local query/preview does not imply Provider permission. If the user selects
+  records for egress, Home Node Consent Ledger v3 binds their IDs, revisions,
+  per-record/content hashes and exact Agent Provider route. It stores no memory
+  body. Start and every Agent Provider turn re-read the selected project records
+  and compare their scope before sending. Hashes bind scope but are not encryption
+  or anonymization. A changed route, record, project access,
+  or failed read stops direct Agent-prompt egress. The `memoryContext` object is
+  not passed directly to Middle Brain, but generated output can repeat or derive
+  memory and currently flows to Review and Work Result; see the Phase 3C.0
+  indirect-egress audit in
+  `docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3C_0_MEMORY_EXCHANGE_CONTRACT.md`.
+- Recall is injected only as a JSON field in the Agent's user payload. The static
+  System Instruction calls it untrusted, potentially stale reference data and
+  forbids it from changing instructions, tool permissions or scope. Work Agent
+  still exposes only the existing read-only project tool.
+- Phase 3C data protection is frozen as local-only plaintext under Home Node's
+  user-scoped data directory, with platform account ACL and full-disk encryption
+  as deployment requirements; no app encryption key or Credential/Vault authority
+  is introduced. These OS controls are not programmatically verified, so this is
+  not a claim that data or backups are encrypted. No automatic external/cloud
+  backup or Memory Exchange is allowed.
+- Project authorization remains single-user/local Workspace only. Multi-user
+  access is disabled by default because Home Node has no project owner identity
+  contract. Memory Exchange is default-deny; no automatic or bidirectional sync.
+- Real Provider E2E remains the formal Work Mode enablement gate and is not waived.
+
+Details and evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3B_3_AGENT_MEMORY_READONLY_RECALL.md`.
+
+---
+## 39 P28-WM-P3C.0 · Memory Exchange Contract Amendment (2026-10-10)
+
+- Phase 3C.0 freezes design and Mock audit only. No Memory Exchange API,
+  cross-domain Chat Memory ↔ Agent Memory write, or automatic synchronization is
+  connected. Existing Phase 3B.3 Work Agent Recall remains separately scoped.
+- Chat Memory stays under its existing Home Node Authority and
+  `canReadMemory` visibility contract; Agent Memory stays under the independent
+  `agent-memory.db` Authority. Exchange may coordinate only through those domain
+  Authority APIs. Direct cross-database SQL, browser-mirror reads as authority,
+  ownerId-as-ACL, and owner bypass of Chat `private` are prohibited.
+- The three operations are frozen as: (1) Temporary Reference, read-only,
+  volatile, at most 5 minutes; (2) Import Proposal, typed preview without a
+  write, volatile, at most 15 minutes; and (3) Explicit Publish, one-target,
+  one-shot, explicitly confirmed target-Authority mutation with idempotency and
+  CAS where applicable. No ongoing grant or sync is created.
+- Source authorization is rechecked at use/commit; revision, access, route, or
+  scope changes invalidate the reference/proposal. Source invalidation after a
+  completed publish is surfaced as stale lineage; it does not silently mutate a
+  target copy. Retracting that copy requires explicit user confirmation through
+  the target Authority. Data already sent to a Provider cannot be recalled.
+- A Mock sentinel test confirms the existing Agent draft may carry selected
+  Agent Memory into Middle Brain Review and the persisted Work Result, even
+  though the current memory-specific consent binds only the Agent Provider
+  route. This is an existing indirect-flow risk, not a new Exchange feature.
+  Phase 3C.1 must close or explicitly authorize both downstream sinks before
+  memory-enabled runs can send/persist derived output. Treat the full Agent draft
+  as memory-derived; content scanning is insufficient.
+- Plaintext risk acceptance remains **unconfirmed**. No production cross-domain
+  publish is admitted until the explicit data-protection gate is resolved.
+  Real Provider E2E remains **BLOCKED / NOT VERIFIED**, and remains mandatory for
+  formal Work Mode enablement.
+
+Details and Mock evidence are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3C_0_MEMORY_EXCHANGE_CONTRACT.md`.
+
+---
+## 40 P28-WM-P3C.0.1 · Memory-Derived Data Closure Amendment (2026-10-10)
+
+- If a Run Consent contains Agent `memoryScope`, the complete generated report
+  draft and every revision are classified `memory_derived`. The classification
+  is runtime/ledger-owned; the Agent cannot declare its own output memory-free.
+- Home Node Consent schema v4 adds a metadata-only `memory_derived_scope_json`
+  binding the memory context hash, exact Middle Brain Review route, and separate
+  affirmative Review and plaintext Result sink confirmations. No new permission
+  authority or provider route is introduced.
+- Runtime checks the Review route/sink before calling Review; the Middle Brain
+  Work Mode transport checks again at actual `beforeSend` using the live route and
+  fixed `middle_brain_review` consumer. Plan remains `middle_brain_plan` and
+  receives no memory body. Route change, revocation, expiry or missing sink grant
+  fails closed.
+- Home Node `completeRun` derives `memoryDerived` from the stored `memoryScope`
+  and atomically requires active, confirmed plaintext Result persistence before
+  inserting the artifact. Caller-supplied classification flags cannot downgrade
+  it. Result metadata exposes `memoryDerived` and the bound context hash without
+  duplicating memory text.
+- Consent UI presents independent Review and Result confirmations. The separate
+  plaintext-risk acknowledgement remains default-off; sink confirmation is not
+  encryption or global acceptance of plaintext-at-rest risk.
+- Mock and isolated tests verify Review retries, changed routes, revoked grants,
+  post-Review cancellation, Result-write bypass attempts, additive schema
+  migration, Chat Core and Chat Memory isolation. No live Provider or project data
+  was used.
+- The product's plaintext-risk acceptance remains **unconfirmed** and real
+  Provider E2E remains **BLOCKED / NOT VERIFIED**. Phase 3C.1 may proceed only in
+  isolated contract/Mock work; production cross-domain persistence remains
+  blocked pending explicit data-protection resolution.
+
+Implementation and verification details are recorded in
+`docs/architecture/WORK_MODE_AGENT_RUNTIME_FOUNDATION_PHASE_3C_0_1_MEMORY_DERIVED_DATA_CLOSURE.md`.

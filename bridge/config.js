@@ -22,7 +22,7 @@ function createConfig(deps) {
   function defaultConfig() {
     return {
       version: 1,
-      token: '',                     // 留空 = 仅本机、不鉴权；设置后 IBNET 需要填写相同 token
+      token: '',                     // 留空时仅本机 REST 保持免令牌；WebSocket 工具执行关闭
       contextBudget: 200000,         // 上下文估算预算（token），进度条按此计算
       lan: false,                    // true = 监听 0.0.0.0，方便 OPPO/Android 手机访问（注意放行防火墙）
       music: {                       // 点歌：默认酷狗（你会员在酷狗）；可切 netease
@@ -44,9 +44,10 @@ function createConfig(deps) {
         apiKey: '',
         voice: ''                    // 留空时按角色 voiceId，再兜底注册表默认（mimo_default）
       },
-      voicebox: {                    // 本地 Voicebox Runtime（独立进程，IB 只调用其 REST API）
+      voicebox: {                    // 独立 Voicebox App；IB 复用 REST adapter，可选启动/停止官方本机程序
         enabled: true,               // 本地运行时默认可用；offline 只影响选了该来源的角色
-        endpoint: ''                 // 留空 = 用 bridge/voicebox.js 的 DEFAULT_ENDPOINT（默认端点只在那一个文件里声明）
+        endpoint: '',                // 留空 = 用 bridge/voicebox.js 的 DEFAULT_ENDPOINT（默认端点只在那一个文件里声明）
+        executablePath: ''            // 可选：Voicebox.exe 本机路径；只由 Voicebox Runtime 控制入口读写
       },
       voiceAsr: {                    // Bridge ASR：turn-based OpenAI-compatible / Voicebox
         enabled: false,
@@ -159,7 +160,7 @@ function createConfig(deps) {
     if (!fs.existsSync(CONFIG_FILE)) {
       persistConfig();
       console.log('[IB Bridge] 已生成配置文件: ' + CONFIG_FILE);
-      console.log('[IB Bridge] 默认不开启鉴权（仅监听 127.0.0.1）。如需鉴权，请编辑配置里的 token。');
+      console.log('[IB Bridge] 默认仅监听 127.0.0.1；WebSocket 工具执行需先在配置里设置 token。');
       return;
     }
     if (configInvalid) {
@@ -181,10 +182,12 @@ function createConfig(deps) {
   ensureConfigFile();
 
   /*
-   * A blank token is convenient and intentional for a loopback-only service.
-   * It is never safe for a LAN listener: generate one during migration so a
-   * config edit cannot leave every REST endpoint writable by other devices.
-   * IB_BRIDGE_HOST has the same rule, even when config.lan was left false.
+   * A blank token is retained for loopback REST compatibility, while the
+   * WebSocket tool executor separately fails closed without a configured token.
+   * A blank token is never safe for a LAN listener: generate one during
+   * migration so a config edit cannot leave every REST endpoint writable by
+   * other devices. IB_BRIDGE_HOST has the same rule, even when config.lan was
+   * left false.
    */
   const configuredHost = process.env.IB_BRIDGE_HOST || (config.lan ? '0.0.0.0' : '127.0.0.1');
   const lanExposed = !!config.lan || !isLoopbackHost(configuredHost);

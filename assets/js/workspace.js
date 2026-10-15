@@ -671,7 +671,7 @@ function _buildWsOpCard(d){
   }
   if(d.type==='tool'&&d.pendingConfirm){
     var tBtn=document.createElement('button');tBtn.className='ws-file-btn primary';tBtn.style.flexShrink='0';tBtn.textContent='执行';
-    var _tc=Object.assign({name:d.name||'',args:d.args||'',author:d.author||'AI',actorId:d.actorId||''},_wsScopeFragment(d));
+    var _tc=Object.assign({name:d.name||'',args:d.args||'',author:d.author||'AI',actorId:d.actorId||'',traceId:d.traceId||''},_wsScopeFragment(d));
     tBtn.onclick=function(ev){ev.stopPropagation();_ibConfirmToolFromCard(tBtn,_tc,card)};
     var tChev=card.querySelector('.ws-op-chevron');
     if(tChev)card.insertBefore(tBtn,tChev);else card.appendChild(tBtn);
@@ -1043,10 +1043,38 @@ function _wsFinalizeBubble(ref,rawText,wsResults){
    · 点击 → 以"assistant 原文 + 续写指令"请求增量，接缝去重后拼进原消息并更新数据库；
    · 增量里新出现的工作区指令照常执行（上一段末尾被截断的指令此前已按失败反馈，
      模型会按既有恢复策略完整重发，两相衔接）。 */
+function _wsPresentContinuationFailure(msgId,message,error,copy){
+  copy=copy||{};
+  var model=null;
+  try{
+    if(error&&window.IBERR&&typeof window.IBERR.report==='function')model=window.IBERR.report(error,{friendId:message&&message.friendId,stage:'workspace_continue'}).model;
+    else if(window.IBERR&&typeof window.IBERR.model==='function')model=window.IBERR.model('unknown',{friendId:message&&message.friendId,stage:'workspace_continue'});
+  }catch(e){}
+  if(!model)model={code:'IBERR.UNKNOWN.UNKNOWN',title:'无法继续生成',message:'这段回复暂时无法继续。',suggestion:'原消息内容仍然保留。',action:null};
+  if(copy.title)model.title=copy.title;
+  if(copy.message)model.message=copy.message;
+  if(copy.suggestion)model.suggestion=copy.suggestion;
+  model.action=copy.action===undefined?model.action:copy.action;
+  var bubble=null;
+  Array.prototype.some.call(document.querySelectorAll('.chat-msg[data-msg-id]'),function(el){
+    if(String(el.dataset.msgId||'')===String(msgId||'')){bubble=el;return true}
+    return false;
+  });
+  var active=!!(message&&String(activeFriendId||'')===String(message.friendId||'')&&String(activeThreadId||'')===String(message.threadId||''));
+  var host=active?document.getElementById(currentPage==='chat'?'chat-full-messages':'chat-messages'):null;
+  var container=bubble&&active?bubble.parentElement:host;
+  if(container&&typeof window._chatAppendErrorDisclosure==='function'){
+    var row=window._chatAppendErrorDisclosure(container,model,{scope:'continuation',errorFor:String(msgId||''),stage:'workspace_continue'});
+    if(row&&bubble&&bubble.parentNode===container)bubble.insertAdjacentElement('afterend',row);
+    return row;
+  }
+  if(window.IBERR&&typeof window.IBERR.show==='function')return window.IBERR.show(model,{stage:'workspace_continue'});
+  return null;
+}
 function _buildContinuePill(msgId){
   var c=document.createElement('div');c.className='ws-op-card ws-continue-pill';c.dataset.contFor=msgId;
   c.innerHTML='<span class="ws-op-text">回复因输出上限被截断</span>';
-  var b=document.createElement('button');b.className='ws-file-btn';b.style.flexShrink='0';b.textContent='▸ 继续生成';
+  var b=document.createElement('button');b.type='button';b.className='ws-file-btn';b.style.flexShrink='0';b.textContent='▸ 继续生成';b.setAttribute('aria-label','继续生成这条被截断的回复');
   b.onclick=function(ev){ev.stopPropagation();continueTruncatedMsg(msgId,c)};
   c.appendChild(b);
   return c;
@@ -1054,12 +1082,13 @@ function _buildContinuePill(msgId){
 var _contBusy=new Set();
 async function continueTruncatedMsg(msgId,pillEl){
   if(_contBusy.has(msgId))return;
-  var m=await dbGet('chatMessages',msgId);
-  if(!m||!m.content){toast('原消息不存在');return}
+  var m=null;
+  try{m=await dbGet('chatMessages',msgId)}catch(error){_wsPresentContinuationFailure(msgId,null,error,{title:'无法读取原消息',message:'这条被截断的回复暂时无法读取。',suggestion:'检查本地存储后，可以重新打开这段对话。'});return}
+  if(!m||!m.content){_wsPresentContinuationFailure(msgId,m,null,{title:'原消息不可用',message:'找不到这条被截断的回复，无法继续生成。',suggestion:'重新打开对话并确认这条消息仍然存在。'});return}
   /* “继续生成”会把原 assistant 文本再次发送给 API；封档线之前的消息必须禁止续写。 */
   if(!m.threadId){
     const _contSealTs=await getChatSealTimestamp(m.friendId);
-    if(_contSealTs&&(m.timestamp||m.created||0)<=_contSealTs){toast('该消息位于封档线之前，不能继续发送给 API');return}
+    if(_contSealTs&&(m.timestamp||m.created||0)<=_contSealTs){_wsPresentContinuationFailure(msgId,m,null,{title:'这条消息已封档',message:'封档线之前的消息不能继续发送给 API。',suggestion:'保留封档记录；如需继续，请在当前对话中发送一条新消息。',action:null});return}
   }
   /* 找到该消息的 API 配置：1对1按 friendId；群聊按 **canonical speakerId** 反查成员
      （P24-M2）。legacy 消息走唯一精确匹配；歧义 / 无匹配 / 非法一律 fail closed
@@ -1085,9 +1114,15 @@ async function continueTruncatedMsg(msgId,pillEl){
         if(_cSid)cfg=apiConfigs.find(function(a){return a.id===_cSid})||null;
       }}catch(e){}
   }else{cfg=apiConfigs.find(a=>a.id===m.friendId)}
-  if(!_ibApiReady(cfg)){toast('找不到可用的 API 配置');return}
+  if(!_ibApiReady(cfg)){
+    var _contCategory=!cfg||!String(cfg.endpoint||'').trim()?'endpoint':(!String(cfg.model||'').trim()?'model':'auth');
+    var _contModel=window.IBERR&&typeof window.IBERR.model==='function'?window.IBERR.model(_contCategory,{cfg:cfg,friendId:m.friendId,stage:'workspace_continue'}):null;
+    if(_contModel&&!_contModel.action)_contModel.action={type:'open_settings',target:'api',label:'打开 API 设置'};
+    _wsPresentContinuationFailure(msgId,m,null,{title:'无法继续生成',message:'这条消息对应的模型当前不可用。',suggestion:'检查原角色的 API 设置，再回来选择“继续生成”。',action:_contModel&&_contModel.action});
+    return;
+  }
   _contBusy.add(msgId);
-  var btn=pillEl&&pillEl.querySelector('button');if(btn){btn.disabled=true;btn.textContent='续写中…'}
+  var btn=pillEl&&pillEl.querySelector('button');if(btn){btn.disabled=true;btn.setAttribute('aria-busy','true');btn.textContent='续写中…'}
   /* 定位页面上的气泡，准备直播续写文本 */
   var refs=[];
   document.querySelectorAll('.chat-msg[data-msg-id="'+msgId+'"]').forEach(function(el){
@@ -1114,11 +1149,9 @@ async function continueTruncatedMsg(msgId,pillEl){
     }
   }catch(e){
     liveSpans.forEach(function(s){s.remove()});
-    if(btn){btn.disabled=false;btn.textContent='▸ 继续生成'}
+    if(btn){btn.disabled=false;btn.removeAttribute('aria-busy');btn.textContent='▸ 继续生成'}
     _contBusy.delete(msgId);
-    /* P3：续写走的是真实 API 通道，用统一用户错误模型（状态码/原始信息进详情） */
-    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'workspace_continue'}));
-    else toast('续写失败，请稍后重试');
+    _wsPresentContinuationFailure(msgId,m,e,{title:'续写没有完成',message:'这段回复暂时没有续上，原有内容已保留。',suggestion:'可以再次选择“继续生成”；这会继续原消息，不会重新发送整段消息。'});
     return;
   }
   var _ctParts=_assistantResponseParts(piece,_ctRes.reasoning_content||'');
@@ -1150,7 +1183,13 @@ async function continueTruncatedMsg(msgId,pillEl){
   if(typeof m.metadata.showThinking!=='boolean')m.metadata.showThinking=_resolveShowThinking(cfg);
   {const _ctGiImgs=_wsCollectGenImages(deltaResults);if(_ctGiImgs.length)m.images=(m.images||[]).concat(_ctGiImgs);}/* 续写增量里的生成图并入消息 */
   if(stillTrunc)m.truncated=true; else delete m.truncated;
-  await dbPut('chatMessages',m);
+  try{await dbPut('chatMessages',m)}catch(error){
+    liveSpans.forEach(function(s){s.remove()});
+    if(btn){btn.disabled=false;btn.removeAttribute('aria-busy');btn.textContent='▸ 继续生成'}
+    _contBusy.delete(msgId);
+    _wsPresentContinuationFailure(msgId,m,error,{title:'续写结果没有保存',message:'生成内容暂时没有写入这条消息，原有内容已保留。',suggestion:'确认本地存储可用后，可以再次选择“继续生成”。'});
+    return;
+  }
   liveSpans.forEach(function(s){s.remove()});
   refs.forEach(function(r){
     _wsFinalizeBubble(r,newContent,fullResults);

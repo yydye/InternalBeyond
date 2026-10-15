@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node Client — 浏览器侧唯一的 Home Node 传输实现
    --------------------------------------------------------------------
    职责边界（刻意收窄）：
@@ -37,7 +37,9 @@
 (function (NS) {
 'use strict';
 
-var DEFAULT_BASE = 'http://127.0.0.1:23118';
+var DEFAULT_BASE = window.__IB_DEV_MODE__===true
+  ? String(window.__IB_DEV_SERVICE_CONFIG__&&window.__IB_DEV_SERVICE_CONFIG__.homeNodeUrl||'')
+  : 'http://127.0.0.1:' + String(window.__IB_HOME_NODE_PORT__ || 23118);
 var DEFAULT_TIMEOUT_MS = 15000;
 var MIGRATION_TIMEOUT_MS = 60000;
 /* 交付面的路径与请求头（与服务端 services/home-node/http.js 的
@@ -51,15 +53,22 @@ function _ls(key) {
   try { return localStorage.getItem(key); } catch (e) { return null; }
 }
 function ibHomeNodeBase() {
+  if(window.__IB_DEV_MODE__===true){
+    var dev=window.__IB_DEV_SERVICE_CONFIG__;
+    return dev&&(dev.mode==='dev'||dev.mode==='synthetic')&&/^https?:\/\/127\.0\.0\.1:\d+$/.test(DEFAULT_BASE)
+      ? DEFAULT_BASE.replace(/\/+$/, '') : '';
+  }
   var v = _ls('ib_home_node_http');
   if (v) return String(v).replace(/\/+$/, '');
   return DEFAULT_BASE;
 }
 function ibHomeNodeMode() {
+  if(window.__IB_DEV_MODE__===true)return 'canonical';
   var v = String(_ls('ib_home_node_mode') || 'canonical').trim().toLowerCase();
   return (v === 'mirror' || v === 'off') ? v : 'canonical';
 }
 function ibHomeNodeToken() {
+  if(window.__IB_DEV_MODE__===true)return '';
   return String(_ls('ib_home_node_token') || '').trim();
 }
 window.ibHomeNodeBase = ibHomeNodeBase;
@@ -262,8 +271,35 @@ function _classifyFetchError(error) {
        重发一次只会把同一个事实问第二遍 —— 因此不重试。
    ★ 这条重试**不会**把任何写变成"自动成功"：它重发的是同一个请求体，
      幂等键也一模一样，因此 canonical store 的一次性语义不受影响。 */
-function _attempt(url, init) {
+function _attempt(url, init, responseType) {
   return fetch(url, init).then(function (res) {
+    if (responseType === 'blob') {
+      return res.blob().then(function (blob) {
+        if (res.ok) {
+          var disposition = res.headers && typeof res.headers.get === 'function'
+            ? String(res.headers.get('Content-Disposition') || '') : '';
+          var filename = '';
+          var match = disposition.match(/filename="?([^";]+)"?/i);
+          if (match) filename = match[1];
+          return {
+            ok: true, status: res.status, protocolVersion: Number(res.headers && res.headers.get && res.headers.get('X-IB-Protocol')) || 1,
+            contentType: String(res.headers && res.headers.get && res.headers.get('Content-Type') || ''),
+            fileName: filename, blob: blob
+          };
+        }
+        return blob.text().then(function (raw) {
+          var parsed = null;
+          try { parsed = raw ? JSON.parse(raw) : {}; } catch (_) { parsed = null; }
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { ok: false, error: 'invalid-response', status: res.status, protocolVersion: 1 };
+          }
+          if (parsed.ok !== false) parsed.ok = false;
+          parsed.status = res.status;
+          if (parsed.protocolVersion == null) parsed.protocolVersion = 1;
+          return parsed;
+        });
+      });
+    }
     return res.text().then(function (raw) {
       var parsed = null;
       try { parsed = raw ? JSON.parse(raw) : {}; } catch (e) { parsed = null; }
@@ -288,14 +324,27 @@ function _attempt(url, init) {
 
 function _request(pathname, options) {
   options = options || {};
-  var url = ibHomeNodeBase() + pathname;
+  var base = ibHomeNodeBase();
+  if(window.__IB_DEV_MODE__===true&&!base){
+    return Promise.resolve({ok:false,error:'dev-service-config-unavailable',retryable:false,offline:false,protocolVersion:1});
+  }
+  var url = base + pathname;
   var timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
 
   function send() {
     var headers = { 'X-IB-Protocol': '1' };
+    if(window.__IB_DEV_MODE__===true){
+      var dev=window.__IB_DEV_SERVICE_CONFIG__;
+      if(!dev||!dev.sessionToken||!dev.instanceId)return Promise.resolve({ok:false,error:'dev-service-config-unavailable',retryable:false,offline:false,protocolVersion:1});
+      headers['X-IB-Dev-Session']=String(dev.sessionToken);
+      headers['X-IB-Dev-Instance']=String(dev.instanceId);
+    }
     var token = ibHomeNodeEffectiveToken();
     if (token) headers['X-IB-Home-Token'] = token;
-    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (options.body !== undefined) {
+      headers['Content-Type'] = options.bodyType === 'binary'
+        ? String(options.contentType || 'application/octet-stream') : 'application/json';
+    }
     var controller = (typeof AbortController === 'function') ? new AbortController() : null;
     var timer = null;
     if (controller) timer = setTimeout(function () { try { controller.abort(); } catch (e) { /* 已结束 */ } }, timeoutMs);
@@ -304,9 +353,9 @@ function _request(pathname, options) {
       headers: headers,
       cache: 'no-store'
     };
-    if (options.body !== undefined) init.body = JSON.stringify(options.body);
+    if (options.body !== undefined) init.body = options.bodyType === 'binary' ? options.body : JSON.stringify(options.body);
     if (controller) init.signal = controller.signal;
-    return _attempt(url, init).then(function (res) {
+    return _attempt(url, init, options.responseType).then(function (res) {
       if (timer) clearTimeout(timer);
       return res;
     }, function (error) {
@@ -357,6 +406,67 @@ function _request(pathname, options) {
    字段 —— 白名单让那些字段**默认不可达**，而不是"记得去删它"。
    ★ 这里也不判断"这个商品能不能买"：availability（status）只是事实，
    能不能买是 P22-7/P22-8 的判定，不属于本函数。 */
+/* Binary Work Mode uploads use XHR so local ZIP selection can report upload progress.
+   Credential provisioning and one 401/403 refresh follow the normal Home Node path. */
+function _requestUpload(pathname, file, options) {
+  options = options || {};
+  var base = ibHomeNodeBase();
+  if (window.__IB_DEV_MODE__ === true && !base) {
+    return Promise.resolve({ ok: false, error: 'dev-service-config-unavailable', retryable: false, offline: false, protocolVersion: 1 });
+  }
+  var url = base + pathname;
+  var timeoutMs = Math.max(1000, Number(options.timeoutMs) || (20 * 60 * 1000));
+  function send() {
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      xhr.timeout = timeoutMs;
+      xhr.setRequestHeader('X-IB-Protocol', '1');
+      xhr.setRequestHeader('Content-Type', String(options.contentType || 'application/octet-stream'));
+      if (window.__IB_DEV_MODE__ === true) {
+        var dev = window.__IB_DEV_SERVICE_CONFIG__;
+        if (!dev || !dev.sessionToken || !dev.instanceId) {
+          resolve({ ok: false, error: 'dev-service-config-unavailable', retryable: false, offline: false, protocolVersion: 1 });
+          return;
+        }
+        xhr.setRequestHeader('X-IB-Dev-Session', String(dev.sessionToken));
+        xhr.setRequestHeader('X-IB-Dev-Instance', String(dev.instanceId));
+      }
+      var token = ibHomeNodeEffectiveToken();
+      if (token) xhr.setRequestHeader('X-IB-Home-Token', token);
+      xhr.upload.onprogress = function (event) {
+        if (typeof options.onProgress !== 'function') return;
+        try { options.onProgress({ phase: 'uploading', loaded: event.loaded,
+          total: event.lengthComputable ? event.total : Number(file && file.size) || 0,
+          lengthComputable: event.lengthComputable === true }); } catch (_) {}
+      };
+      xhr.onload = function () {
+        var parsed = null;
+        try { parsed = xhr.responseText ? JSON.parse(xhr.responseText) : {}; } catch (_) { parsed = null; }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          resolve({ ok: false, error: 'invalid-response', status: xhr.status, protocolVersion: 1 });
+          return;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) { if (parsed.ok !== false) parsed.ok = false; }
+        parsed.status = xhr.status;
+        if (parsed.protocolVersion == null) parsed.protocolVersion = 1;
+        resolve(parsed);
+      };
+      xhr.onerror = function () { resolve({ ok: false, error: 'network-error', retryable: true, offline: true, protocolVersion: 1 }); };
+      xhr.ontimeout = function () { resolve({ ok: false, error: 'timeout', retryable: true, offline: false, protocolVersion: 1 }); };
+      xhr.onabort = function () { resolve({ ok: false, error: 'aborted', retryable: true, offline: false, protocolVersion: 1 }); };
+      try { xhr.send(file); }
+      catch (_) { resolve({ ok: false, error: 'upload-failed', retryable: false, offline: false, protocolVersion: 1 }); }
+    });
+  }
+  return ensureCredential().then(send).then(function (result) {
+    if (!result || (result.status !== 401 && result.status !== 403)) return result;
+    if (ibHomeNodeToken() || !_sessionToken) return result;
+    ibHomeNodeForgetCredential();
+    return ibHomeNodeProvisionCredential({ timeoutMs: 4000 }).then(send);
+  });
+}
+
 var ECONOMY_CATALOG_FACT_FIELDS = ['productId', 'name', 'description', 'kind', 'unitName', 'status'];
 var ECONOMY_CATALOG_FACT_MAX = 200;
 function economyCatalogFact(product) {
@@ -1041,11 +1151,14 @@ function createRuntimeRemote(deps) {
            的时候带。`mode` 缺席时服务端默认 'shadow' —— 那个默认是**服务端的**
            决定，浏览器不替它写死（写了就等于把一条服务端策略复制到客户端）。
        调用方即使传 { selectedIds, candidateRecords, records, scores, budget,
-       maxChars, cooldown, seatPlan, exploration, random, now, query, settings, … }，
+       maxChars, cooldown, seatPlan, exploration, random, now, settings, … }，
        这些键也**一个都到不了 wire**：它们不是被删除的（删除列表会随服务端新增
        字段而漂移），而是从来没有被复制过。服务端仍会独立复核（权威字段用
        caller-attempted-to-supply-recall-authority 逐名拒绝），但浏览器侧不把
        "拦住它"当成服务端的责任。
+
+       唯一派生查询键是 groundedQuery：它只替换 lexical query 文本，不含
+       Memory ids / candidate selection；message 原文仍作为 turn identity 输入。
 
        ★ `mode` 是**能力请求**（要哪条生命周期：'shadow' | 'authoritative'），
          不是数据权威：这一层原样转发，闭集校验与语义都由服务端给出；
@@ -1066,6 +1179,10 @@ function createRuntimeRemote(deps) {
       payload.requestId = String(src.requestId == null ? '' : src.requestId);
       payload.conversationId = String(src.conversationId == null ? '' : src.conversationId);
       payload.message = String(src.message == null ? '' : src.message);
+      /* Memory-reference grounding may add a bounded search phrase while
+         message remains the original turn text used for turn identity. It
+         carries no selected ids or authority and is independently shape-checked. */
+      if (_runtimeHasOwn(src, 'groundedQuery')) payload.groundedQuery = src.groundedQuery;
       if (_runtimeHasOwn(src, 'isFirstTurn')) payload.isFirstTurn = src.isFirstTurn;
       if (_runtimeHasOwn(src, 'conversationSignalAvailable')) {
         payload.conversationSignalAvailable = src.conversationSignalAvailable;
@@ -1119,5 +1236,573 @@ function createRuntimeRemote(deps) {
     }
   };
 }
+/* ── P5-B3-K · existing structured Explicit Preference Report action ─────
+   Closed transport constructor for the existing report route. Candidate id,
+   source text, confidence and all report/reality/settlement authority stay out
+   of the request body. */
+var EXPLICIT_PREFERENCE_REPORT_PATH = '/internal/user-reports/preference';
+var WORK_RUNS_PATH = '/internal/work/runs';
+var AGENT_MEMORY_PATH = '/internal/agent-memory';
+
+/* P28-WM-P3B.0 · explicit Home Node transport for independent Agent Memory.
+   This is a closed remote only: no browser database, Chat Memory mirror, or sync. */
+function createAgentMemoryRemote(deps) {
+  deps = deps || {};
+  var recordsPath = AGENT_MEMORY_PATH + '/records';
+  var backupTimeoutMs = deps.backupTimeoutMs || 120000;
+  function recordPath(memoryId) { return recordsPath + '/' + encodeURIComponent(String(memoryId == null ? '' : memoryId)); }
+  function jsonObject(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
+  function queryString(options) {
+    options = jsonObject(options);
+    var allowed = ['type', 'projectRef', 'status', 'limit', 'offset'];
+    var parts = [];
+    allowed.forEach(function (key) {
+      if (options[key] == null || options[key] === '') return;
+      parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(String(options[key])));
+    });
+    return parts.length ? '?' + parts.join('&') : '';
+  }
+  function backupPath(backupId) { return AGENT_MEMORY_PATH + '/backups/' + encodeURIComponent(String(backupId == null ? '' : backupId)); }
+  return {
+    state: function () {
+      return _request(AGENT_MEMORY_PATH + '/state', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    query: function (options) {
+      return _request(recordsPath + queryString(options), { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    get: function (memoryId) {
+      return _request(recordPath(memoryId), { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    create: function (input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-memory-write-confirmation-required' });
+      var body = {
+        type: String(src.type == null ? '' : src.type),
+        payload: jsonObject(src.payload),
+        provenance: jsonObject(src.provenance),
+        confirmed: true
+      };
+      if (Object.prototype.hasOwnProperty.call(src, 'projectRef')) body.projectRef = src.projectRef;
+      if (Object.prototype.hasOwnProperty.call(src, 'expiresAt')) body.expiresAt = src.expiresAt;
+      return _request(recordsPath, {
+        method: 'POST', body: body, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    update: function (memoryId, input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-memory-write-confirmation-required' });
+      var body = { expectedRevision: src.expectedRevision, payload: jsonObject(src.payload), provenance: jsonObject(src.provenance), confirmed: true };
+      if (Object.prototype.hasOwnProperty.call(src, 'expiresAt')) body.expiresAt = src.expiresAt;
+      return _request(recordPath(memoryId) + '/update', {
+        method: 'POST',
+        body: body,
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    commitWorkResultCandidate: function (input) {
+      var src = jsonObject(input);
+      return _request(AGENT_MEMORY_PATH + '/work-results/candidates/commit', {
+        method: 'POST',
+        body: {
+          runId: String(src.runId == null ? '' : src.runId),
+          resultId: String(src.resultId == null ? '' : src.resultId),
+          selectionRef: String(src.selectionRef == null ? '' : src.selectionRef),
+          expectedStoreRevision: src.expectedStoreRevision,
+          confirmed: src.confirmed === true
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    commitWorkResultProcedureCandidate: function (input) {
+      var src = jsonObject(input);
+      return _request(AGENT_MEMORY_PATH + '/work-results/procedure-candidates/commit', {
+        method: 'POST',
+        body: {
+          runId: String(src.runId == null ? '' : src.runId),
+          resultId: String(src.resultId == null ? '' : src.resultId),
+          resultSchemaVersion: src.resultSchemaVersion,
+          expectedStoreRevision: src.expectedStoreRevision,
+          confirmed: src.confirmed === true,
+          payload: jsonObject(src.payload)
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    supersede: function (memoryId, input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-memory-write-confirmation-required' });
+      var body = { expectedRevision: src.expectedRevision, payload: jsonObject(src.payload), provenance: jsonObject(src.provenance), confirmed: true };
+      if (Object.prototype.hasOwnProperty.call(src, 'expiresAt')) body.expiresAt = src.expiresAt;
+      return _request(recordPath(memoryId) + '/supersede', {
+        method: 'POST',
+        body: body,
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    retract: function (memoryId, input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-memory-write-confirmation-required' });
+      return _request(recordPath(memoryId) + '/retract', {
+        method: 'POST',
+        body: { expectedRevision: src.expectedRevision, reasonCode: String(src.reasonCode == null ? '' : src.reasonCode), provenance: jsonObject(src.provenance), confirmed: true },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    purge: function (options) {
+      var src = jsonObject(options);
+      var body = {};
+      if (src.limit != null) body.limit = src.limit;
+      return _request(AGENT_MEMORY_PATH + '/maintenance/purge', {
+        method: 'POST', body: body, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    expireObservations: function (options) {
+      var src = jsonObject(options), body = {};
+      if (src.limit != null) body.limit = src.limit;
+      return _request(AGENT_MEMORY_PATH + '/maintenance/expire-observations', {
+        method: 'POST', body: body, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    retentionPolicy: function () {
+      return _request(AGENT_MEMORY_PATH + '/retention', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    createBackup: function () {
+      return _request(AGENT_MEMORY_PATH + '/backups', {
+        method: 'POST', body: {}, timeoutMs: backupTimeoutMs
+      });
+    },
+    listBackups: function (options) {
+      var src = jsonObject(options), query = src.limit == null ? '' : '?limit=' + encodeURIComponent(String(src.limit));
+      return _request(AGENT_MEMORY_PATH + '/backups' + query, { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    exportBackup: function (backupId) {
+      return _request(backupPath(backupId) + '/export', {
+        responseType: 'blob', timeoutMs: backupTimeoutMs
+      });
+    },
+    deleteBackup: function (backupId) {
+      return _request(backupPath(backupId), { method: 'DELETE', timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    cleanupBackups: function (options) {
+      var src = jsonObject(options), body = {};
+      if (src.limit != null) body.limit = src.limit;
+      return _request(AGENT_MEMORY_PATH + '/backups/cleanup', {
+        method: 'POST', body: body, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    restoreBackup: function (backupId, input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-restore-confirmation-required' });
+      return _request(backupPath(backupId) + '/restore', {
+        method: 'POST',
+        body: { expectedStoreRevision: src.expectedStoreRevision, confirmed: true },
+        timeoutMs: backupTimeoutMs
+      });
+    },
+    restoreUpload: function (file, input) {
+      var src = jsonObject(input);
+      if (src.confirmed !== true) return Promise.resolve({ ok: false, error: 'explicit-restore-confirmation-required' });
+      var expected = src.expectedStoreRevision == null ? 'null' : String(src.expectedStoreRevision);
+      var query = '?expectedStoreRevision=' + encodeURIComponent(expected) + '&confirmed=true';
+      return _request(AGENT_MEMORY_PATH + '/restore' + query, {
+        method: 'POST', body: file, bodyType: 'binary', contentType: 'application/vnd.sqlite3',
+        timeoutMs: backupTimeoutMs
+      });
+    }
+  };
+}
+
+/* P28-WM-P1 · closed transport surface for the Home Node Work Run Ledger.
+   This client has no IndexedDB fallback and never stores a second run copy. */
+function createWorkRunRemote(deps) {
+  deps = deps || {};
+  function memoryScopeBody(value) {
+    if (value === null || value == null) return null;
+    value = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    var provider = value.providerScope && typeof value.providerScope === 'object' ? value.providerScope : {};
+    return {
+      projectRef: String(value.projectRef == null ? '' : value.projectRef),
+      providerScope: {
+        destination: String(provider.destination == null ? '' : provider.destination),
+        providerRef: String(provider.providerRef == null ? '' : provider.providerRef),
+        provider: String(provider.provider == null ? '' : provider.provider),
+        model: String(provider.model == null ? '' : provider.model),
+        routeHash: String(provider.routeHash == null ? '' : provider.routeHash)
+      },
+      refs: Array.isArray(value.refs) ? value.refs.slice(0, 12).map(function (item) {
+        item = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+        return { memoryId: String(item.memoryId == null ? '' : item.memoryId),
+          revision: item.revision, contentHash: String(item.contentHash == null ? '' : item.contentHash) };
+      }) : [],
+      contextHash: String(value.contextHash == null ? '' : value.contextHash),
+      contextChars: value.contextChars
+    };
+  }
+  function memoryDerivedScopeBody(value) {
+    if (value === null || value == null) return null;
+    value = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    var review = value.review && typeof value.review === 'object' ? value.review : {};
+    var result = value.result && typeof value.result === 'object' ? value.result : {};
+    var provider = review.providerScope && typeof review.providerScope === 'object' ? review.providerScope : {};
+    return {
+      projectRef: String(value.projectRef == null ? '' : value.projectRef),
+      contextHash: String(value.contextHash == null ? '' : value.contextHash),
+      review: {
+        confirmed: review.confirmed === true,
+        providerScope: {
+          destination: String(provider.destination == null ? '' : provider.destination),
+          providerRef: String(provider.providerRef == null ? '' : provider.providerRef),
+          provider: String(provider.provider == null ? '' : provider.provider),
+          model: String(provider.model == null ? '' : provider.model),
+          routeHash: String(provider.routeHash == null ? '' : provider.routeHash)
+        }
+      },
+      result: {
+        confirmed: result.confirmed === true,
+        destination: String(result.destination == null ? '' : result.destination),
+        schemaVersion: result.schemaVersion,
+        storage: String(result.storage == null ? '' : result.storage),
+        retentionMs: result.retentionMs
+      }
+    };
+  }
+  function runPath(runId) { return WORK_RUNS_PATH + '/' + encodeURIComponent(String(runId == null ? '' : runId)); }
+  function consentPath(runId, consentId) { return runPath(runId) + '/consents/' + encodeURIComponent(String(consentId == null ? '' : consentId)); }
+  function requestId(input) { return input && input.requestId != null ? String(input.requestId) : ''; }
+  return {
+    create: function (input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(WORK_RUNS_PATH, {
+        method: 'POST',
+        body: {
+          requestId: requestId(src),
+          workflowId: String(src.workflowId == null ? '' : src.workflowId),
+          projectRef: String(src.projectRef == null ? '' : src.projectRef),
+          ...(src.executorSelection ? { executorSelection: src.executorSelection } : {}),
+          ...(src.appDraftRef ? { appDraftRef: String(src.appDraftRef) } : {})
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    setExecutorSelection: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/executor-selection', {
+        method: 'POST',
+        body: { expectedVersion: src.expectedVersion, executorSelection: src.executorSelection || null },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    get: function (runId) {
+      return _request(runPath(runId), { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    listActive: function (options) {
+      options = options || {};
+      var query = '?limit=' + encodeURIComponent(String(options.limit == null ? 100 : options.limit));
+      return _request(WORK_RUNS_PATH + '/active' + query, { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    listResults: function (options) {
+      options = options || {};
+      var query = '?limit=' + encodeURIComponent(String(options.limit == null ? 100 : options.limit));
+      return _request(WORK_RUNS_PATH + '/results' + query, { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    grantConsent: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/consents', {
+        method: 'POST',
+        body: {
+          requestId: requestId(src),
+          expectedVersion: src.expectedVersion,
+          projectRef: String(src.projectRef == null ? '' : src.projectRef),
+          providerScopes: Array.isArray(src.providerScopes) ? src.providerScopes : [],
+          fileIds: Array.isArray(src.fileIds) ? src.fileIds.map(String) : [],
+          workspaceWriteConfirmed: src.workspaceWriteConfirmed === true,
+          memoryScope: Object.prototype.hasOwnProperty.call(src, 'memoryScope') ? memoryScopeBody(src.memoryScope) : null,
+          memoryDerivedScope: Object.prototype.hasOwnProperty.call(src, 'memoryDerivedScope')
+            ? memoryDerivedScopeBody(src.memoryDerivedScope) : null,
+          expiresInMs: src.expiresInMs,
+          termsVersion: String(src.termsVersion == null ? '' : src.termsVersion),
+          confirmed: src.confirmed === true
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    getConsent: function (runId, consentId) {
+      return _request(consentPath(runId, consentId), { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    bindDshSession: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/dsh-session', { method: 'POST', body: {
+        sessionId: String(src.sessionId == null ? '' : src.sessionId),
+        consentId: String(src.consentId == null ? '' : src.consentId),
+        expectedVersion: src.expectedVersion
+      }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    getDshSession: function (sessionId, runId) {
+      var query = runId ? '?runId=' + encodeURIComponent(String(runId)) : '';
+      return _request(WORK_RUNS_PATH + '/dsh-sessions/' + encodeURIComponent(String(sessionId || '')) + query,
+        { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    createAppDraft: function (input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(WORK_RUNS_PATH + '/app-drafts', { method: 'POST',
+        body: { projectRef: String(src.projectRef || ''), name: String(src.name || '新建 App') },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    listAppDrafts: function (projectRef) {
+      return _request(WORK_RUNS_PATH + '/app-drafts?projectRef=' + encodeURIComponent(String(projectRef || '')),
+        { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    getAppDraft: function (draftRef, projectRef, runId) {
+      var query = '?projectRef=' + encodeURIComponent(String(projectRef || ''));
+      if (runId) query += '&runId=' + encodeURIComponent(String(runId));
+      return _request(WORK_RUNS_PATH + '/app-drafts/' + encodeURIComponent(String(draftRef || '')) + query,
+        { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    getAppDraftVersion: function (draftRef, projectRef, version) {
+      return _request(WORK_RUNS_PATH + '/app-drafts/' + encodeURIComponent(String(draftRef || ''))
+        + '/versions/' + encodeURIComponent(String(version)) + '?projectRef=' + encodeURIComponent(String(projectRef || '')),
+        { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    restoreAppDraftVersion: function (draftRef, projectRef, version) {
+      return _request(WORK_RUNS_PATH + '/app-drafts/' + encodeURIComponent(String(draftRef || '')) + '/restore', {
+        method: 'POST', body: { projectRef: String(projectRef || ''), version: Number(version) },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    queueAppDraftRun: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/app-draft', { method: 'POST', body: {
+        draftRef: String(src.draftRef || ''), projectRef: String(src.projectRef || ''), instruction: String(src.instruction || '')
+      }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    finishAppDraftRun: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/app-draft/finish', { method: 'POST', body: {
+        draftRef: String(src.draftRef || ''), projectRef: String(src.projectRef || ''), status: String(src.status || '')
+      }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    checkConsent: function (runId, consentId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(consentPath(runId, consentId) + '/check', {
+        method: 'POST',
+        body: (function () {
+          var body = {
+          projectRef: String(src.projectRef == null ? '' : src.projectRef),
+          providerScope: src.providerScope && typeof src.providerScope === 'object' ? src.providerScope : {},
+          fileIds: Array.isArray(src.fileIds) ? src.fileIds.map(String) : [],
+          consumer: String(src.consumer == null ? '' : src.consumer)
+          };
+          if (body.consumer === 'agent') {
+            body.memoryScope = Object.prototype.hasOwnProperty.call(src, 'memoryScope') ? memoryScopeBody(src.memoryScope) : null;
+          }
+          return body;
+        })(),
+        timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    revokeConsent: function (runId, consentId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(consentPath(runId, consentId) + '/revoke', {
+        method: 'POST',
+        body: { requestId: requestId(src), expectedVersion: src.expectedVersion },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    events: function (runId, options) {
+      options = options || {};
+      var query = '?afterSequence=' + encodeURIComponent(String(options.afterSequence == null ? 0 : options.afterSequence))
+        + '&limit=' + encodeURIComponent(String(options.limit == null ? 50 : options.limit));
+      return _request(runPath(runId) + '/events' + query, { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    memoryProvenance: function (runId) {
+      return _request(runPath(runId) + '/memory-provenance', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    recordActionTrace: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/events', {
+        method: 'POST',
+        body: {
+          requestId: String(src.requestId == null ? '' : src.requestId),
+          actionId: String(src.actionId == null ? '' : src.actionId),
+          status: String(src.status == null ? '' : src.status),
+          authorityResult: String(src.authorityResult == null ? '' : src.authorityResult)
+        },
+        timeoutMs: deps.traceTimeoutMs || 1500
+      });
+    },
+    transition: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/transition', {
+        method: 'POST',
+        body: {
+          requestId: requestId(src),
+          expectedVersion: src.expectedVersion,
+          status: String(src.status == null ? '' : src.status),
+          reasonCode: String(src.reasonCode == null ? '' : src.reasonCode)
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    complete: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      var result = (src.result && typeof src.result === 'object' && !Array.isArray(src.result)) ? src.result : {};
+      var findings = Array.isArray(result.findings) ? result.findings.map(function (item) {
+        item = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+        return {
+          fileId: String(item.fileId == null ? '' : item.fileId),
+          path: String(item.path == null ? '' : item.path),
+          line: item.line,
+          severity: String(item.severity == null ? '' : item.severity),
+          title: String(item.title == null ? '' : item.title),
+          detail: String(item.detail == null ? '' : item.detail)
+        };
+      }) : [];
+      return _request(runPath(runId) + '/complete', {
+        method: 'POST',
+        body: {
+          requestId: requestId(src),
+          expectedVersion: src.expectedVersion,
+          consentId: String(src.consentId == null ? '' : src.consentId),
+          result: {
+            schemaVersion: result.schemaVersion,
+            summary: String(result.summary == null ? '' : result.summary),
+            findings: findings
+          }
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    result: function (runId) {
+      return _request(runPath(runId) + '/result', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    resultReference: function (currentRunId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(currentRunId) + '/result/reference', {
+        method: 'POST',
+        body: {
+          resultRunId: String(src.resultRunId == null ? '' : src.resultRunId),
+          resultId: String(src.resultId == null ? '' : src.resultId)
+        },
+        timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    deleteResult: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/result/delete', {
+        method: 'POST',
+        body: { requestId: requestId(src), expectedVersion: src.expectedVersion },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    cancel: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      return _request(runPath(runId) + '/cancel', {
+        method: 'POST',
+        body: {
+          requestId: requestId(src),
+          expectedVersion: src.expectedVersion
+        },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    dshStatus: function () {
+      return _request('/internal/work/dsh', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    installDshRuntime: function (file, onProgress) {
+      if (!file || typeof file.slice !== 'function' || Number(file.size) <= 0) {
+        return Promise.resolve({ ok: false, error: 'runtime-zip-file-required', retryable: false, protocolVersion: 1 });
+      }
+      return _requestUpload('/internal/work/dsh/runtime/install', file, {
+        contentType: 'application/zip', timeoutMs: 20 * 60 * 1000, onProgress: onProgress
+      });
+    },
+    dshRuntimeReleases: function () {
+      return _request('/internal/work/dsh/runtime/releases', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    installDshRuntimeOnline: function (runtimeVersion) {
+      return _request('/internal/work/dsh/runtime/online-install', {
+        method: 'POST', body: { runtimeVersion: String(runtimeVersion || '') },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    cancelDshRuntimeOnlineInstall: function () {
+      return _request('/internal/work/dsh/runtime/online-install/cancel', {
+        method: 'POST', body: {}, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    runDsh: function (runId, input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      var body = {
+        consentId: String(src.consentId == null ? '' : src.consentId),
+        sessionId: String(src.sessionId == null ? '' : src.sessionId),
+        providerRef: String(src.providerRef == null ? '' : src.providerRef),
+        prompt: String(src.prompt == null ? '' : src.prompt)
+      };
+      if (Array.isArray(src.plannedFileIds)) body.plannedFileIds = src.plannedFileIds.map(String);
+      if (src.deferResult === true) body.deferResult = true;
+      if (src.timeoutMs != null) body.timeoutMs = src.timeoutMs;
+      return _request(runPath(runId) + '/dsh', {
+        method: 'POST', body: body,
+        timeoutMs: deps.executionTimeoutMs || (30 * 60 * 1000)
+      });
+    },
+    workspaceProjectPoll: function (waitMs) {
+      var boundedWait = Math.max(0, Math.min(25000, Number(waitMs) || 0));
+      return _request('/internal/work/workspace-project-bridge/poll', {
+        method: 'POST', body: { waitMs: boundedWait },
+        timeoutMs: boundedWait + 5000
+      });
+    },
+    workspaceProjectResolve: function (requestId, result) {
+      return _request('/internal/work/workspace-project-bridge/resolve', {
+        method: 'POST', body: { requestId: String(requestId || ''), result: result || {} },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    }
+  };
+}
+
+function createWorkRetentionRemote(deps) {
+  deps = deps || {};
+  return {
+    policy: function () {
+      return _request('/internal/work/retention', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    cleanup: function (options) {
+      options = options || {};
+      return _request('/internal/work/retention', {
+        method: 'POST',
+        body: { limit: options.limit == null ? 100 : options.limit },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    }
+  };
+}
+
+function createExplicitPreferenceReportRemote(deps) {
+  deps = deps || {};
+  return {
+    submit: function (input) {
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      var payload = {
+        requestId: String(src.requestId == null ? '' : src.requestId),
+        characterId: String(src.characterId == null ? '' : src.characterId),
+        targetKey: String(src.targetKey == null ? '' : src.targetKey),
+        stance: String(src.stance == null ? '' : src.stance),
+        threadId: String(src.threadId == null ? '' : src.threadId)
+      };
+      return _request(EXPLICIT_PREFERENCE_REPORT_PATH, {
+        method: 'POST',
+        body: payload,
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    }
+  };
+}
+
 NS.createRuntimeRemote = createRuntimeRemote;
+NS.createExplicitPreferenceReportRemote = createExplicitPreferenceReportRemote;
+NS.createWorkRunRemote = createWorkRunRemote;
+NS.createWorkRetentionRemote = createWorkRetentionRemote;
+NS.createAgentMemoryRemote = createAgentMemoryRemote;
 })(window.IB || (window.IB = {}));

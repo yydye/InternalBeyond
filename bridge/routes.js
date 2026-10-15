@@ -10,7 +10,8 @@ const path = require('path');
 
 function createRoutes(ctx) {
   const {
-    config, LAN_EXPOSED, configInvalid, SERVER_NAME, VERSION, HOST, PORT, BIND_HOST,
+    config, voiceboxRuntimeControl, LAN_EXPOSED, configInvalid, SERVER_NAME, VERSION, HOST, PORT, BIND_HOST,
+    environment, devInstanceId,
     DATA_DIR, STICKER_DIR, maxBody,
     wsSockets, TOOLS, listStickers,
     getWhispers, setWhispers, healthData, getGeoLatest, setGeoLatest,
@@ -96,6 +97,18 @@ function createRoutes(ctx) {
       req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)); } });
       req.on('error', e => { if (!settled) { settled = true; reject(e); } });
     });
+  }
+
+  function clientCancellation(req, res) {
+    const controller = new AbortController();
+    const abort = () => { if (!res.writableEnded && !controller.signal.aborted) controller.abort(); };
+    if (req.aborted) abort();
+    req.once('aborted', abort);
+    res.once('close', abort);
+    return {
+      signal: controller.signal,
+      dispose: () => { req.removeListener('aborted', abort); res.removeListener('close', abort); }
+    };
   }
 
   function audioSignatureMatches(mime, bytes) {
@@ -207,6 +220,7 @@ function createRoutes(ctx) {
     try { copy = JSON.parse(JSON.stringify(config)); } catch (e) { copy = {}; }
     const mask = value => value ? '***' : '';
     copy.token = mask(copy.token);
+    if (copy.voicebox && typeof copy.voicebox === 'object') copy.voicebox.executablePath = copy.voicebox.executablePath ? '[configured]' : '';
     if (copy.proactive) copy.proactive.apiKey = mask(copy.proactive.apiKey);
     if (copy.music) copy.music.kugouCookie = mask(copy.music.kugouCookie);
     if (copy.tts) copy.tts.apiKey = mask(copy.tts.apiKey);
@@ -413,7 +427,8 @@ function createRoutes(ctx) {
     /* 健康检查 */
     if (req.method === 'GET' && pathname === '/health') {
       sendJsonRes(res, 200, {
-        ok: true, server: SERVER_NAME, version: VERSION, uptime: Math.round(process.uptime()),
+        ok: true, server: SERVER_NAME, pid: process.pid, environment: environment || 'production',
+        devInstanceId: devInstanceId || null, version: VERSION, uptime: Math.round(process.uptime()),
         connections: wsSockets.size, tools: TOOLS.map(t => t.name),
         lan: LAN_EXPOSED, tokenRequired: !!(LAN_EXPOSED || String(config.token || '').trim())
       });
@@ -881,22 +896,27 @@ function createRoutes(ctx) {
       return;
     }
     if (pathname === '/api/tools' && req.method === 'GET') {
-      sendJsonRes(res, 200, { ok: true, tools: TOOLS.map(t => ({ name: t.name, description: t.description })) });
+      sendJsonRes(res, 200, { ok: true, tools: TOOLS.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, alwaysConfirm: t.alwaysConfirm === true })) });
       return;
     }
 
     /* TTS 合成（Voice Profile 统一入口：normalize 兼容旧平铺参数与新 profile，按 provider 能力过滤） */
     if (pathname === '/api/tts' && req.method === 'POST') {
+      const cancellation = clientCancellation(req, res);
       try {
         const body = await readBody(req);
+        if (cancellation.signal.aborted) return;
         const profile = ttsNormalize(body);
         if (body.preview === true && String(profile.text || '').length > 300) {
           sendJsonRes(res, 400, { ok: false, error: 'Voice preview text must be 300 characters or shorter.' });
           return;
         }
-        const r = await ttsSynthesize(profile, body.preview === true ? { previewOnly: true } : undefined);
-        sendJsonRes(res, r.ok ? 200 : 503, r);
-      } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
+        const context = body.preview === true ? { previewOnly: true } : undefined;
+        if (context && profile.provider === 'voicebox') context.signal = cancellation.signal;
+        const r = await ttsSynthesize(profile, context);
+        if (!cancellation.signal.aborted) sendJsonRes(res, r.ok ? 200 : 503, r);
+      } catch (e) { if (!cancellation.signal.aborted) sendJsonRes(res, 400, { ok: false, error: e.message }); }
+      finally { cancellation.dispose(); }
       return;
     }
 
@@ -910,6 +930,40 @@ function createRoutes(ctx) {
         const sources = typeof ttsSources === 'function' ? ttsSources() : [];
         sendJsonRes(res, 200, { ok: true, sources: sources });
       } catch (e) { sendJsonRes(res, 500, { ok: false, error: e.message }); }
+      return;
+    }
+
+    /* Voicebox Runtime 生命周期管理复用现有 Bridge；程序路径只允许本机 Voicebox 启动器格式，
+       具体子进程检查与停止语义由 voiceboxRuntimeControl 单一持有。 */
+    if (pathname === '/api/tts/voicebox/runtime' && req.method === 'GET') {
+      if (!voiceboxRuntimeControl) { sendJsonRes(res, 503, { ok: false, state: 'unavailable', errorCode: 'runtime-control-unavailable' }); return; }
+      try { sendJsonRes(res, 200, await voiceboxRuntimeControl.status()); }
+      catch (_) { sendJsonRes(res, 200, { ok: true, state: 'unavailable', errorCode: 'status-check-failed', message: '无法读取 Voicebox 启动状态。' }); }
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/runtime/config' && req.method === 'POST') {
+      if (!voiceboxRuntimeControl) { sendJsonRes(res, 503, { ok: false, errorCode: 'runtime-control-unavailable' }); return; }
+      try {
+        const body = await readBody(req);
+        const result = voiceboxRuntimeControl.configurePath(body && body.executablePath);
+        sendJsonRes(res, result.ok ? 200 : Number(result.status) || 400, result);
+      } catch (_) { sendJsonRes(res, 400, { ok: false, errorCode: 'runtime-config-invalid', message: '无法保存 Voicebox 程序路径。' }); }
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/runtime/start' && req.method === 'POST') {
+      if (!voiceboxRuntimeControl) { sendJsonRes(res, 503, { ok: false, errorCode: 'runtime-control-unavailable' }); return; }
+      try {
+        const result = await voiceboxRuntimeControl.start();
+        sendJsonRes(res, result.ok ? 202 : (result.state === 'not-installed' || result.state === 'not-configured' ? 409 : 400), result);
+      } catch (_) { sendJsonRes(res, 500, { ok: false, state: 'start-failed', errorCode: 'process-start-failed', message: 'Voicebox 启动失败。' }); }
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/runtime/stop' && req.method === 'POST') {
+      if (!voiceboxRuntimeControl) { sendJsonRes(res, 503, { ok: false, errorCode: 'runtime-control-unavailable' }); return; }
+      try {
+        const result = await voiceboxRuntimeControl.stop();
+        sendJsonRes(res, result.ok ? 200 : 409, result);
+      } catch (_) { sendJsonRes(res, 500, { ok: false, state: 'stop-failed', errorCode: 'process-stop-failed', message: 'Voicebox 停止请求未完成。' }); }
       return;
     }
 
@@ -976,11 +1030,12 @@ function createRoutes(ctx) {
     }
     if (profileSamplesMatch && req.method === 'POST') {
       if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      const cancellation = clientCancellation(req, res);
       const maxBytes = ttsVoices.maxBytes;
       const declared = Number(req.headers['content-length']);
       if (declared > maxBytes) {
         res.on('finish', () => { try { req.resume(); } catch (e) { /* ignore */ } });
-        sendJsonRes(res, 413, { ok: false, error: 'Reference audio exceeds the IB 10 MB limit' }); return;
+        sendJsonRes(res, 413, { ok: false, error: 'Reference audio exceeds the IB 10 MB limit' }); cancellation.dispose(); return;
       }
       try {
         const profileId = decodeURIComponent(profileSamplesMatch[1]);
@@ -988,19 +1043,20 @@ function createRoutes(ctx) {
         if (!profile.ok) { sendJsonRes(res, voiceboxProfileStatus(profile, 502), profile); return; }
         if (profile.profile.voiceType !== 'cloned') { sendJsonRes(res, 400, { ok: false, error: 'Reference samples can only be added to cloned profiles.' }); return; }
         const bytes = await readRawBody(req, maxBytes);
+        if (cancellation.signal.aborted) return;
         const fileName = String(q.filename || 'reference.wav');
         const checked = validateVoiceboxReferenceAudio(bytes, req.headers['content-type'] || '', fileName);
         if (!checked.ok) { sendJsonRes(res, 400, checked); return; }
         const result = await voicebox.addProfileSample(profileId, {
           bytes, mime: checked.mime, originalName: checked.originalName,
           referenceText: String(q.reference_text || '')
-        });
-        sendJsonRes(res, result.ok ? 201 : voiceboxProfileStatus(result, 400), result.ok ? Object.assign({}, result, { referenceAudio: { mime: checked.mime, size: checked.size, durationSeconds: checked.durationSeconds } }) : result);
+        }, { signal: cancellation.signal });
+        if (!cancellation.signal.aborted) sendJsonRes(res, result.ok ? 201 : voiceboxProfileStatus(result, 400), result.ok ? Object.assign({}, result, { referenceAudio: { mime: checked.mime, size: checked.size, durationSeconds: checked.durationSeconds } }) : result);
       } catch (e) {
         const tooLarge = /body too large/.test(String(e && e.message || e));
         if (tooLarge) res.on('finish', () => { try { req.resume(); } catch (e2) { /* ignore */ } });
-        sendJsonRes(res, tooLarge ? 413 : 400, { ok: false, error: tooLarge ? 'Reference audio exceeds the IB 10 MB limit' : String(e && e.message || e) });
-      }
+        if (!cancellation.signal.aborted) sendJsonRes(res, tooLarge ? 413 : 400, { ok: false, error: tooLarge ? 'Reference audio exceeds the IB 10 MB limit' : String(e && e.message || e) });
+      } finally { cancellation.dispose(); }
       return;
     }
     const profileDeleteMatch = pathname.match(/^\/api\/tts\/voicebox\/profiles\/([^/]+)$/);

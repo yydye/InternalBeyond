@@ -1,0 +1,4 @@
+# InternalBeyond-local DSH startup screen and task Permission mode.
+- insert:
+    - id: ib-dsh-startup-screen
+      name: '@internalbeyond/dsh-startup-screen'

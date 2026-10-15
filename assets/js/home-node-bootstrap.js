@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node bootstrap — 把 canonical chat authority 接进浏览器数据层
    --------------------------------------------------------------------
    这是 M1-A 在浏览器侧**唯一**的写入点。它做四件事，每件都只有一处实现：
@@ -889,6 +889,10 @@ function syncOnce(reason, options) {
 NS.homeNodeSync = syncOnce;
 
 function bootstrap() {
+  if (window.__IB_DEV_MODE__ === true) {
+    note('dev-mode-sync-disabled', { note: 'Dev starts from an isolated snapshot; automatic authority sync and character publishing are disabled' });
+    return;
+  }
   if (MODE !== 'canonical') {
     note('authority-disabled', { mode: MODE, note: 'chatMessages + memories 走本地 IndexedDB（M1-A/Wave 2 之前的路径）' });
     return;
@@ -1125,6 +1129,25 @@ if (!runtimeRemote) {
     note: '运行时解释边界不可用（home-node-client.js 未加载或版本不匹配）'
   });
 }
+var _explicitPreferenceReportRemoteFactory = (NS && typeof NS.createExplicitPreferenceReportRemote === 'function')
+  ? NS.createExplicitPreferenceReportRemote : null;
+var explicitPreferenceReportRemote = _explicitPreferenceReportRemoteFactory
+  ? _explicitPreferenceReportRemoteFactory({}) : null;
+var _workRunRemoteFactory = (NS && typeof NS.createWorkRunRemote === 'function')
+  ? NS.createWorkRunRemote : null;
+var workRunRemote = _workRunRemoteFactory ? _workRunRemoteFactory({}) : null;
+var _agentMemoryRemoteFactory = (NS && typeof NS.createAgentMemoryRemote === 'function')
+  ? NS.createAgentMemoryRemote : null;
+var agentMemoryRemote = _agentMemoryRemoteFactory ? _agentMemoryRemoteFactory({}) : null;
+var _workRetentionRemoteFactory = (NS && typeof NS.createWorkRetentionRemote === 'function')
+  ? NS.createWorkRetentionRemote : null;
+var workRetentionRemote = _workRetentionRemoteFactory ? _workRetentionRemoteFactory({}) : null;
+function workRunRemoteMissing(operation) {
+  return Promise.resolve({ ok: false, operation: operation, error: 'work-run-remote-missing' });
+}
+function agentMemoryRemoteMissing(operation) {
+  return Promise.resolve({ ok: false, operation: operation, error: 'agent-memory-remote-missing' });
+}
 
 /* ── public surface：诊断 / 迁移 / 状态 ────────────────────────────── */
 var surface = {
@@ -1332,6 +1355,213 @@ var surface = {
     rebuildMirror: function (options) {
       if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
       return momentsAuthority.rebuild(options || {});
+    }
+  },
+  /* P5-B3-K · Explicit user confirmation calls the existing structured report
+     route through Home Node's single credentialed browser transport. */
+  explicitPreferenceReport: {
+    available: !!explicitPreferenceReportRemote,
+    authority: 'EXISTING_STRUCTURED_REPORT_ROUTE',
+    submit: function (input) {
+      if (!explicitPreferenceReportRemote) {
+        return Promise.resolve({ ok: false, status: 0, error: 'explicit-preference-report-remote-missing' });
+      }
+      return explicitPreferenceReportRemote.submit(input || {});
+    }
+  },
+  /* P28-WM-P1 · durable run state is owned by Home Node. This is transport
+     only: it has no local mirror, state machine, prompt storage, or tools. */
+  workRuns: {
+    available: !!workRunRemote,
+    create: function (input) {
+      return workRunRemote ? workRunRemote.create(input || {}) : workRunRemoteMissing('work-run.create');
+    },
+    setExecutorSelection: function (runId, input) {
+      return workRunRemote && typeof workRunRemote.setExecutorSelection === 'function'
+        ? workRunRemote.setExecutorSelection(runId, input || {}) : workRunRemoteMissing('work-run.executor-selection');
+    },
+    get: function (runId) {
+      return workRunRemote ? workRunRemote.get(runId) : workRunRemoteMissing('work-run.get');
+    },
+    listActive: function (options) {
+      return workRunRemote ? workRunRemote.listActive(options || {}) : workRunRemoteMissing('work-run.list-active');
+    },
+    listResults: function (options) {
+      return workRunRemote ? workRunRemote.listResults(options || {}) : workRunRemoteMissing('work-result.list');
+    },
+    grantConsent: function (runId, input) {
+      return workRunRemote ? workRunRemote.grantConsent(runId, input || {}) : workRunRemoteMissing('work-run.consent.grant');
+    },
+    getConsent: function (runId, consentId) {
+      return workRunRemote ? workRunRemote.getConsent(runId, consentId) : workRunRemoteMissing('work-run.consent.get');
+    },
+    bindDshSession: function (runId, input) {
+      return workRunRemote ? workRunRemote.bindDshSession(runId, input || {}) : workRunRemoteMissing('work-run.dsh-session.bind');
+    },
+    getDshSession: function (sessionId) {
+      return workRunRemote ? workRunRemote.getDshSession(sessionId) : workRunRemoteMissing('work-run.dsh-session.get');
+    },
+    createAppDraft: function (input) {
+      return workRunRemote && typeof workRunRemote.createAppDraft === 'function'
+        ? workRunRemote.createAppDraft(input || {}) : workRunRemoteMissing('app-draft.create');
+    },
+    listAppDrafts: function (projectRef) {
+      return workRunRemote && typeof workRunRemote.listAppDrafts === 'function'
+        ? workRunRemote.listAppDrafts(projectRef) : workRunRemoteMissing('app-draft.list');
+    },
+    getAppDraft: function (draftRef, projectRef, runId) {
+      return workRunRemote && typeof workRunRemote.getAppDraft === 'function'
+        ? workRunRemote.getAppDraft(draftRef, projectRef, runId) : workRunRemoteMissing('app-draft.get');
+    },
+    getAppDraftVersion: function (draftRef, projectRef, version) {
+      return workRunRemote && typeof workRunRemote.getAppDraftVersion === 'function'
+        ? workRunRemote.getAppDraftVersion(draftRef, projectRef, version) : workRunRemoteMissing('app-draft.version.get');
+    },
+    restoreAppDraftVersion: function (draftRef, projectRef, version) {
+      return workRunRemote && typeof workRunRemote.restoreAppDraftVersion === 'function'
+        ? workRunRemote.restoreAppDraftVersion(draftRef, projectRef, version) : workRunRemoteMissing('app-draft.restore-version');
+    },
+    queueAppDraftRun: function (runId, input) {
+      return workRunRemote && typeof workRunRemote.queueAppDraftRun === 'function'
+        ? workRunRemote.queueAppDraftRun(runId, input || {}) : workRunRemoteMissing('app-draft.run-queue');
+    },
+    finishAppDraftRun: function (runId, input) {
+      return workRunRemote && typeof workRunRemote.finishAppDraftRun === 'function'
+        ? workRunRemote.finishAppDraftRun(runId, input || {}) : workRunRemoteMissing('app-draft.run-finish');
+    },
+    checkConsent: function (runId, consentId, input) {
+      return workRunRemote ? workRunRemote.checkConsent(runId, consentId, input || {}) : workRunRemoteMissing('work-run.consent.check');
+    },
+    revokeConsent: function (runId, consentId, input) {
+      return workRunRemote ? workRunRemote.revokeConsent(runId, consentId, input || {}) : workRunRemoteMissing('work-run.consent.revoke');
+    },
+    events: function (runId, options) {
+      return workRunRemote ? workRunRemote.events(runId, options || {}) : workRunRemoteMissing('work-run.events');
+    },
+    memoryProvenance: function (runId) {
+      return workRunRemote && typeof workRunRemote.memoryProvenance === 'function'
+        ? workRunRemote.memoryProvenance(runId) : workRunRemoteMissing('work-run.memory-provenance');
+    },
+    recordActionTrace: function (runId, input) {
+      return workRunRemote && typeof workRunRemote.recordActionTrace === 'function'
+        ? workRunRemote.recordActionTrace(runId, input || {}) : workRunRemoteMissing('work-run.action-trace');
+    },
+    transition: function (runId, input) {
+      return workRunRemote ? workRunRemote.transition(runId, input || {}) : workRunRemoteMissing('work-run.transition');
+    },
+    complete: function (runId, input) {
+      return workRunRemote ? workRunRemote.complete(runId, input || {}) : workRunRemoteMissing('work-run.complete');
+    },
+    result: function (runId) {
+      return workRunRemote ? workRunRemote.result(runId) : workRunRemoteMissing('work-result.get');
+    },
+    resultReference: function (currentRunId, input) {
+      return workRunRemote && typeof workRunRemote.resultReference === 'function'
+        ? workRunRemote.resultReference(currentRunId, input || {})
+        : workRunRemoteMissing('work-result.reference');
+    },
+    deleteResult: function (runId, input) {
+      return workRunRemote ? workRunRemote.deleteResult(runId, input || {}) : workRunRemoteMissing('work-result.delete');
+    },
+    retentionPolicy: function () {
+      return workRetentionRemote ? workRetentionRemote.policy() : workRunRemoteMissing('work-retention.policy');
+    },
+    cleanupExpired: function (options) {
+      return workRetentionRemote ? workRetentionRemote.cleanup(options || {}) : workRunRemoteMissing('work-retention.cleanup');
+    },
+    cancel: function (runId, input) {
+      return workRunRemote ? workRunRemote.cancel(runId, input || {}) : workRunRemoteMissing('work-run.cancel');
+    },
+    dshStatus: function () {
+      return workRunRemote ? workRunRemote.dshStatus() : workRunRemoteMissing('work-dsh.status');
+    },
+    installDshRuntime: function (file, onProgress) {
+      return workRunRemote && typeof workRunRemote.installDshRuntime === 'function'
+        ? workRunRemote.installDshRuntime(file, onProgress)
+        : workRunRemoteMissing('work-dsh.runtime-install');
+    },
+    dshRuntimeReleases: function () {
+      return workRunRemote && typeof workRunRemote.dshRuntimeReleases === 'function'
+        ? workRunRemote.dshRuntimeReleases() : workRunRemoteMissing('work-dsh.runtime-releases');
+    },
+    installDshRuntimeOnline: function (runtimeVersion) {
+      return workRunRemote && typeof workRunRemote.installDshRuntimeOnline === 'function'
+        ? workRunRemote.installDshRuntimeOnline(runtimeVersion) : workRunRemoteMissing('work-dsh.runtime-online-install');
+    },
+    cancelDshRuntimeOnlineInstall: function () {
+      return workRunRemote && typeof workRunRemote.cancelDshRuntimeOnlineInstall === 'function'
+        ? workRunRemote.cancelDshRuntimeOnlineInstall() : workRunRemoteMissing('work-dsh.runtime-online-cancel');
+    },
+    runDsh: function (runId, input) {
+      return workRunRemote ? workRunRemote.runDsh(runId, input || {}) : workRunRemoteMissing('work-dsh.run');
+    },
+    dshEvents: function (runId, options) {
+      return workRunRemote ? workRunRemote.events(runId, options || {}) : workRunRemoteMissing('work-dsh.events');
+    }
+  },
+  /* P28-WM-P3B.3 · independent Agent Memory Authority facade. Work Result is the
+     only write consumer; Work Agent Recall is project-scoped and read-only. */
+  agentMemory: {
+    available: !!agentMemoryRemote,
+    query: function (options) {
+      return agentMemoryRemote ? agentMemoryRemote.query(options || {}) : agentMemoryRemoteMissing('agent-memory.query');
+    },
+    get: function (memoryId) {
+      return agentMemoryRemote ? agentMemoryRemote.get(memoryId) : agentMemoryRemoteMissing('agent-memory.get');
+    },
+    create: function (input) {
+      return agentMemoryRemote ? agentMemoryRemote.create(input || {}) : agentMemoryRemoteMissing('agent-memory.create');
+    },
+    commitWorkResultCandidate: function (input) {
+      return agentMemoryRemote ? agentMemoryRemote.commitWorkResultCandidate(input || {})
+        : agentMemoryRemoteMissing('agent-memory.work-result-candidate.commit');
+    },
+    commitWorkResultProcedureCandidate: function (input) {
+      return agentMemoryRemote && typeof agentMemoryRemote.commitWorkResultProcedureCandidate === 'function'
+        ? agentMemoryRemote.commitWorkResultProcedureCandidate(input || {})
+        : agentMemoryRemoteMissing('agent-memory.work-result-procedure-candidate.commit');
+    },
+    update: function (memoryId, input) {
+      return agentMemoryRemote ? agentMemoryRemote.update(memoryId, input || {}) : agentMemoryRemoteMissing('agent-memory.update');
+    },
+    supersede: function (memoryId, input) {
+      return agentMemoryRemote ? agentMemoryRemote.supersede(memoryId, input || {}) : agentMemoryRemoteMissing('agent-memory.supersede');
+    },
+    retract: function (memoryId, input) {
+      return agentMemoryRemote ? agentMemoryRemote.retract(memoryId, input || {}) : agentMemoryRemoteMissing('agent-memory.retract');
+    },
+    purge: function (options) {
+      return agentMemoryRemote ? agentMemoryRemote.purge(options || {}) : agentMemoryRemoteMissing('agent-memory.purge');
+    },
+    state: function () {
+      return agentMemoryRemote ? agentMemoryRemote.state() : agentMemoryRemoteMissing('agent-memory.state');
+    },
+    expireObservations: function (options) {
+      return agentMemoryRemote ? agentMemoryRemote.expireObservations(options || {}) : agentMemoryRemoteMissing('agent-memory.expire-observations');
+    },
+    retentionPolicy: function () {
+      return agentMemoryRemote ? agentMemoryRemote.retentionPolicy() : agentMemoryRemoteMissing('agent-memory.retention');
+    },
+    createBackup: function () {
+      return agentMemoryRemote ? agentMemoryRemote.createBackup() : agentMemoryRemoteMissing('agent-memory.backup.create');
+    },
+    listBackups: function (options) {
+      return agentMemoryRemote ? agentMemoryRemote.listBackups(options || {}) : agentMemoryRemoteMissing('agent-memory.backup.list');
+    },
+    exportBackup: function (backupId) {
+      return agentMemoryRemote ? agentMemoryRemote.exportBackup(backupId) : agentMemoryRemoteMissing('agent-memory.backup.export');
+    },
+    deleteBackup: function (backupId) {
+      return agentMemoryRemote ? agentMemoryRemote.deleteBackup(backupId) : agentMemoryRemoteMissing('agent-memory.backup.delete');
+    },
+    cleanupBackups: function (options) {
+      return agentMemoryRemote ? agentMemoryRemote.cleanupBackups(options || {}) : agentMemoryRemoteMissing('agent-memory.backup.cleanup');
+    },
+    restoreBackup: function (backupId, input) {
+      return agentMemoryRemote ? agentMemoryRemote.restoreBackup(backupId, input || {}) : agentMemoryRemoteMissing('agent-memory.restore');
+    },
+    restoreUpload: function (file, input) {
+      return agentMemoryRemote ? agentMemoryRemote.restoreUpload(file, input || {}) : agentMemoryRemoteMissing('agent-memory.restore-upload');
     }
   },
   /* ── R4-C LIVE-2.1：运行时记忆解释的可观测面 ──────────────────────────

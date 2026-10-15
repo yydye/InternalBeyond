@@ -11,10 +11,6 @@
 
   const MAX_SCAN_RECORDS = 24;
   const MAX_RECENT_ITEMS = 4;
-  const ROUTES = Object.freeze({
-    chat: 'chat', memory: 'memory', blog: 'blog', active: 'active',
-    apps: 'apps', packaging: 'packaging', api: 'api'
-  });
 
   function safeLabel(value, fallback) {
     const label = String(value == null ? '' : value)
@@ -49,7 +45,7 @@
     return {
       title: safeLabel(record.title, kind === 'coread' ? 'Shared reading' : 'Activity'),
       type: kind === 'coread' ? 'Reading' : (kind === 'watch' ? 'Cinema' : 'Activity'),
-      timestamp: timestampOf(record.updatedAt || record.lastActiveAt || record.createdAt)
+      timestamp: timestampOf(record.lastActiveAt || record.updatedAt || record.createdAt)
     };
   }
 
@@ -61,18 +57,19 @@
       .slice(0, Number.isInteger(limit) && limit > 0 ? limit : MAX_RECENT_ITEMS);
   }
 
-  function formatRelativeTime(timestamp, now) {
+  function formatRelativeTime(timestamp, now, locale, i18n) {
     const value = timestampOf(timestamp);
-    if (!value) return 'Time unavailable';
+    const text = function (key, fallback, vars) { return i18n && typeof i18n.t === 'function' ? i18n.t(key, vars) : fallback; };
+    if (!value) return text('home.timeUnavailable', 'Time unavailable');
     const elapsed = Math.max(0, (Number(now) || Date.now()) - value);
     const minutes = Math.floor(elapsed / 60000);
-    if (minutes < 1) return 'Just now';
-    if (minutes < 60) return minutes + ' min ago';
+    if (minutes < 1) return text('home.justNow', 'Just now');
+    if (minutes < 60) return text('home.minutesAgo', minutes + ' min ago', { count: minutes });
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return hours + ' hr ago';
+    if (hours < 24) return text('home.hoursAgo', hours + ' hr ago', { count: hours });
     const days = Math.floor(hours / 24);
-    if (days < 7) return days + (days === 1 ? ' day ago' : ' days ago');
-    return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    if (days < 7) return days === 1 ? text('home.oneDayAgo', '1 day ago', { count: days }) : text('home.daysAgo', days + ' days ago', { count: days });
+    return new Date(value).toLocaleDateString(locale || undefined, { month: 'short', day: 'numeric' });
   }
 
   async function scanProjection(win, store, projector) {
@@ -86,32 +83,6 @@
     return rows;
   }
 
-  async function readPackagingAvailability(win) {
-    const center = win && win.IB && win.IB.packagingCenter;
-    if (!center || typeof center.createClient !== 'function') throw new Error('PACKAGING_STATUS_UNAVAILABLE');
-    const result = await center.createClient().jobs();
-    if (!result || result.ok !== true || typeof result.available !== 'boolean') {
-      throw new Error('PACKAGING_STATUS_UNAVAILABLE');
-    }
-    return result.available;
-  }
-
-  function readMemoryCount(win) {
-    if (!win || typeof win._ibCount !== 'function') return Promise.reject(new Error('MEMORY_COUNT_UNAVAILABLE'));
-    return Promise.resolve(win._ibCount('memories')).then(function (count) {
-      if (!Number.isFinite(Number(count)) || Number(count) < 0) throw new Error('MEMORY_COUNT_UNAVAILABLE');
-      return Math.floor(Number(count));
-    });
-  }
-
-  function greetingFor(hour) {
-    const h = Number(hour);
-    if (h >= 5 && h < 12) return 'Good morning';
-    if (h >= 12 && h < 18) return 'Good afternoon';
-    if (h >= 18 && h < 22) return 'Good evening';
-    return 'Welcome back';
-  }
-
   function makeElement(document, tag, className, text) {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -119,35 +90,25 @@
     return element;
   }
 
-  function renderRecent(document, list, items, isReady) {
+  function renderRecent(document, list, items, win) {
     list.replaceChildren();
-    if (!items.length) {
-      list.hidden = !isReady;
-      return;
-    }
-    list.hidden = false;
+    list.hidden = items.length === 0;
+    const i18n = win && win.IBI18n;
+    const typeKeys = { Conversation: 'home.type.conversation', Reading: 'home.type.reading', Cinema: 'home.type.cinema', Activity: 'home.type.activity' };
     items.forEach(function (item) {
-      const row = makeElement(document, 'li', 'home-recent-item');
-      const marker = makeElement(document, 'span', 'home-recent-marker', '·');
-      marker.setAttribute('aria-hidden', 'true');
+      const row = makeElement(document, 'li', 'ib-list-row home-recent-item');
       const content = makeElement(document, 'div', 'home-recent-content');
-      content.appendChild(makeElement(document, 'strong', 'home-recent-title', item.title));
+      content.appendChild(makeElement(document, 'strong', 'ib-list-row__primary', item.title));
       const meta = makeElement(document, 'div', 'home-recent-meta');
-      meta.appendChild(makeElement(document, 'span', 'home-recent-type', item.type));
-      meta.appendChild(makeElement(document, 'time', 'home-recent-time', formatRelativeTime(item.timestamp)));
+      const typeKey = typeKeys[item.type];
+      meta.appendChild(makeElement(document, 'span', 'ib-list-row__secondary', typeKey && i18n ? i18n.t(typeKey) : item.type));
       content.appendChild(meta);
-      row.appendChild(marker);
+      const time = makeElement(document, 'time', 'ib-list-row__trailing', formatRelativeTime(item.timestamp, Date.now(), i18n && i18n.locale, i18n));
+      if (item.timestamp) time.setAttribute('datetime', new Date(item.timestamp).toISOString());
       row.appendChild(content);
+      row.appendChild(time);
       list.appendChild(row);
     });
-  }
-
-  function setStatus(document, id, label, state) {
-    const item = document.getElementById(id);
-    if (!item) return;
-    item.dataset.state = state;
-    const value = item.querySelector('.workspace-status-value');
-    if (value) value.textContent = label;
   }
 
   function mount(document, win) {
@@ -159,57 +120,61 @@
     const list = document.getElementById('workspace-recent-list');
     const empty = document.getElementById('workspace-empty-state');
     const notice = document.getElementById('workspace-data-notice');
-
-    workspace.addEventListener('click', function (event) {
-      const link = event.target && event.target.closest ? event.target.closest('[data-workspace-route]') : null;
-      if (!link || !workspace.contains(link)) return;
-      event.preventDefault();
-      const route = ROUTES[link.dataset.workspaceRoute];
-      if (!route || !document.getElementById('page-' + route) || typeof win.navTo !== 'function') return;
-      win.navTo(route);
-    });
+    const noticeText = document.getElementById('workspace-data-notice-text');
 
     let requestId = 0;
+    let recentItems = [];
+    let loading = false;
+    function updateLocalizedRecent() {
+      const i18n = win.IBI18n;
+      if (list) renderRecent(document, list, recentItems, win);
+      if (noticeText && notice && !notice.hidden && i18n) {
+        noticeText.textContent = loading ? i18n.t('home.loading') : i18n.t(recentItems.length ? 'home.someUnavailable' : 'home.unavailable');
+      }
+    }
     async function refresh() {
       const id = ++requestId;
+      loading = true;
       if (list) {
-        list.hidden = false;
-        list.replaceChildren(makeElement(document, 'li', 'home-recent-loading', 'Loading workspace...'));
+        list.hidden = true;
+        list.replaceChildren();
       }
       if (empty) empty.hidden = true;
-      if (notice) { notice.hidden = false; notice.textContent = 'Loading workspace...'; }
+      if (notice) {
+        notice.hidden = false;
+        notice.dataset.status = 'loading';
+        if (noticeText) noticeText.textContent = win.IBI18n ? win.IBI18n.t('home.loading') : 'Loading recent activity…';
+      }
 
       const results = await Promise.allSettled([
         scanProjection(win, 'chatThreads', projectThread),
-        scanProjection(win, 'activities', projectActivity),
-        readMemoryCount(win),
-        readPackagingAvailability(win)
+        scanProjection(win, 'activities', projectActivity)
       ]);
       if (id !== requestId) return;
+      loading = false;
 
       const threadsReady = results[0].status === 'fulfilled';
       const activitiesReady = results[1].status === 'fulfilled';
-      const memoryReady = threadsReady && results[2].status === 'fulfilled';
-      const packagingReady = results[3].status === 'fulfilled';
+      const unavailable = !threadsReady || !activitiesReady;
       const recent = combineRecent(
         threadsReady ? results[0].value : [],
         activitiesReady ? results[1].value : [],
         MAX_RECENT_ITEMS
       );
-
-      if (list) renderRecent(document, list, recent, threadsReady && activitiesReady);
+      recentItems = recent;
+      if (list) renderRecent(document, list, recent, win);
       if (empty) empty.hidden = !(threadsReady && activitiesReady && recent.length === 0);
-      setStatus(document, 'workspace-status-storage', threadsReady ? 'Ready' : 'Unavailable', threadsReady ? 'ready' : 'unavailable');
-      setStatus(document, 'workspace-status-memory', memoryReady
-        ? results[2].value + (results[2].value === 1 ? ' memory' : ' memories')
-        : 'Unavailable', memoryReady ? 'ready' : 'unavailable');
-      setStatus(document, 'workspace-status-packaging', packagingReady && results[3].value ? 'Available' : 'Unavailable',
-        packagingReady && results[3].value ? 'ready' : 'unavailable');
-
-      const unavailable = !threadsReady || !activitiesReady || !memoryReady || !packagingReady;
       if (notice) {
         notice.hidden = !unavailable;
-        notice.textContent = 'Some workspace information unavailable';
+        if (unavailable) {
+          notice.dataset.status = 'degraded';
+          if (noticeText) noticeText.textContent = win.IBI18n
+            ? win.IBI18n.t(recent.length ? 'home.someUnavailable' : 'home.unavailable')
+            : (recent.length ? 'Some recent activity is unavailable right now.' : 'Recent activity is unavailable right now.');
+        } else {
+          notice.dataset.status = 'loading';
+          if (noticeText) noticeText.textContent = '';
+        }
       }
     }
 
@@ -225,23 +190,20 @@
       });
       observer.observe(page, { attributes: true, attributeFilter: ['class'] });
     }
+    if (typeof document.addEventListener === 'function') document.addEventListener('ib:locale-changed', updateLocalizedRecent);
     return { refresh: refresh, disconnect: function () { if (observer) observer.disconnect(); } };
   }
 
   return Object.freeze({
     MAX_SCAN_RECORDS: MAX_SCAN_RECORDS,
     MAX_RECENT_ITEMS: MAX_RECENT_ITEMS,
-    ROUTES: ROUTES,
     safeLabel: safeLabel,
     timestampOf: timestampOf,
     projectThread: projectThread,
     projectActivity: projectActivity,
     combineRecent: combineRecent,
     formatRelativeTime: formatRelativeTime,
-    greetingFor: greetingFor,
     scanProjection: scanProjection,
-    readMemoryCount: readMemoryCount,
-    readPackagingAvailability: readPackagingAvailability,
     mount: mount
   });
 });

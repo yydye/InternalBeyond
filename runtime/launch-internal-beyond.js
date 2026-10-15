@@ -60,9 +60,11 @@ const NODE_REQUIRED_MAJOR = 18;
    install payload. Installer diagnostics keep their own bounded installer log
    contract; this path is only for the running launcher. */
 const LOCAL_DIR = process.platform === 'win32' && process.env.LOCALAPPDATA
-  ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+  ? (process.env.IB_DEV_MODE === '1' && process.env.IB_DEV_SANDBOX_ROOT
+    ? path.resolve(process.env.IB_DEV_SANDBOX_ROOT)
+    : path.join(process.env.LOCALAPPDATA, 'InternalBeyond'))
   : path.join(os.homedir(), '.internal-beyond');
-const LOG_DIR = path.join(LOCAL_DIR, 'logs');
+const LOG_DIR = process.env.IB_LOG_DIR || path.join(LOCAL_DIR, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'launcher.log');
 
 const SERVICES_TIMEOUT_MS = Number(process.env.IB_LAUNCH_SERVICES_TIMEOUT_MS) || 25000;
@@ -157,6 +159,7 @@ function runtimeIdentity() {
     runtimeMode: mode,
     runtimeRootClass: rootClass,
     productVersion: product,
+    tauriHostSessionId: String(process.env.IB_TAURI_HOST_INSTANCE_ID || '').slice(0, 80),
     payloadManifestVersion: manifestVersion ? Number(manifestVersion) : manifest.version,
     payloadIdentity: payloadIdentity || null,
     hostRoot: ROOT,
@@ -228,13 +231,37 @@ function servicesStatus() {
   });
 }
 
+function commandFailureSummary(error, stderr) {
+  const lines = String(stderr || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const cause = lines.find(line => /^(?:Error|TypeError|ReferenceError|SyntaxError):/.test(line)) ||
+    lines.find(line => /^(?:Cannot find module|\[runner\] Failed:)/.test(line)) ||
+    String(error && error.message || error || 'unknown process error').split(/\r?\n/)[0];
+  const code = error && error.code;
+  const status = Number.isInteger(code) ? 'exit=' + code : (code ? 'code=' + String(code) : 'exit=unknown');
+  const signal = error && error.signal ? ' signal=' + String(error.signal) : '';
+  return { status: status + signal, cause: String(cause).replace(/\s+/g, ' ').slice(0, 320) };
+}
+
+function observeStartupChild(child, label, script) {
+  child.once('error', error => {
+    log('[ERROR] ' + label + ' process error: executable="' + process.execPath + '" script="' + script + '" cwd="' + ROOT + '" code=' + String(error && error.code || 'unknown') + ' message="' + String(error && error.message || error).replace(/\s+/g, ' ').slice(0, 320) + '"');
+  });
+  child.once('exit', (code, signal) => {
+    if (code === 0 && !signal) return;
+    log('[ERROR] ' + label + ' exited before readiness: executable="' + process.execPath + '" script="' + script + '" cwd="' + ROOT + '" exit=' + String(code) + ' signal=' + String(signal || ''));
+  });
+}
+
 /* Same probe, but keeps the failure reason so boot-state can say WHY it is
    unknown instead of pretending the services are offline. */
 function probeServices() {
   return new Promise(resolve => {
-    execFile(process.execPath, [RUNNER, '--json'], { cwd: ROOT, timeout: 8000 }, (err, stdout) => {
+    execFile(process.execPath, [RUNNER, '--json'], { cwd: ROOT, timeout: 8000 }, (err, stdout, stderr) => {
       if (err) {
-        resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: 'local-services-runner.js --json failed: ' + String(err.message || err).slice(0, 200) } });
+        const failure = commandFailureSummary(err, stderr);
+        const message = 'local-services-runner.js --json failed (' + failure.status + '): ' + failure.cause;
+        log('[ERROR] ' + message + ' executable="' + process.execPath + '" script="' + RUNNER + '" cwd="' + ROOT + '"');
+        resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: message } });
         return;
       }
       try {
@@ -253,13 +280,28 @@ function probeServices() {
    must be online. Home Node is deliberately NOT one of them — the desktop UI
    works without it, so its absence must not make the launcher wait, and must not
    make it start a second runner while the existing one is doing fine. */
+function homeNodeRequiredForTauriStartup() {
+  return process.env.IB_TAURI_HOST === '1' && process.env.IB_HOME_NODE_AUTOSTART === '1';
+}
+
 function servicesHealthy(rows) {
-  const required = registry.requiredForServices();
+  const required = registry.requiredForServices().slice();
+  if (homeNodeRequiredForTauriStartup() && !required.some(c => c.id === 'homeNode')) {
+    const homeNode = registry.managed().find(c => c.id === 'homeNode');
+    if (homeNode) required.push(homeNode);
+  }
   if (!required.length) return false;
   return required.every(c => {
     const row = (rows || []).find(r => r && r.name === c.name);
     return !!(row && row.online);
   });
+}
+
+function managerRuntimeInfo() {
+  return httpGetJson(RESTART_PORT, '/status', 1000).then(h => {
+    if (!h.responding || !h.data || h.data.service !== 'InternalBeyond Restart') return null;
+    return h.data;
+  }).catch(() => null);
 }
 
 /* Registry rows, as the runner reports them, keyed by component id. */
@@ -298,14 +340,19 @@ async function managerState() {
 /* ── Start (idempotent — only called when state is 'down') ── */
 
 function startManager() {
-  log('Starting local services manager (Bridge + Active)…');
+  log(homeNodeRequiredForTauriStartup()
+    ? 'Starting Tauri local services manager (Home Node readiness required)…'
+    : 'Starting local services manager (Bridge + Active)…');
   try {
-    spawn(process.execPath, [RUNNER], {
+    const startedAt = Date.now();
+    const child = spawn(process.execPath, [RUNNER], {
       cwd: ROOT, detached: true, windowsHide: true, stdio: 'ignore'
-    }).unref();
-    return { ok: true, error: null };
+    });
+    observeStartupChild(child, 'local services manager', RUNNER);
+    child.unref();
+    return { ok: true, pid: child.pid || null, startedAt: startedAt, error: null };
   } catch (e) {
-    const message = 'could not spawn local-services-runner.js: ' + String(e && e.message || e).slice(0, 200);
+    const message = 'could not spawn local-services-runner.js executable="' + process.execPath + '" script="' + RUNNER + '" cwd="' + ROOT + '": ' + String(e && e.message || e).replace(/\s+/g, ' ').slice(0, 240);
     log('[WARN] ' + message);
     return { ok: false, error: { category: bootState.REASON.SPAWN_FAILED, message: message } };
   }
@@ -314,12 +361,15 @@ function startManager() {
 function startWebServer() {
   log('Starting InternalBeyond web server on ' + HOST + ':' + WEB_PORT + '…');
   try {
-    spawn(process.execPath, [WEB_SERVER], {
+    const startedAt = Date.now();
+    const child = spawn(process.execPath, [WEB_SERVER], {
       cwd: ROOT, detached: true, windowsHide: true, stdio: 'ignore'
-    }).unref();
-    return { ok: true, error: null };
+    });
+    observeStartupChild(child, 'InternalBeyond web server', WEB_SERVER);
+    child.unref();
+    return { ok: true, pid: child.pid || null, startedAt: startedAt, error: null };
   } catch (e) {
-    const message = 'could not spawn internal-beyond-server.js: ' + String(e && e.message || e).slice(0, 200);
+    const message = 'could not spawn internal-beyond-server.js executable="' + process.execPath + '" script="' + WEB_SERVER + '" cwd="' + ROOT + '": ' + String(e && e.message || e).replace(/\s+/g, ' ').slice(0, 240);
     log('[WARN] ' + message);
     return { ok: false, error: { category: bootState.REASON.SPAWN_FAILED, message: message } };
   }
@@ -443,7 +493,11 @@ async function ensureServices(opts) {
   const o = opts || {};
   const timeout = o.servicesTimeout || SERVICES_TIMEOUT_MS;
   const warnings = [];
-  const manager = { state: 'unknown', started: false, wasRunning: false, error: null };
+  const manager = {
+    state: 'unknown', started: false, wasRunning: false, pid: null, startedAt: null,
+    tauriHostSessionId: String(process.env.IB_TAURI_HOST_INSTANCE_ID || '').slice(0, 80),
+    error: null
+  };
 
   const first = await probeServices();
   if (first.error) warnings.push({ code: first.error.category, message: first.error.message });
@@ -456,6 +510,8 @@ async function ensureServices(opts) {
     if (!manager.wasRunning) {
       const started = startManager();
       manager.started = started.ok;
+      manager.pid = started.pid || null;
+      manager.startedAt = started.startedAt || null;
       if (!started.ok) {
         manager.error = started.error;
         warnings.push({ code: started.error.category, message: started.error.message });
@@ -473,6 +529,14 @@ async function ensureServices(opts) {
     warnings.push({ code: finalProbe.error.category, message: finalProbe.error.message });
   }
   const rows = finalProbe.rows;
+  if (!manager.pid) {
+    const info = await managerRuntimeInfo();
+    if (info) {
+      manager.pid = Number(info.pid) || null;
+      manager.startedAt = Number(info.startedAt) || null;
+      manager.tauriHostSessionId = String(info.tauriHostSessionId || '').slice(0, 80);
+    }
+  }
 
   /* One component per registry entry the runner manages (plus the restart plane,
      which lives inside the runner process). A component the run did not register
@@ -515,6 +579,9 @@ async function ensureServices(opts) {
 
 async function ensureWebServer(opts) {
   const o = opts || {};
+  let startedByLauncher = false;
+  let startedPid = null;
+  let startedAt = null;
   const base = {
     required: true,
     affectsOverall: true,
@@ -548,6 +615,9 @@ async function ensureWebServer(opts) {
         message: 'The InternalBeyond web server could not be started: ' + started.error.message
       });
     }
+    startedByLauncher = true;
+    startedPid = started.pid || null;
+    startedAt = started.startedAt || null;
     await sleep(500);
   }
 
@@ -565,7 +635,11 @@ async function ensureWebServer(opts) {
     }, reused);
   }
   return {
-    component: Object.assign({}, base, { healthy: true, state: 'healthy', reused: reused, reason: null }),
+    component: Object.assign({}, base, {
+      healthy: true, state: 'healthy', reused: reused, reason: null,
+      pid: startedPid, startedAt: startedAt, spawnedByLauncher: startedByLauncher,
+      tauriHostSessionId: startedByLauncher ? String(process.env.IB_TAURI_HOST_INSTANCE_ID || '').slice(0, 80) : ''
+    }),
     fatalCategory: null,
     fatalMessage: null
   };
@@ -739,6 +813,7 @@ module.exports = {
   servicesStatus: servicesStatus,
   probeServices: probeServices,
   servicesHealthy: servicesHealthy,
+  homeNodeRequiredForTauriStartup: homeNodeRequiredForTauriStartup,
   managerProcessRunning: managerProcessRunning,
   managerState: managerState,
   ensureServices: ensureServices,

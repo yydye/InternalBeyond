@@ -1,4 +1,5 @@
 mod project_knowledge;
+mod tauri_service_supervisor;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
@@ -6,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,6 +19,7 @@ use project_knowledge::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, RunEvent, WindowEvent};
+use uuid::Uuid;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -25,6 +27,11 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DEFAULT_STATIC_WEB_PORT: u16 = 23120;
 const DEFAULT_RESTART_PORT: u16 = 23116;
+const DEFAULT_BRIDGE_PORT: u16 = 23115;
+const DEFAULT_ACTIVE_PORT: u16 = 23114;
+const DEFAULT_HOME_NODE_PORT: u16 = 23118;
+const TAURI_STARTUP_BUDGET: Duration = Duration::from_secs(30);
+const TAURI_SHUTDOWN_BUDGET: Duration = Duration::from_secs(12);
 const RUNTIME_MODE_ENV: &str = "IB_RUNTIME_MODE";
 const RUNTIME_ROOT_CLASS_ENV: &str = "IB_RUNTIME_ROOT_CLASS";
 const ACCEPTANCE_ROOT_ENV: &str = "IB_ACCEPTANCE_ROOT";
@@ -1575,6 +1582,20 @@ fn abort_recovery_checkpoint_before_apply_inner(
 fn recovery_data_root() -> Result<PathBuf, String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .ok_or_else(|| "RECOVERY_DATA_ROOT_UNAVAILABLE".to_string())?;
+    if std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1") {
+        let mut expected = PathBuf::from(&local).join("InternalBeyond");
+        if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") {
+            expected.push("dev-synthetic");
+        }
+        let expected = expected.join("dev-sandbox");
+        let configured = std::env::var_os("IB_DEV_SANDBOX_ROOT")
+            .map(PathBuf::from)
+            .ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
+        if configured != expected {
+            return Err("DEV_SANDBOX_ROOT_INVALID".to_string());
+        }
+        return Ok(expected);
+    }
     Ok(PathBuf::from(local).join("InternalBeyond"))
 }
 
@@ -2528,8 +2549,7 @@ fn acceptance_probe_parameters() -> Option<(String, String)> {
     if std::env::var("IB_ACCEPTANCE_SECRET_ROUTES").ok().as_deref() != Some("1") {
         return None;
     }
-    let port = std::env::var("IB_WEB_PORT")
-        .unwrap_or_else(|_| DEFAULT_STATIC_WEB_PORT.to_string());
+    let port = env_port("IB_WEB_PORT", DEFAULT_STATIC_WEB_PORT).to_string();
     let run_id = match acceptance_run_id() {
         Some(value) => value,
         None => return None,
@@ -2544,11 +2564,7 @@ fn acceptance_probe_parameters() -> Option<(String, String)> {
    the same environment variable. Pass that loopback origin into the packaged
    WebView so its diagnostics/update requests reach the existing Node service. */
 fn static_web_origin() -> String {
-    let port = std::env::var("IB_WEB_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port > 0)
-        .unwrap_or(DEFAULT_STATIC_WEB_PORT);
+    let port = env_port("IB_WEB_PORT", DEFAULT_STATIC_WEB_PORT);
     format!("http://127.0.0.1:{port}")
 }
 
@@ -2630,28 +2646,94 @@ fn wait_for_acceptance_endpoint() -> bool {
     false
 }
 
-/* The Web Core and local services remain the product authority. This small
-host-owned record exists only to distinguish a runner started by this Tauri
-process from a healthy runner that was already present. */
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostOwnedService {
+    service_kind: String,
+    port: u16,
+    pid: u32,
+    spawned_by_host: bool,
+    started_at_ms: u64,
+    host_session_id: String,
+    state: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TauriRuntimeStatus {
+    host_ready: bool,
+    launcher_ready: bool,
+    home_node_ready: bool,
+    home_node_reason_code: Option<String>,
+    bridge_ready: Option<bool>,
+    active_ready: Option<bool>,
+    static_ready: Option<bool>,
+    degraded: bool,
+    state: String,
+    message: String,
+    host_session_id: String,
+    updated_at_ms: u64,
+    services: Vec<HostOwnedService>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TauriSupervisorRecord<'a> {
+    schema: &'static str,
+    version: u8,
+    host_pid: u32,
+    host_started_at_ms: u64,
+    host_session_id: &'a str,
+    runtime_root: &'a Path,
+    status: &'a TauriRuntimeStatus,
+}
+
+/* The Web Core and existing launcher/runner remain service authorities. This
+host-owned record is per-Tauri-instance evidence; it never adopts or kills a
+process merely because it uses node.exe or answers a shared port. */
 struct HostLifecycle {
     root: PathBuf,
     runtime: RuntimeResolution,
     boot_state: PathBuf,
+    supervisor_record: PathBuf,
+    host_data_root: PathBuf,
+    host_session_id: String,
+    previous_host_session_id: Option<String>,
+    host_started_at_ms: u64,
+    home_node_port: u16,
+    bridge_port: u16,
+    active_port: u16,
+    static_port: u16,
+    restart_port: u16,
+    readiness: Mutex<TauriRuntimeStatus>,
     recovery_policy: RecoveryBootPolicy,
     recovery_first_boot_pending: AtomicBool,
     recovery_data_root: Option<PathBuf>,
     launcher_pid: AtomicU32,
+    launcher_started_at_ms: AtomicU64,
     launcher_done: AtomicBool,
     runner_owned: AtomicBool,
+    runner_pid: AtomicU32,
+    runner_started_at_ms: AtomicU64,
+    static_owned: AtomicBool,
+    static_pid: AtomicU32,
+    static_started_at_ms: AtomicU64,
     shutdown_requested: AtomicBool,
 }
 
 impl HostLifecycle {
-    fn new(runtime: RuntimeResolution, recovery_policy: RecoveryBootPolicy) -> Self {
+    fn new(
+        runtime: RuntimeResolution,
+        recovery_policy: RecoveryBootPolicy,
+        host_data_root: PathBuf,
+        host_session_id: String,
+    ) -> Self {
         let root = runtime.root.clone();
-        let recovery_data_root = recovery_data_root().ok();
+        let recovery_root = recovery_data_root().ok();
         let boot_state = if let Ok(dir) = std::env::var("IB_BOOT_STATE_DIR") {
             PathBuf::from(dir).join("boot-state.json")
+        } else if std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1") {
+            recovery_data_root().unwrap_or_else(|_| root.join(".ib-dev-sandbox")).join("host").join("boot-state.json")
         } else if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             PathBuf::from(local_app_data)
                 .join("InternalBeyond")
@@ -2659,19 +2741,236 @@ impl HostLifecycle {
         } else {
             root.join("logs").join("boot-state.json")
         };
+        let now = unix_time_ms();
+        let supervisor_record = host_data_root.join("tauri-service-supervisor.json");
+        let previous_host_session_id = fs::read_to_string(&supervisor_record).ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|record| record.get("hostSessionId").and_then(serde_json::Value::as_str).map(str::to_string));
         Self {
             root,
             runtime,
             boot_state,
+            supervisor_record,
+            host_data_root,
+            host_session_id: host_session_id.clone(),
+            previous_host_session_id,
+            host_started_at_ms: now,
+            home_node_port: env_port("IB_HOME_NODE_PORT", DEFAULT_HOME_NODE_PORT),
+            bridge_port: env_port("IB_BRIDGE_PORT", DEFAULT_BRIDGE_PORT),
+            active_port: env_port("IB_ACTIVE_PORT", DEFAULT_ACTIVE_PORT),
+            static_port: env_port("IB_WEB_PORT", DEFAULT_STATIC_WEB_PORT),
+            restart_port: env_port("IB_RESTART_PORT", DEFAULT_RESTART_PORT),
+            readiness: Mutex::new(TauriRuntimeStatus {
+                host_ready: false,
+                launcher_ready: false,
+                home_node_ready: false,
+                home_node_reason_code: Some("startup-pending".to_string()),
+                bridge_ready: None,
+                active_ready: None,
+                static_ready: None,
+                degraded: false,
+                state: "HOST_STARTING".to_string(),
+                message: "正在准备本地服务".to_string(),
+                host_session_id,
+                updated_at_ms: now,
+                services: Vec::new(),
+            }),
             recovery_first_boot_pending: AtomicBool::new(recovery_policy.first_boot_pending()),
-            recovery_data_root,
+            recovery_data_root: recovery_root,
             recovery_policy,
             launcher_pid: AtomicU32::new(0),
+            launcher_started_at_ms: AtomicU64::new(0),
             launcher_done: AtomicBool::new(true),
             runner_owned: AtomicBool::new(false),
+            runner_pid: AtomicU32::new(0),
+            runner_started_at_ms: AtomicU64::new(0),
+            static_owned: AtomicBool::new(false),
+            static_pid: AtomicU32::new(0),
+            static_started_at_ms: AtomicU64::new(0),
             shutdown_requested: AtomicBool::new(false),
         }
     }
+
+    fn update_readiness(&self, update: impl FnOnce(&mut TauriRuntimeStatus)) {
+        if let Ok(mut status) = self.readiness.lock() {
+            update(&mut status);
+            status.updated_at_ms = unix_time_ms();
+            status.degraded = status.state != "STOPPED" && status.host_ready &&
+                (!status.launcher_ready || !status.home_node_ready || status.bridge_ready == Some(false) ||
+                    status.active_ready == Some(false) || status.static_ready == Some(false));
+        }
+        self.persist_supervisor_record();
+    }
+
+    fn upsert_service(&self, service: HostOwnedService) {
+        self.update_readiness(|status| {
+            if let Some(existing) = status.services.iter_mut().find(|item| item.service_kind == service.service_kind) {
+                *existing = service;
+            } else {
+                status.services.push(service);
+            }
+        });
+    }
+
+    fn merge_services(&self, fresh: Vec<HostOwnedService>) {
+        self.update_readiness(|status| {
+            for existing in status.services.iter_mut() {
+                if !fresh.iter().any(|item| item.service_kind == existing.service_kind) &&
+                    existing.state != "EXITED" && existing.state != "STOPPED" {
+                    existing.state = "STOPPED".to_string();
+                }
+            }
+            for service in fresh {
+                if let Some(existing) = status.services.iter_mut().find(|item| item.service_kind == service.service_kind) {
+                    *existing = service;
+                } else {
+                    status.services.push(service);
+                }
+            }
+        });
+    }
+
+    fn runtime_status(&self) -> TauriRuntimeStatus {
+        self.readiness.lock().map(|status| status.clone()).unwrap_or_else(|_| TauriRuntimeStatus {
+            host_ready: true,
+            launcher_ready: false,
+            home_node_ready: false,
+            home_node_reason_code: Some("status-unavailable".to_string()),
+            bridge_ready: None,
+            active_ready: None,
+            static_ready: None,
+            degraded: true,
+            state: "DEGRADED".to_string(),
+            message: "本地服务状态暂不可读".to_string(),
+            host_session_id: self.host_session_id.clone(),
+            updated_at_ms: unix_time_ms(),
+            services: Vec::new(),
+        })
+    }
+
+    fn persist_supervisor_record(&self) {
+        let status = self.runtime_status();
+        let record = TauriSupervisorRecord {
+            schema: "internalbeyond.tauri-service-supervisor",
+            version: 1,
+            host_pid: std::process::id(),
+            host_started_at_ms: self.host_started_at_ms,
+            host_session_id: &self.host_session_id,
+            runtime_root: &self.root,
+            status: &status,
+        };
+        let Ok(bytes) = serde_json::to_vec_pretty(&record) else { return; };
+        if fs::create_dir_all(&self.host_data_root).is_err() { return; }
+        let temp = self.supervisor_record.with_extension(format!("{}.tmp", self.host_session_id));
+        if fs::write(&temp, bytes).is_err() { return; }
+        if self.supervisor_record.exists() && fs::remove_file(&self.supervisor_record).is_err() {
+            let _ = fs::remove_file(temp);
+            return;
+        }
+        let _ = fs::rename(temp, &self.supervisor_record);
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn env_port(name: &str, fallback: u16) -> u16 {
+    let configured = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0);
+    if dev_mode_enabled() { configured.unwrap_or(0) } else { configured.unwrap_or(fallback) }
+}
+
+fn dev_mode_enabled() -> bool {
+    std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1")
+}
+
+fn dev_service_environment_valid() -> Result<(), String> {
+    // The Dev Host repeats the Launcher's boundary check before it probes any local service.
+    if !dev_mode_enabled() { return Ok(()); }
+    let synthetic = std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1");
+    let instance = std::env::var("IB_DEV_INSTANCE_ID").map_err(|_| "DEV_INSTANCE_REQUIRED")?;
+    Uuid::parse_str(&instance).map_err(|_| "DEV_INSTANCE_INVALID")?;
+    let token = std::env::var("IB_DEV_SESSION_TOKEN").map_err(|_| "DEV_SESSION_REQUIRED")?;
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("DEV_SESSION_INVALID".to_string());
+    }
+    let sandbox = dev_sandbox_root()?;
+    for (name, child) in [
+        ("IB_ACTIVE_DATA_DIR", "active"),
+        ("IB_BRIDGE_DATA_DIR", "bridge"),
+        ("IB_HOME_NODE_DATA_DIR", "home-node"),
+        ("IB_CREDENTIAL_DATA_DIR", "credential-vault"),
+        ("IB_CREDENTIAL_BINDINGS_DIR", "credential-vault"),
+    ] {
+        let configured = std::env::var_os(name).ok_or_else(|| format!("DEV_DATA_DIR_REQUIRED:{name}"))?;
+        let expected = sandbox.join(child);
+        if !PathBuf::from(configured).to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy()) {
+            return Err(format!("DEV_DATA_DIR_INVALID:{name}"));
+        }
+    }
+    let names = [
+        "IB_WEB_PORT", "IB_BRIDGE_PORT", "IB_ACTIVE_PORT", "IB_RESTART_PORT",
+        "IB_HOME_NODE_PORT", "IB_DEV_FAKE_PROVIDER_PORT", "IB_DSH_CONTROL_PORT", "IB_DSH_WEB_PORT",
+        "IB_ECONOMY_CHANNEL_SOURCE_PORT",
+    ];
+    let mut ports = HashSet::new();
+    let production = [DEFAULT_STATIC_WEB_PORT, DEFAULT_BRIDGE_PORT, DEFAULT_ACTIVE_PORT, DEFAULT_RESTART_PORT, DEFAULT_HOME_NODE_PORT];
+    for name in names {
+        let value = std::env::var(name).ok().and_then(|raw| raw.parse::<u16>().ok())
+            .filter(|port| *port > 0).ok_or_else(|| format!("DEV_PORT_REQUIRED:{name}"))?;
+        if !ports.insert(value) { return Err(format!("DEV_PORT_CONFLICT:{name}")); }
+        if production.contains(&value) { return Err(format!("DEV_PORT_OVERLAPS_PRODUCTION:{name}")); }
+    }
+    if std::env::var("IB_DEV_DSH_ENABLED").ok().as_deref() == Some("1") && !synthetic {
+        return Err("DEV_DSH_SYNTHETIC_REQUIRED".to_string());
+    }
+    Ok(())
+}
+
+fn service_environment_matches(value: &serde_json::Value) -> bool {
+    if dev_mode_enabled() {
+        let expected_mode = if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") { "synthetic" } else { "dev" };
+        let expected_instance = std::env::var("IB_DEV_INSTANCE_ID").unwrap_or_default();
+        value.get("environment").and_then(serde_json::Value::as_str) == Some(expected_mode)
+            && value.get("devInstanceId").and_then(serde_json::Value::as_str) == Some(expected_instance.as_str())
+    } else {
+        !matches!(value.get("environment").and_then(serde_json::Value::as_str), Some("dev" | "synthetic"))
+    }
+}
+
+fn dev_sandbox_root() -> Result<PathBuf, String> {
+    if !dev_mode_enabled() { return Err("DEV_MODE_REQUIRED".to_string()); }
+    let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
+    let mut expected = PathBuf::from(local).join("InternalBeyond");
+    if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") {
+        expected.push("dev-synthetic");
+    }
+    let expected = expected.join("dev-sandbox");
+    let configured = std::env::var_os("IB_DEV_SANDBOX_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
+    if configured != expected { return Err("DEV_SANDBOX_ROOT_INVALID".to_string()); }
+    Ok(expected)
+}
+
+fn host_supervisor_data_root(app: &tauri::AppHandle) -> PathBuf {
+    if std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1") {
+        return recovery_data_root()
+            .unwrap_or_else(|_| app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir()))
+            .join("host");
+    }
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return PathBuf::from(local_app_data).join("InternalBeyond");
+    }
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir()))
 }
 
 fn checkpoint_path(data_root: &Path) -> PathBuf {
@@ -4396,6 +4695,58 @@ fn home_node_desktop_credential() -> Result<serde_json::Value, String> {
     }))
 }
 
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn ib_dev_snapshot_load() -> Result<serde_json::Value, String> {
+    if std::env::var("IB_DEV_MODE").ok().as_deref() != Some("1") {
+        return Err("DEV_SNAPSHOT_UNAVAILABLE".to_string());
+    }
+    let root = recovery_data_root()?;
+    if root.join("seed-imported.json").is_file() {
+        return Ok(serde_json::json!({ "state": "already-imported" }));
+    }
+    let path = root.join("seed.json");
+    let metadata = fs::metadata(&path).map_err(|_| "DEV_SNAPSHOT_UNAVAILABLE".to_string())?;
+    if metadata.len() == 0 || metadata.len() > 192 * 1024 * 1024 {
+        return Err("DEV_SNAPSHOT_SIZE_INVALID".to_string());
+    }
+    let mut bytes = fs::read(&path).map_err(|_| "DEV_SNAPSHOT_UNAVAILABLE".to_string())?;
+    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|_| "DEV_SNAPSHOT_INVALID".to_string());
+    bytes.fill(0);
+    let value = parsed?;
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some("internalbeyond.dev-snapshot")
+        || value.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+        || !value.get("stores").map(serde_json::Value::is_object).unwrap_or(false)
+    {
+        return Err("DEV_SNAPSHOT_INVALID".to_string());
+    }
+    Ok(value)
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn ib_dev_snapshot_mark_imported() -> Result<(), String> {
+    if std::env::var("IB_DEV_MODE").ok().as_deref() != Some("1") {
+        return Err("DEV_SNAPSHOT_UNAVAILABLE".to_string());
+    }
+    let root = recovery_data_root()?;
+    let marker = root.join("seed-imported.json");
+    if marker.is_file() { return Ok(()); }
+    let value = serde_json::json!({
+        "schema": "internalbeyond.dev-snapshot-import",
+        "version": 1,
+        "importedAtMs": unix_time_ms(),
+        "processId": std::process::id()
+    });
+    write_new_json(&marker, &value).map_err(|_| "DEV_SNAPSHOT_MARKER_WRITE_FAILED".to_string())
+}
+
+#[tauri::command]
+fn tauri_runtime_status(state: tauri::State<'_, Arc<HostLifecycle>>) -> TauriRuntimeStatus {
+    state.runtime_status()
+}
+
 /* Windows: give the frameless (decorations:false) host window native DWM
    rounded corners so the OS frame matches the glass UI instead of a square
    frame. This is a native window attribute, not a CSS radius. */
@@ -4695,9 +5046,26 @@ fn required_runtime_files() -> &'static [&'static str] {
         "runtime/node/node.exe",
         "runtime/launch-internal-beyond.js",
         "runtime/local-services-runner.js",
+        "runtime/dev-service-contract.js",
+        "runtime/dev-snapshot.js",
         "runtime/component-registry.js",
         "runtime/component-lifecycle.js",
         "runtime/service-control.js",
+        "runtime/optional-dsh-runtime.js",
+        "runtime/dsh-runtime-release.js",
+        "runtime/dsh-runtime-release-trust.json",
+        "runtime/dsh-runtime-package-pin.json",
+        "services/home-node/dsh-runtime-installer.js",
+        "services/home-node/dsh-runtime-online-installer.js",
+        "runtime/dsh-native-work-ui/host.mjs",
+        "runtime/dsh-native-work-ui/client.js",
+        "runtime/dsh-native-work-ui/session.mjs",
+        "runtime/dsh-startup-screen/host.mjs",
+        "runtime/dsh-startup-screen/lib/client.js",
+        "services/home-node/dsh-host-adapter.js",
+        "services/home-node/dsh-web-host.js",
+        "services/home-node/work-run-store.js",
+        "services/home-node/workspace-project-bridge.js",
         "services/active-message-service.js",
         "services/ib-bridge-service.js",
         "services/home-node-service.js",
@@ -4802,9 +5170,26 @@ fn production_payload_identity(root: &Path) -> Result<(String, u64, String), Str
         "runtime/node/node.exe",
         "runtime/launch-internal-beyond.js",
         "runtime/local-services-runner.js",
+        "runtime/dev-service-contract.js",
+        "runtime/dev-snapshot.js",
+        "runtime/optional-dsh-runtime.js",
+        "runtime/dsh-runtime-release.js",
+        "runtime/dsh-runtime-release-trust.json",
+        "runtime/dsh-runtime-package-pin.json",
+        "services/home-node/dsh-runtime-installer.js",
+        "services/home-node/dsh-runtime-online-installer.js",
+        "runtime/dsh-native-work-ui/host.mjs",
+        "runtime/dsh-native-work-ui/client.js",
+        "runtime/dsh-native-work-ui/session.mjs",
+        "runtime/dsh-startup-screen/host.mjs",
+        "runtime/dsh-startup-screen/lib/client.js",
         "services/active-message-service.js",
         "services/ib-bridge-service.js",
         "services/home-node-service.js",
+        "services/home-node/dsh-host-adapter.js",
+        "services/home-node/dsh-web-host.js",
+        "services/home-node/work-run-store.js",
+        "services/home-node/workspace-project-bridge.js",
         "active/persistence.js",
         "tools/ib-stop.js",
         "启动 InternalBeyond.vbs",
@@ -5010,7 +5395,7 @@ fn launcher_node(root: &PathBuf) -> Option<PathBuf> {
             return Some(candidate);
         }
     }
-    let bundled = root.join("runtime").join("node").join("node.exe");
+    let bundled = tauri_service_supervisor::service_paths(root).node;
     if bundled.exists() {
         return Some(bundled);
     }
@@ -5033,13 +5418,32 @@ fn inspect_launcher_result(state: &HostLifecycle) {
         Ok(value) => value,
         Err(_) => return,
     };
-    let started = value
+    let runtime_session = value
         .get("launcher")
-        .and_then(|launcher| launcher.get("serviceManager"))
-        .and_then(|manager| manager.get("started"))
+        .and_then(|launcher| launcher.get("runtime"))
+        .and_then(|runtime| runtime.get("tauriHostSessionId"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let manager = value
+        .get("launcher")
+        .and_then(|launcher| launcher.get("serviceManager"));
+    let started_by_launcher = manager
+        .and_then(|manager| manager.get("startedByLauncher"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    state.runner_owned.store(started, Ordering::Release);
+    let session_matches = runtime_session == state.host_session_id;
+    let manager_session_matches = manager
+        .and_then(|manager| manager.get("tauriHostSessionId"))
+        .and_then(serde_json::Value::as_str)
+        .map(|session| session == state.host_session_id)
+        .unwrap_or(session_matches);
+    let owned = started_by_launcher && session_matches && manager_session_matches;
+    state.runner_owned.store(owned, Ordering::Release);
+    if owned {
+        if let Some(pid) = manager.and_then(|manager| manager.get("pid")).and_then(serde_json::Value::as_u64) {
+            state.runner_pid.store(pid as u32, Ordering::Release);
+        }
+    }
 }
 
 fn launcher_candidates(state: &HostLifecycle) -> Vec<PathBuf> {
@@ -5047,7 +5451,7 @@ fn launcher_candidates(state: &HostLifecycle) -> Vec<PathBuf> {
 }
 
 fn launcher_root(state: &HostLifecycle) -> Option<PathBuf> {
-    let launcher = state.root.join("runtime").join("launch-internal-beyond.js");
+    let launcher = tauri_service_supervisor::service_paths(&state.root).launcher;
     launcher.is_file().then(|| state.root.clone())
 }
 
@@ -5082,36 +5486,71 @@ fn write_bootstrap_trace(state: &HostLifecycle, candidates: &[PathBuf]) {
     }
 }
 
+fn append_host_startup_log(state: &HostLifecycle, message: &str) {
+    let Some(data_root) = state.boot_state.parent() else { return; };
+    let log_dir = data_root.join("logs");
+    if fs::create_dir_all(&log_dir).is_err() { return; }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_dir.join("launcher.log")) else { return; };
+    let line = format!("[unix-ms:{}] [Tauri Host] {}\n", unix_time_ms(), message.replace('\r', " ").replace('\n', " "));
+    let _ = file.write_all(line.as_bytes());
+}
+
 fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
     let candidates = launcher_candidates(state);
     write_bootstrap_trace(state, &candidates);
+    let mut home_start_gate = tauri_service_supervisor::HomeNodeStartGate::default();
+    let (home_probe, _, home_reason) = probe_home_node(state.home_node_port);
+    match home_start_gate.plan(home_probe) {
+        tauri_service_supervisor::StartAction::Reuse => {
+            state.update_readiness(|runtime| {
+                runtime.home_node_ready = true;
+                runtime.message = "正在复用已通过身份与 serving 检查的 Home Node".to_string();
+            });
+        }
+        tauri_service_supervisor::StartAction::FailClosed => {
+            state.update_readiness(|runtime| {
+                runtime.message = format!("Home Node 端口未通过身份检查：{home_reason}");
+            });
+        }
+        tauri_service_supervisor::StartAction::Spawn | tauri_service_supervisor::StartAction::Wait => {}
+    }
     let root = match launcher_root(state) {
         Some(root) => root,
         None => {
-            /* A source checkout without the bundled runtime can still open the
-            Tauri host; diagnostics will show the existing sidecars as degraded. */
+            let expected = tauri_service_supervisor::service_paths(&state.root).launcher;
+            append_host_startup_log(state, &format!("[ERROR] launcher entry missing: root={} script={}", state.root.display(), expected.display()));
+            mark_startup_degraded(state, "服务入口缺失；嵌入式界面仍可打开");
             return;
         }
     };
-    let launcher = root.join("runtime").join("launch-internal-beyond.js");
+    let launcher = tauri_service_supervisor::service_paths(&root).launcher;
     if !launcher.exists() {
+        append_host_startup_log(state, &format!("[ERROR] launcher script missing: root={} script={}", root.display(), launcher.display()));
+        mark_startup_degraded(state, "找不到本地服务启动入口");
         return;
     }
 
     let node = match launcher_node(&root) {
         Some(node) => node,
         None => {
-            /* A packaged production Host must never fall back to PATH Node;
-            the canonical Inno payload owns the bundled runtime. */
+            let expected = tauri_service_supervisor::service_paths(&root).node;
+            append_host_startup_log(state, &format!("[ERROR] Node runtime missing: root={} executable={}", root.display(), expected.display()));
+            mark_startup_degraded(state, "找不到随应用提供的 Node 运行时");
             return;
         }
     };
-    let mut command = Command::new(node);
+    append_host_startup_log(state, &format!(
+        "Starting launcher process: executable={} script={} cwd={} runtimeMode={} rootClass={}",
+        node.display(), launcher.display(), root.display(), state.runtime.mode.as_str(), state.runtime.root_class
+    ));
+    let mut command = Command::new(&node);
     command
         .arg(&launcher)
         .current_dir(&root)
         .env("IB_LAUNCH_NO_OPEN", "1")
         .env("IB_TAURI_HOST", "1")
+        .env("IB_HOME_NODE_AUTOSTART", "1")
+        .env("IB_TAURI_HOST_INSTANCE_ID", &state.host_session_id)
         .env(RUNTIME_MODE_ENV, state.runtime.mode.as_str())
         .env(RUNTIME_ROOT_CLASS_ENV, state.runtime.root_class)
         .env("IB_RUNTIME_PRODUCT_VERSION", &state.runtime.product_version)
@@ -5144,24 +5583,100 @@ fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
 
     let child = match command.spawn() {
         Ok(child) => child,
-        Err(_) => return,
+        Err(error) => {
+            append_host_startup_log(state, &format!(
+                "[ERROR] launcher process spawn failed: executable={} script={} cwd={} kind={:?} error={}",
+                node.display(), launcher.display(), root.display(), error.kind(), error
+            ));
+            mark_startup_degraded(state, "无法启动本地服务协调器");
+            return;
+        }
     };
-    state.launcher_pid.store(child.id(), Ordering::Release);
+    let launcher_pid = child.id();
+    let launcher_started_at = unix_time_ms();
+    state.launcher_pid.store(launcher_pid, Ordering::Release);
+    state.launcher_started_at_ms.store(launcher_started_at, Ordering::Release);
     state.launcher_done.store(false, Ordering::Release);
+    state.upsert_service(HostOwnedService {
+        service_kind: "launcher".to_string(),
+        port: 0,
+        pid: launcher_pid,
+        spawned_by_host: true,
+        started_at_ms: launcher_started_at,
+        host_session_id: state.host_session_id.clone(),
+        state: "PROCESS_SPAWNED".to_string(),
+    });
+
     let monitor = Arc::clone(state);
     thread::spawn(move || {
         let mut child = child;
-        let _ = child.wait();
-        inspect_launcher_result(&monitor);
-        monitor.launcher_pid.store(0, Ordering::Release);
-        monitor.launcher_done.store(true, Ordering::Release);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    inspect_launcher_result(&monitor);
+                    if !status.success() {
+                        append_host_startup_log(&monitor, &format!(
+                            "[ERROR] launcher process exited unsuccessfully: pid={} exitCode={:?} root={}",
+                            launcher_pid, status.code(), monitor.root.display()
+                        ));
+                    }
+                    monitor.launcher_pid.store(0, Ordering::Release);
+                    monitor.launcher_done.store(true, Ordering::Release);
+                    monitor.update_readiness(|runtime| {
+                        runtime.host_ready = true;
+                        runtime.launcher_ready = status.success();
+                        runtime.state = if runtime.home_node_ready && status.success() {
+                            "HOST_READY".to_string()
+                        } else {
+                            "DEGRADED".to_string()
+                        };
+                        runtime.message = if status.success() {
+                            "本地服务启动流程已完成".to_string()
+                        } else {
+                            "本地服务启动流程异常结束；请检查诊断状态".to_string()
+                        };
+                    });
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    append_host_startup_log(&monitor, &format!(
+                        "[ERROR] launcher process status failed: pid={} error={}", launcher_pid, error
+                    ));
+                    monitor.launcher_pid.store(0, Ordering::Release);
+                    monitor.launcher_done.store(true, Ordering::Release);
+                    monitor.update_readiness(|runtime| {
+                        runtime.host_ready = true;
+                        runtime.launcher_ready = false;
+                        runtime.state = "DEGRADED".to_string();
+                        runtime.message = "无法确认本地服务启动流程状态".to_string();
+                    });
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let readiness = Arc::clone(state);
+    thread::spawn(move || runtime_readiness_loop(readiness));
+}
+
+fn mark_startup_degraded(state: &HostLifecycle, message: &str) {
+    let (home_probe, _, _) = probe_home_node(state.home_node_port);
+    let home_ready = home_probe == tauri_service_supervisor::EndpointProbe::Healthy;
+    state.update_readiness(|runtime| {
+        runtime.host_ready = true;
+        runtime.launcher_ready = false;
+        runtime.home_node_ready = home_ready;
+        runtime.home_node_reason_code = tauri_service_supervisor::probe_reason_code(home_probe).map(str::to_string);
+        runtime.state = "DEGRADED".to_string();
+        runtime.message = message.to_string();
     });
 }
 
-fn terminate_exact_launcher(pid: u32) {
-    if pid == 0 {
-        return;
-    }
+fn terminate_exact_launcher(pid: u32) -> bool {
+    if pid == 0 { return false; }
 
     #[cfg(windows)]
     {
@@ -5172,44 +5687,528 @@ fn terminate_exact_launcher(pid: u32) {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         hidden_command(&mut command);
-        let _ = command.status();
+        return command.status().map(|status| status.success()).unwrap_or(false);
     }
 
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
+        return Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
     }
 }
 
-fn restart_port() -> u16 {
-    std::env::var("IB_RESTART_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port > 0)
-        .unwrap_or(DEFAULT_RESTART_PORT)
+enum LocalHttpResult {
+    ConnectionRefused,
+    Unavailable,
+    Response(u16, serde_json::Value),
 }
 
-fn request_runner_shutdown(port: u16) {
+fn decode_chunked_body(mut body: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = body.windows(2).position(|window| window == b"\r\n")?;
+        let size_line = std::str::from_utf8(&body[..line_end]).ok()?;
+        let size_text = size_line.split(';').next()?.trim();
+        let size = usize::from_str_radix(size_text, 16).ok()?;
+        body = &body[line_end + 2..];
+        if size == 0 { return Some(decoded); }
+        if body.len() < size + 2 || &body[size..size + 2] != b"\r\n" { return None; }
+        decoded.extend_from_slice(&body[..size]);
+        body = &body[size + 2..];
+    }
+}
+
+fn local_json_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    header: Option<(&str, &str)>,
+) -> LocalHttpResult {
+    let headers = header.into_iter().collect::<Vec<_>>();
+    local_json_request_with_headers(port, method, path, &headers)
+}
+
+fn local_json_request_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> LocalHttpResult {
     let address = format!("127.0.0.1:{port}");
-    let mut stream = match std::net::TcpStream::connect_timeout(
-        &address.parse().unwrap(),
-        Duration::from_millis(900),
-    ) {
-        Ok(stream) => stream,
-        Err(_) => return,
+    let socket_address = match address.parse() {
+        Ok(value) => value,
+        Err(_) => return LocalHttpResult::Unavailable,
     };
-    let request = format!(
-        "POST /shutdown HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    let mut stream = match std::net::TcpStream::connect_timeout(&socket_address, Duration::from_millis(500)) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return LocalHttpResult::ConnectionRefused,
+        Err(_) => return LocalHttpResult::Unavailable,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(700)));
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Length: 0\r\n"
     );
-    let _ = stream.write_all(request.as_bytes());
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(900)));
-    let mut response = [0_u8; 256];
-    let _ = stream.read(&mut response);
+    for (name, value) in headers {
+        if name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') &&
+            !value.contains('\r') && !value.contains('\n') {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        } else {
+            return LocalHttpResult::Unavailable;
+        }
+    }
+    request.push_str("\r\n");
+    if stream.write_all(request.as_bytes()).is_err() { return LocalHttpResult::Unavailable; }
+    let mut raw = Vec::new();
+    if stream.take(1024 * 1024).read_to_end(&mut raw).is_err() { return LocalHttpResult::Unavailable; }
+    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return LocalHttpResult::Unavailable;
+    };
+    let headers = String::from_utf8_lossy(&raw[..header_end]);
+    let status = headers.lines().next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok());
+    let Some(status) = status else { return LocalHttpResult::Unavailable; };
+    let body = &raw[header_end + 4..];
+    let decoded;
+    let body = if headers.lines().any(|line| line.to_ascii_lowercase().starts_with("transfer-encoding:") && line.to_ascii_lowercase().contains("chunked")) {
+        decoded = match decode_chunked_body(body) { Some(value) => value, None => return LocalHttpResult::Unavailable };
+        decoded.as_slice()
+    } else {
+        body
+    };
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(value) => LocalHttpResult::Response(status, value),
+        Err(_) => LocalHttpResult::Unavailable,
+    }
+}
+
+fn probe_home_node(port: u16) -> (tauri_service_supervisor::EndpointProbe, Option<serde_json::Value>, String) {
+    match local_json_request(port, "GET", "/health", None) {
+        LocalHttpResult::Response(200, value)
+            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                && value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node")
+                && service_environment_matches(&value)
+                && value.get("serving").and_then(serde_json::Value::as_bool) == Some(true) =>
+                (tauri_service_supervisor::EndpointProbe::Healthy, Some(value), String::new()),
+        LocalHttpResult::ConnectionRefused => (
+            tauri_service_supervisor::EndpointProbe::Offline, None, "home-node-offline".to_string()
+        ),
+        LocalHttpResult::Response(_, value)
+            if value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node") =>
+                (tauri_service_supervisor::EndpointProbe::UnhealthyIdentity, Some(value.clone()), value.get("failure")
+                    .and_then(|failure| failure.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Home Node reports that it cannot serve canonical writes").to_string()),
+        LocalHttpResult::Response(_, value) => (
+            tauri_service_supervisor::EndpointProbe::OccupiedUnknown,
+            Some(value),
+            "Home Node port answers with an unexpected service identity".to_string(),
+        ),
+        LocalHttpResult::Unavailable => (
+            tauri_service_supervisor::EndpointProbe::OccupiedUnknown,
+            None,
+            "Home Node endpoint is occupied or did not return valid health JSON".to_string(),
+        ),
+    }
+}
+
+fn home_node_health(port: u16) -> Result<serde_json::Value, String> {
+    let (probe, value, reason) = probe_home_node(port);
+    if probe == tauri_service_supervisor::EndpointProbe::Healthy {
+        if let Some(value) = value { return Ok(value); }
+    }
+    Err(reason)
+}
+
+fn endpoint_health(port: u16, path: &str, identity_key: &str, identity: &str) -> bool {
+    matches!(local_json_request(port, "GET", path, None), LocalHttpResult::Response(200, value)
+        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+            && service_environment_matches(&value)
+            && value.get(identity_key).and_then(serde_json::Value::as_str) == Some(identity))
+}
+
+fn refresh_owned_services(state: &HostLifecycle) {
+    let mut records = Vec::new();
+    state.runner_owned.store(false, Ordering::Release);
+    state.runner_pid.store(0, Ordering::Release);
+    state.static_owned.store(false, Ordering::Release);
+    state.static_pid.store(0, Ordering::Release);
+    let launcher_pid = state.launcher_pid.load(Ordering::Acquire);
+    if launcher_pid > 0 {
+        records.push(HostOwnedService {
+            service_kind: "launcher".to_string(),
+            port: 0,
+            pid: launcher_pid,
+            spawned_by_host: true,
+            started_at_ms: state.launcher_started_at_ms.load(Ordering::Acquire),
+            host_session_id: state.host_session_id.clone(),
+            state: "PROCESS_SPAWNED".to_string(),
+        });
+    }
+
+    if let Ok(home) = home_node_health(state.home_node_port) {
+        let pid = home.get("pid").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+        if pid > 0 {
+            let session = home.get("tauriHostSessionId").and_then(serde_json::Value::as_str).unwrap_or("");
+            records.push(HostOwnedService {
+                service_kind: "homeNode".to_string(),
+                port: state.home_node_port,
+                pid,
+                spawned_by_host: tauri_service_supervisor::owned_by_current_host(
+                    pid, session == state.host_session_id, session, &state.host_session_id
+                ),
+                started_at_ms: home.get("startedAt").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                host_session_id: session.to_string(),
+                state: if session == state.host_session_id {
+                    "ready-owned-by-current-host".to_string()
+                } else if state.previous_host_session_id.as_deref() == Some(session) {
+                    "reused-previous-host-session".to_string()
+                } else {
+                    "reused-external".to_string()
+                },
+            });
+        }
+    }
+
+    let mut runner_session_matches = false;
+    if let LocalHttpResult::Response(200, runner) = local_json_request(state.restart_port, "GET", "/status", None) {
+        if runner.get("service").and_then(serde_json::Value::as_str) == Some("InternalBeyond Restart") {
+            let pid = runner.get("pid").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+            let session = runner.get("tauriHostSessionId").and_then(serde_json::Value::as_str).unwrap_or("");
+            runner_session_matches = tauri_service_supervisor::owned_by_current_host(
+                pid, session == state.host_session_id, session, &state.host_session_id
+            );
+            state.runner_owned.store(runner_session_matches, Ordering::Release);
+            state.runner_pid.store(pid, Ordering::Release);
+            let started_at = runner.get("startedAt").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            state.runner_started_at_ms.store(started_at, Ordering::Release);
+            if pid > 0 {
+                let manager_state = if runner_session_matches {
+                    runner.get("state").and_then(serde_json::Value::as_str).unwrap_or("running").to_string()
+                } else if state.previous_host_session_id.as_deref() == Some(session) {
+                    "reused-previous-host-session".to_string()
+                } else {
+                    "reused-external".to_string()
+                };
+                records.push(HostOwnedService {
+                    service_kind: "runner".to_string(),
+                    port: state.restart_port,
+                    pid,
+                    spawned_by_host: runner_session_matches,
+                    started_at_ms: started_at,
+                    host_session_id: session.to_string(),
+                    state: manager_state,
+                });
+            }
+        }
+    } else {
+        state.runner_owned.store(false, Ordering::Release);
+    }
+
+    if runner_session_matches {
+        if let LocalHttpResult::Response(200, components) = local_json_request(state.restart_port, "GET", "/components", None) {
+            if let Some(rows) = components.get("components").and_then(serde_json::Value::as_array) {
+                for row in rows {
+                    let id = row.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
+                    let pid = row.get("pid").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+                    if id.is_empty() || pid == 0 { continue; }
+                    let note = row.get("note").and_then(serde_json::Value::as_str).unwrap_or("");
+                    let state_name = row.get("state").and_then(serde_json::Value::as_str).unwrap_or("unknown");
+                    records.push(HostOwnedService {
+                        service_kind: id.to_string(),
+                        port: row.get("port").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16,
+                        pid,
+                    spawned_by_host: runner_session_matches && note.starts_with("started by this runner"),
+                        started_at_ms: row.get("startedAt").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                        host_session_id: state.host_session_id.clone(),
+                        state: state_name.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let LocalHttpResult::Response(200, web) = local_json_request(state.static_port, "GET", "/health", None) {
+        if web.get("server").and_then(serde_json::Value::as_str) == Some("InternalBeyond Web") {
+            let pid = web.get("pid").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+            let session = web.get("tauriHostSessionId").and_then(serde_json::Value::as_str).unwrap_or("");
+            let owned = tauri_service_supervisor::owned_by_current_host(
+                pid, session == state.host_session_id, session, &state.host_session_id
+            );
+            state.static_owned.store(owned, Ordering::Release);
+            state.static_pid.store(pid, Ordering::Release);
+            let started_at = web.get("startedAt").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            state.static_started_at_ms.store(started_at, Ordering::Release);
+            if pid > 0 {
+                records.push(HostOwnedService {
+                    service_kind: "static".to_string(),
+                    port: state.static_port,
+                    pid,
+                    spawned_by_host: owned,
+                    started_at_ms: started_at,
+                    host_session_id: session.to_string(),
+                    state: if owned {
+                        "owned".to_string()
+                    } else if state.previous_host_session_id.as_deref() == Some(session) {
+                        "reused-previous-host-session".to_string()
+                    } else {
+                        "reused-external".to_string()
+                    },
+                });
+            }
+        }
+    } else {
+        state.static_owned.store(false, Ordering::Release);
+    }
+    state.merge_services(records);
+}
+
+fn runtime_readiness_loop(state: Arc<HostLifecycle>) {
+    let started = Instant::now();
+    loop {
+        if state.shutdown_requested.load(Ordering::Acquire) { return; }
+        let (home_probe, _, _) = probe_home_node(state.home_node_port);
+        let home_ready = home_probe == tauri_service_supervisor::EndpointProbe::Healthy;
+        let home_reason = tauri_service_supervisor::probe_reason_code(home_probe).map(str::to_string);
+        let bridge_ready = Some(endpoint_health(state.bridge_port, "/health", "server", "IB Bridge"));
+        let active_ready = Some(endpoint_health(state.active_port, "/health", "service", "internal-beyond-active-messages"));
+        let static_ready = Some(endpoint_health(state.static_port, "/health", "server", "InternalBeyond Web"));
+        let launcher_done = state.launcher_done.load(Ordering::Acquire);
+        let host_ready = launcher_done || started.elapsed() >= TAURI_STARTUP_BUDGET;
+        let launcher_ready = state.runtime_status().launcher_ready;
+        let optional_failed = bridge_ready == Some(false) || active_ready == Some(false) || static_ready == Some(false);
+        let verdict = tauri_service_supervisor::runtime_verdict(
+            host_ready, launcher_ready, home_ready, optional_failed
+        );
+        let message = if home_probe == tauri_service_supervisor::EndpointProbe::OccupiedUnknown {
+            "Home Node 端口被未知服务占用；未启动重复进程，canonical Memory 写入保持关闭".to_string()
+        } else if home_probe == tauri_service_supervisor::EndpointProbe::UnhealthyIdentity {
+            "Home Node 已响应但未通过 serving 检查；canonical Memory 写入保持关闭".to_string()
+        } else if !host_ready {
+            "正在等待本地服务启动与健康检查".to_string()
+        } else if !home_ready {
+            "Home Node 不可用，canonical Memory 写入保持关闭".to_string()
+        } else if optional_failed {
+            "Home Node 已就绪，部分可选服务不可用".to_string()
+        } else {
+            "本地服务已就绪".to_string()
+        };
+        state.update_readiness(|runtime| {
+            runtime.host_ready = host_ready;
+            runtime.home_node_ready = home_ready;
+            runtime.home_node_reason_code = home_reason;
+            runtime.bridge_ready = bridge_ready;
+            runtime.active_ready = active_ready;
+            runtime.static_ready = static_ready;
+            runtime.state = match verdict.state {
+                tauri_service_supervisor::RuntimeState::HostStarting => "HOST_STARTING".to_string(),
+                tauri_service_supervisor::RuntimeState::HostReady => "HOST_READY".to_string(),
+                tauri_service_supervisor::RuntimeState::Degraded => "DEGRADED".to_string(),
+            };
+            runtime.message = message;
+        });
+        refresh_owned_services(&state);
+        thread::sleep(if host_ready { Duration::from_secs(2) } else { Duration::from_millis(300) });
+    }
+}
+
+fn request_runner_shutdown(port: u16, expected_pid: u32, session_id: &str) -> bool {
+    let identity = match local_json_request(port, "GET", "/status", None) {
+        LocalHttpResult::Response(200, value) => value,
+        _ => return false,
+    };
+    let identity_matches = identity.get("service").and_then(serde_json::Value::as_str) == Some("InternalBeyond Restart")
+        && identity.get("pid").and_then(serde_json::Value::as_u64) == Some(expected_pid as u64)
+        && identity.get("tauriHostSessionId").and_then(serde_json::Value::as_str) == Some(session_id)
+        && service_environment_matches(&identity);
+    if !identity_matches { return false; }
+    let mut headers = vec![("X-IB-Tauri-Host-Session", session_id)];
+    let dev_instance = std::env::var("IB_DEV_INSTANCE_ID").unwrap_or_default();
+    let dev_token = std::env::var("IB_DEV_SESSION_TOKEN").unwrap_or_default();
+    if dev_mode_enabled() {
+        headers.push(("X-IB-Dev-Instance", dev_instance.as_str()));
+        headers.push(("X-IB-Dev-Session", dev_token.as_str()));
+    }
+    matches!(local_json_request_with_headers(port, "POST", "/__tauri/shutdown", &headers),
+        LocalHttpResult::Response(202, value) if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+fn request_static_shutdown(port: u16, expected_pid: u32, session_id: &str) -> bool {
+    let identity = match local_json_request(port, "GET", "/health", None) {
+        LocalHttpResult::Response(200, value) => value,
+        _ => return false,
+    };
+    if identity.get("server").and_then(serde_json::Value::as_str) != Some("InternalBeyond Web")
+        || identity.get("pid").and_then(serde_json::Value::as_u64) != Some(expected_pid as u64)
+        || identity.get("tauriHostSessionId").and_then(serde_json::Value::as_str) != Some(session_id)
+        || !service_environment_matches(&identity) {
+        return false;
+    }
+    let mut headers = vec![("X-IB-Tauri-Host-Session", session_id)];
+    let dev_instance = std::env::var("IB_DEV_INSTANCE_ID").unwrap_or_default();
+    let dev_token = std::env::var("IB_DEV_SESSION_TOKEN").unwrap_or_default();
+    if dev_mode_enabled() {
+        headers.push(("X-IB-Dev-Instance", dev_instance.as_str()));
+        headers.push(("X-IB-Dev-Session", dev_token.as_str()));
+    }
+    matches!(local_json_request_with_headers(port, "POST", "/__tauri/shutdown", &headers),
+        LocalHttpResult::Response(202, value) if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+fn runner_matches_host(state: &HostLifecycle) -> bool {
+    matches!(local_json_request(state.restart_port, "GET", "/status", None),
+        LocalHttpResult::Response(200, value)
+            if value.get("service").and_then(serde_json::Value::as_str) == Some("InternalBeyond Restart")
+                && value.get("pid").and_then(serde_json::Value::as_u64) == Some(state.runner_pid.load(Ordering::Acquire) as u64)
+                && value.get("tauriHostSessionId").and_then(serde_json::Value::as_str) == Some(state.host_session_id.as_str())
+                && service_environment_matches(&value))
+}
+
+fn static_matches_host(state: &HostLifecycle) -> bool {
+    matches!(local_json_request(state.static_port, "GET", "/health", None),
+        LocalHttpResult::Response(200, value)
+            if value.get("server").and_then(serde_json::Value::as_str) == Some("InternalBeyond Web")
+                && value.get("pid").and_then(serde_json::Value::as_u64) == Some(state.static_pid.load(Ordering::Acquire) as u64)
+                && value.get("tauriHostSessionId").and_then(serde_json::Value::as_str) == Some(state.host_session_id.as_str())
+                && service_environment_matches(&value))
+}
+
+fn script_for_owned_service(root: &Path, kind: &str) -> Option<PathBuf> {
+    let paths = tauri_service_supervisor::service_paths(root);
+    match kind {
+        "homeNode" => Some(paths.home_node),
+        "bridge" => Some(root.join("services").join("ib-bridge-service.js")),
+        "active" => Some(root.join("services").join("active-message-service.js")),
+        _ => None,
+    }
+}
+
+fn owned_service_identity_responds(service: &HostOwnedService) -> bool {
+    match service.service_kind.as_str() {
+        "homeNode" => matches!(local_json_request(service.port, "GET", "/health", None),
+            LocalHttpResult::Response(_, value)
+                if value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node")),
+        "bridge" => endpoint_health(service.port, "/health", "server", "IB Bridge"),
+        "active" => endpoint_health(service.port, "/health", "service", "internal-beyond-active-messages"),
+        _ => false,
+    }
+}
+
+fn stop_owned_component(state: &HostLifecycle, service: &HostOwnedService, deadline: Instant) -> bool {
+    let Some(script) = script_for_owned_service(&state.root, &service.service_kind) else { return false; };
+    if !service.spawned_by_host || service.host_session_id != state.host_session_id { return false; }
+    if !node_process_identity_matches(state, service, &script) { return true; }
+    if owned_service_identity_responds(service) {
+        let accepted = matches!(local_json_request(service.port, "POST", "/__shutdown", None),
+            LocalHttpResult::Response(202, value) if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true));
+        if accepted {
+            while Instant::now() < deadline {
+                if !node_process_identity_matches(state, service, &script) { return true; }
+                thread::sleep(Duration::from_millis(200));
+            }
+        } else {
+            thread::sleep(Duration::from_millis(300));
+        }
+    }
+    if node_process_identity_matches(state, service, &script) {
+        terminate_verified_node(state, service, &script)
+    } else {
+        true
+    }
+}
+
+fn stop_owned_components(state: &HostLifecycle, runner_stopped: bool) -> bool {
+    let deadline = Instant::now() + if runner_stopped { Duration::from_secs(6) } else { Duration::from_secs(10) };
+    let services = state.runtime_status().services;
+    let mut all_stopped = true;
+    for service in services.iter().filter(|service| service.spawned_by_host &&
+        matches!(service.service_kind.as_str(), "homeNode" | "bridge" | "active")) {
+        if Instant::now() >= deadline { all_stopped = false; break; }
+        let stopped = stop_owned_component(state, service, deadline);
+        all_stopped = all_stopped && stopped;
+        state.upsert_service(HostOwnedService {
+            state: if stopped { "STOPPED" } else { "ORPHANED_UNVERIFIED" }.to_string(),
+            ..service.clone()
+        });
+    }
+    all_stopped
+}
+
+fn wait_until_not_owned(mut still_owned: impl FnMut() -> bool, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if !still_owned() { return true; }
+        thread::sleep(Duration::from_millis(100));
+    }
+    !still_owned()
+}
+
+fn ps_quote(value: &str) -> String { value.replace('\'', "''") }
+
+/* A stale PID alone is never authority to kill. The fallback requires the
+   recorded Node executable, service script, PID and process creation time to
+   match the exact child this Host observed. It targets only that PID (no /T). */
+fn node_process_identity_matches(state: &HostLifecycle, service: &HostOwnedService, script: &Path) -> bool {
+    let pid = service.pid;
+    let started_at_ms = service.started_at_ms;
+    if started_at_ms == 0 || !tauri_service_supervisor::owned_by_current_host(
+        pid, service.spawned_by_host, &service.host_session_id, &state.host_session_id
+    ) { return false; }
+    let Some(node) = launcher_node(&state.root) else { return false; };
+    let script_path = match fs::canonicalize(script) { Ok(path) => normalize_windows_path(path), Err(_) => return false };
+    let node_path = match fs::canonicalize(node) { Ok(path) => normalize_windows_path(path), Err(_) => return false };
+    #[cfg(windows)]
+    {
+        let command = format!(
+            "$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' -ErrorAction SilentlyContinue; if($null -eq $p){{exit 2}}; \
+             $image='{}'; $script='{}'; $expected=[Int64]{}; \
+             if(-not [string]::Equals([string]$p.ExecutablePath,$image,[StringComparison]::OrdinalIgnoreCase)){{exit 3}}; \
+             if(([string]$p.CommandLine).IndexOf($script,[StringComparison]::OrdinalIgnoreCase) -lt 0){{exit 4}}; \
+             $created=([DateTime]$p.CreationDate).ToUniversalTime(); $actual=([DateTimeOffset]$created).ToUnixTimeMilliseconds(); \
+             if([Math]::Abs($actual - $expected) -gt 15000){{exit 5}}; exit 0",
+            ps_quote(&node_path.to_string_lossy()),
+            ps_quote(&script_path.to_string_lossy()),
+            started_at_ms
+        );
+        let mut verify = Command::new("powershell.exe");
+        verify.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &command]);
+        verify.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        hidden_command(&mut verify);
+        verify.status().map(|status| status.success()).unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (node_path, script_path);
+        false
+    }
+}
+
+fn terminate_verified_node(state: &HostLifecycle, service: &HostOwnedService, script: &Path) -> bool {
+    let pid = service.pid;
+    if !node_process_identity_matches(state, service, script) ||
+        !tauri_service_supervisor::safe_fallback_pid(
+            service.pid, pid, true, service.host_session_id == state.host_session_id
+        ) { return false; }
+    #[cfg(windows)]
+    {
+        let mut kill = Command::new("taskkill.exe");
+        kill.args(["/PID", &pid.to_string(), "/F"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        hidden_command(&mut kill);
+        return kill.status().map(|status| status.success()).unwrap_or(false);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (state, service, script);
+        false
+    }
 }
 
 fn stop_host_owned_services(state: &HostLifecycle) {
@@ -5217,40 +6216,105 @@ fn stop_host_owned_services(state: &HostLifecycle) {
         return;
     }
 
-    /* Give the existing launcher a short bounded window to write its final
-    boot-state. We never kill a generic node.exe; the only possible kill is
-    the exact launcher child created above, and normal close usually reaches
-    this point after it has exited. */
-    let deadline = Instant::now() + Duration::from_secs(3);
+    /* Let an in-flight launcher finish its bounded readiness pass, then refresh
+       the live PID/session record before asking any child to stop. */
+    let deadline = Instant::now() + Duration::from_secs(5);
     while !state.launcher_done.load(Ordering::Acquire) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
     }
-    if state.runner_owned.load(Ordering::Acquire) {
-        request_runner_shutdown(restart_port());
+    inspect_launcher_result(state);
+    refresh_owned_services(state);
+
+    let runner_pid = state.runner_pid.load(Ordering::Acquire);
+    let runner_was_owned = state.runner_owned.load(Ordering::Acquire) && runner_pid > 0;
+    let runner_record = state.runtime_status().services.into_iter()
+        .find(|service| service.service_kind == "runner" && service.pid == runner_pid && service.spawned_by_host);
+    let mut runner_stopped = !runner_was_owned;
+    if runner_was_owned {
+        let accepted = request_runner_shutdown(state.restart_port, runner_pid, &state.host_session_id);
+        runner_stopped = wait_until_not_owned(
+            || runner_matches_host(state),
+            if accepted { TAURI_SHUTDOWN_BUDGET } else { Duration::from_millis(700) }
+        );
+    }
+    if runner_was_owned && !runner_stopped && runner_matches_host(state) {
+        if let Some(record) = runner_record.as_ref() {
+            runner_stopped = terminate_verified_node(state, record, &state.root.join("runtime").join("local-services-runner.js"));
+        }
     }
 
-    /* If the host is closed while the launcher is still waiting, terminate only
-    the exact child process this host spawned. Its runner ownership was not
-    proven in that case, so no service shutdown is attempted. */
-    if !state.launcher_done.load(Ordering::Acquire) {
-        terminate_exact_launcher(state.launcher_pid.load(Ordering::Acquire));
+    let components_stopped = stop_owned_components(state, runner_stopped);
+
+    let static_pid = state.static_pid.load(Ordering::Acquire);
+    let static_was_owned = state.static_owned.load(Ordering::Acquire) && static_pid > 0;
+    let static_record = state.runtime_status().services.into_iter()
+        .find(|service| service.service_kind == "static" && service.pid == static_pid && service.spawned_by_host);
+    let mut static_stopped = !static_was_owned;
+    if static_was_owned {
+        let accepted = request_static_shutdown(state.static_port, static_pid, &state.host_session_id);
+        static_stopped = wait_until_not_owned(
+            || static_matches_host(state),
+            if accepted { Duration::from_secs(4) } else { Duration::from_millis(700) }
+        );
     }
+    if static_was_owned && !static_stopped && static_matches_host(state) {
+        if let Some(record) = static_record.as_ref() {
+            static_stopped = terminate_verified_node(state, record, &state.root.join("services").join("internal-beyond-server.js"));
+        }
+    }
+
+    /* The launcher is a short-lived direct child. It normally exits after
+       readiness; this fallback touches only the Child PID returned by spawn. */
+    if !state.launcher_done.load(Ordering::Acquire) {
+        if terminate_exact_launcher(state.launcher_pid.load(Ordering::Acquire)) {
+            state.launcher_done.store(true, Ordering::Release);
+        }
+    }
+
+    state.update_readiness(|runtime| {
+        runtime.host_ready = true;
+        runtime.launcher_ready = false;
+        runtime.home_node_ready = false;
+        runtime.state = "STOPPED".to_string();
+        runtime.message = if runner_stopped && components_stopped && static_stopped {
+            "Owned companion services stopped".to_string()
+        } else {
+            "Shutdown timed out; an owned process could not be safely verified for fallback termination".to_string()
+        };
+        for service in runtime.services.iter_mut() {
+            if !service.spawned_by_host { continue; }
+            let stopped = match service.service_kind.as_str() {
+                "launcher" => state.launcher_done.load(Ordering::Acquire),
+                "runner" => runner_stopped,
+                "static" => static_stopped,
+                "homeNode" | "bridge" | "active" => components_stopped,
+                _ => false,
+            };
+            service.state = if stopped { "STOPPED" } else { "ORPHANED_UNVERIFIED" }.to_string();
+        }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let dev_mode = dev_mode_enabled();
+    if let Err(error) = dev_service_environment_valid() {
+        eprintln!("IB Dev service isolation rejected startup: {error}; identityPresent={}, sessionPresent={}, sandboxPresent={}",
+            std::env::var("IB_DEV_INSTANCE_ID").is_ok(), std::env::var("IB_DEV_SESSION_TOKEN").is_ok(),
+            std::env::var("IB_DEV_SANDBOX_ROOT").is_ok());
+        return;
+    }
     let entry_mode = host_entry_mode(std::env::args_os().skip(1));
     let recovery_only = !host_starts_normal_services(entry_mode);
     let process_args = std::env::args().skip(1).collect::<Vec<_>>();
     let c35_dry_run_requested = host_requests_c35_dry_run(&process_args);
-    let recovery_policy = if matches!(runtime_mode(), Ok(RuntimeMode::Production)) {
+    let recovery_policy = if !dev_mode && matches!(runtime_mode(), Ok(RuntimeMode::Production)) {
         current_recovery_boot_policy().0
     } else {
         RecoveryBootPolicy::normal()
     };
     let restricted_recovery_page = recovery_only || recovery_policy.blocked();
-    let suppress_page_load_side_effects =
-        restricted_recovery_page || recovery_policy.suppress_services();
+    let suppress_page_load_side_effects = restricted_recovery_page || recovery_policy.suppress_services();
     let mut builder = tauri::Builder::default();
     let acceptance_document_seq = Arc::new(AtomicU32::new(0));
     let document_seq_for_events = Arc::clone(&acceptance_document_seq);
@@ -5376,20 +6440,22 @@ pub fn run() {
         without creating a second WebView profile. A running normal Host ignores
         a later recovery-only invocation; a running RecoveryOnly Host never
         launches the normal service graph. */
-        let recovery_only_instance = recovery_only;
-        builder = builder.plugin(tauri_plugin_single_instance::init(
-            move |app, args, _cwd| {
-                if !recovery_only_instance && args_request_recovery_only(&args) {
-                    return;
-                }
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            },
-        ));
-        if !restricted_recovery_page {
+        if !dev_mode {
+            let recovery_only_instance = recovery_only;
+            builder = builder.plugin(tauri_plugin_single_instance::init(
+                move |app, args, _cwd| {
+                    if !recovery_only_instance && args_request_recovery_only(&args) {
+                        return;
+                    }
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                },
+            ));
+        }
+        if !restricted_recovery_page && !dev_mode {
             builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
         }
     }
@@ -5488,16 +6554,95 @@ pub fn run() {
                 recovery_policy.active_quarantined(),
                 recovery_policy.blocked()
             ));
-            let window = tauri::WebviewWindowBuilder::from_config(app.handle(), window_config)?
-                .initialization_script(init_script)
-                .build()?;
-            let _ = window.show();
-            apply_native_window_rounding(&window);
-            let lifecycle = Arc::new(HostLifecycle::new(runtime, recovery_policy.clone()));
+            if dev_mode {
+                let mode = if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") { "synthetic" } else { "dev" };
+                let instance_id = std::env::var("IB_DEV_INSTANCE_ID").unwrap_or_default();
+                let session_token = std::env::var("IB_DEV_SESSION_TOKEN").unwrap_or_default();
+                let web_port = env_port("IB_WEB_PORT", DEFAULT_STATIC_WEB_PORT);
+                let active_port = env_port("IB_ACTIVE_PORT", DEFAULT_ACTIVE_PORT);
+                let restart_port = env_port("IB_RESTART_PORT", DEFAULT_RESTART_PORT);
+                let home_node_port = env_port("IB_HOME_NODE_PORT", DEFAULT_HOME_NODE_PORT);
+                let bridge_port = env_port("IB_BRIDGE_PORT", DEFAULT_BRIDGE_PORT);
+                let dsh_control_port = env_port("IB_DSH_CONTROL_PORT", 0);
+                let dsh_web_port = env_port("IB_DSH_WEB_PORT", 0);
+                let fake_provider_port = env_port("IB_DEV_FAKE_PROVIDER_PORT", 0);
+                let config = serde_json::json!({
+                    "mode": mode,
+                    "instanceId": instance_id,
+                    "sessionToken": session_token,
+                    "webOrigin": format!("http://127.0.0.1:{web_port}"),
+                    "activeUrl": format!("http://127.0.0.1:{active_port}"),
+                    "restartUrl": format!("http://127.0.0.1:{restart_port}"),
+                    "homeNodeUrl": format!("http://127.0.0.1:{home_node_port}"),
+                    "bridgeUrl": format!("http://127.0.0.1:{bridge_port}"),
+                    "dshControlUrl": format!("http://127.0.0.1:{dsh_control_port}"),
+                    "dshWebOrigin": format!("http://127.0.0.1:{dsh_web_port}"),
+                    "fakeProviderUrl": format!("http://127.0.0.1:{fake_provider_port}/v1/chat/completions")
+                }).to_string();
+                init_script.push_str(&format!(
+                    "if (window.top === window) {{ window.__IB_DEV_MODE__ = true; window.__IB_DEV_SERVICE_CONFIG__ = {config}; window.__IB_HOME_NODE_PORT__ = {home_node_port}; window.__IB_BRIDGE_PORT__ = {bridge_port}; window.__IB_ACTIVE_PORT__ = {active_port}; window.IB_RESTART_PORT = {restart_port}; window.__IB_ACTIVE_SCHEDULER_DISABLED__ = true; }}"
+                ));
+                if mode == "synthetic" { init_script.push_str("if (window.top === window) { window.__IB_DEV_SYNTHETIC__ = true; }"); }
+            }
+            let host_data_root = host_supervisor_data_root(app.handle());
+            let host_session_id = Uuid::new_v4().simple().to_string();
+            let lifecycle = Arc::new(HostLifecycle::new(
+                runtime,
+                recovery_policy.clone(),
+                host_data_root,
+                host_session_id,
+            ));
             app.manage(Arc::clone(&lifecycle));
             if !recovery_policy.suppress_services() {
                 spawn_existing_launcher(&lifecycle);
+            } else {
+                mark_startup_degraded(&lifecycle, "恢复保护状态暂不启动后台服务");
             }
+            if dev_mode && !recovery_policy.suppress_services() {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < deadline {
+                    if endpoint_health(lifecycle.static_port, "/health", "server", "InternalBeyond Web") { break; }
+                    thread::sleep(Duration::from_millis(150));
+                }
+            }
+            let mut window_builder = tauri::WebviewWindowBuilder::from_config(app.handle(), window_config)?
+                .initialization_script(init_script);
+            if dev_mode {
+                let data_dir = dev_sandbox_root()
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "DEV_SANDBOX_ROOT_INVALID"))?
+                    .join("webview2");
+                window_builder = window_builder.data_directory(data_dir);
+            }
+            let window = window_builder.build()?;
+            #[cfg(windows)]
+            {
+                let last_minimized = Arc::new(AtomicBool::new(false));
+                let visibility_window = window.clone();
+                let visibility_state = Arc::clone(&last_minimized);
+                window.on_window_event(move |event| {
+                    if !matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+                        return;
+                    }
+                    let Ok(minimized) = visibility_window.is_minimized() else {
+                        return;
+                    };
+                    if visibility_state.swap(minimized, Ordering::AcqRel) == minimized {
+                        return;
+                    }
+
+                    let visible = !minimized;
+                    let webview_window = visibility_window.clone();
+                    if let Err(error) = webview_window.with_webview(move |webview| unsafe {
+                        if let Err(error) = webview.controller().SetIsVisible(visible) {
+                            eprintln!("[WEBVIEW_VISIBILITY] SetIsVisible({visible}) failed: {error:?}");
+                        }
+                    }) {
+                        eprintln!("[WEBVIEW_VISIBILITY] dispatch failed: {error}");
+                    }
+                });
+            }
+            let _ = window.show();
+            apply_native_window_rounding(&window);
             }
             Ok(())
         });
@@ -5522,7 +6667,8 @@ pub fn run() {
     } else if recovery_policy.blocked() {
         builder
     } else {
-        builder.invoke_handler(tauri::generate_handler![
+        #[cfg(debug_assertions)]
+        let builder = builder.invoke_handler(tauri::generate_handler![
             list_project_docs,
             search_project_docs,
             read_project_doc,
@@ -5531,8 +6677,25 @@ pub fn run() {
             credential_resolve,
             acknowledge_recovery_first_boot,
             finalize_recovery,
-            home_node_desktop_credential
-        ])
+            home_node_desktop_credential,
+            tauri_runtime_status,
+            ib_dev_snapshot_load,
+            ib_dev_snapshot_mark_imported
+        ]);
+        #[cfg(not(debug_assertions))]
+        let builder = builder.invoke_handler(tauri::generate_handler![
+            list_project_docs,
+            search_project_docs,
+            read_project_doc,
+            project_knowledge_status,
+            credential_status,
+            credential_resolve,
+            acknowledge_recovery_first_boot,
+            finalize_recovery,
+            home_node_desktop_credential,
+            tauri_runtime_status
+        ]);
+        builder
     };
 
     builder

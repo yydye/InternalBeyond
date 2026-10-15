@@ -51,7 +51,15 @@ async function clearChatImages(){
 }
 async function clearAllMemories(){
   if(!confirm('⚠ 确定要清空整个记忆库？\n\n所有记忆将被永久删除。'))return;
-  const all=await dbGetAll('memories');for(const m of all){await dbDelete('memories',m.id)}
+  let deleted=0;
+  try{
+    const all=await dbGetAll('memories');
+    for(const m of all){await dbDelete('memories',m.id);deleted++}
+  }catch(error){
+    if(typeof window._memoryUiMutationFailure==='function')window._memoryUiMutationFailure('清空',error,deleted);
+    else toast('Memory 清空失败，Home Node 未确认全部删除。');
+    return;
+  }
   toast('记忆库已清空');if(typeof renderMemories==='function')renderMemories();/* fix: 原函数名 renderMemoryList 早已改名，守卫使其成为死代码，清空后列表不刷新 */updateDangerStorageInfo();
 }
 async function clearAllLetters(){
@@ -314,8 +322,8 @@ function _ibQueueToolResult(author,name,ok,detail,actorId,scope){
    且执行也不入账（观测面显示 toolCalls=0 而工具真的跑了）。
    这里让 XML 执行走**同一套** beforeCall/settleCall —— 不新建预算、不新建
    guard、不给 XML 单独配额。
-   口径：只有调用方**显式传入 guard** 时才介入（ictx.guard）。没有 guard 的
-   调用面（如回滚路径、独立测试）行为逐字不变。 */
+   口径：调用方必须传入活动 guard（ictx.guard）；缺失时拒绝执行，避免 XML 工具
+   从未建立预算周期的 Provider/遗留调用面绕过裁定。 */
 function _ibGuardOf(ictx){
   var g=ictx&&ictx.guard;
   return (g&&typeof g.beforeCall==='function')?g:null;
@@ -323,9 +331,10 @@ function _ibGuardOf(ictx){
 /* 与 FC 的 runRound 同款：授权 → 执行 → 结算。返回非 null 表示"未执行/已替换结果"。 */
 function _ibGuardAllow(g,op){
   var d=null;
-  try{ d=g.beforeCall(op&&op.name,op&&op.args,{sName:op&&op.name,kind:'xml-tool'}); }catch(e){ d=null; }
+  if(!g||typeof g.beforeCall!=='function')d={allowed:false,reason:'no-active-cycle'};
+  else try{ d=g.beforeCall(op&&op.name,op&&op.args,{sName:op&&op.name,kind:'xml-tool'}); }catch(e){ d=null; }
   if(d&&d.allowed)return null;
-  var reason=(d&&d.reason)||'tool-budget-exhausted';
+  var reason=(d&&d.reason)||(!g?'no-active-cycle':'tool-budget-exhausted');
   var blocked={type:'tool',name:(op&&op.name)||'',ok:false,guardBlocked:true,guardReason:reason,
     reason:'工具执行已熔断（'+reason+'）',args:String((op&&op.args)||'')};
   _ibToolPendingResults.push({actor:'',images:[],text:'- 工具「'+((op&&op.name)||'')+'」：未执行 · 已熔断（'+reason+'）'});
@@ -337,17 +346,37 @@ function _ibGuardSettle(g,op,r){
     g.settleCall(op&&op.name,op&&op.args,{ok:ok,reason:(r&&r.reason)||'',guardTimedOut:false});
   }catch(e){}
 }
+function _ibTurnTraceTool(traceId,name,status,fields){
+  try{
+    if(traceId&&typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.turnTraceEvent==='function'){
+      return window.IBModelCore.turnTraceEvent(traceId,'tool_execution',Object.assign({toolName:String(name||''),toolStatus:String(status||'')},fields||{}));
+    }
+  }catch(e){}
+  return null;
+}
 /* 执行一次 ws_tool 操作，返回结果对象（渲染层据此出卡片） */
 async function _ibExecToolOp(op,author,ictx,actorId,scope){
   var _g=_ibGuardOf(ictx);
+  var _traceId=String((ictx&&ictx._ibTurn&&ictx._ibTurn.traceId)||'');
   /* ② P11-3D.1 · fc="1" 的卡片**不是一次新的调用**：它是原生 FC 通道执行完之后
      由宿主序列化出来的渲染标签（_ibExecToolOpInner 会按台账回查填卡，不执行任何东西）。
      如果这里也走一遍授权，一次真实的工具执行就会在账本里记成两次
      （toolCalls=2 而真实执行 1 次），去重/重试判定随之全部失真 —— 本次开发真实踩到过。
      口径因此与"执行"对齐：**只有真的要去执行时才裁定**。 */
   var _replay=!!(op&&op.fc);
-  if(_g&&!_replay){ var _deny=_ibGuardAllow(_g,op); if(_deny)return _deny; }
-  var _r=await _ibExecToolOpInner(op,author,actorId,scope);
+  if(!_replay){
+    var _deny=_ibGuardAllow(_g,op);
+    if(_deny){_ibTurnTraceTool(_traceId,op&&op.name,'blocked',{reasonCode:_deny.guardReason||'tool-budget-exhausted',toolCount:1});return _deny;}
+    _ibTurnTraceTool(_traceId,op&&op.name,'started',{toolCount:1});
+  }
+  var _r;
+  try{_r=await _ibExecToolOpInner(op,author,actorId,scope)}
+  catch(_toolError){if(!_replay)_ibTurnTraceTool(_traceId,op&&op.name,'failed',{toolCount:1,errorCategory:'tool_execution'});throw _toolError}
+  if(!_replay){
+    if(_r&&_r.pendingConfirm){_r.traceId=_traceId;_ibTurnTraceTool(_traceId,op&&op.name,'pending_confirmation',{toolCount:1});}
+    else _ibTurnTraceTool(_traceId,op&&op.name,(_r&&_r.ok===true)?'succeeded':'failed',
+      {toolCount:1,resultChars:String((_r&&(_r.response||_r.output||''))||'').length});
+  }
   /* ③ 执行后结算：工具没执行（fc 回查/预检失败）就不结算；
      pendingConfirm 与成功一样算"本次调用已了结"，避免被误判成失败重试。 */
   var _settleable=!!(_r&&(_r.fed===true||_r.pendingConfirm===true));
@@ -397,8 +426,7 @@ async function _ibExecToolOpInner(op,author,actorId,scope){
   if(!cfg.enabled)return{type:'tool',name:op.name||'',ok:false,reason:'外部工具功能未启用（API 设置页可开启）'};
   if(op.truncated)return{type:'tool',name:op.name||'',ok:false,reason:'输出被截断，未执行；请完整重发'};
   if(!op.name)return{type:'tool',name:'',ok:false,reason:'缺少工具名（name 属性为空或无法解析）'};
-  var tool=(cfg.tools||[]).find(function(t){return t.name===op.name})
-        ||(cfg.tools||[]).find(function(t){return t.name.toLowerCase()===String(op.name).toLowerCase()});
+  var tool=(cfg.tools||[]).find(function(t){return t.name===op.name});
   if(!tool)return{type:'tool',name:op.name,ok:false,reason:'未找到该工具（名称须与配置完全一致）'};
   var rawArgs=String(op.args||'').trim(),args={};
   if(rawArgs){
@@ -423,6 +451,7 @@ async function _ibConfirmToolFromCard(btn,ctx,card){
   var _csc=(ctx&&typeof ctx.friendId==='string'&&ctx.friendId)
     ?{friendId:ctx.friendId,threadId:(ctx.threadId?String(ctx.threadId):null)}:null;
   var r;
+  try{
   if(typeof IBNET!=='undefined'&&/^bridge\./.test(String(ctx.name||''))){
     var _br=await IBNET.execOp(ctx.name,args);
     r={ok:_br.ok,detail:_br.ok?(_br.response||''):((_br.reason||'')+(_br.response?' · '+_br.response:'')),images:_br.images||[]};
@@ -433,11 +462,18 @@ async function _ibConfirmToolFromCard(btn,ctx,card){
     _ibToolPendingResults.push(Object.assign({actor:ctx.author,actorId:String(ctx.actorId||''),images:(r&&r.images)||[]},_csc,{text:'- 工具「'+ctx.name+'」：'+(r.ok?'成功':'失败')+(r.detail?' · '+String(r.detail).slice(0,4000):'')}));
   }else{
     var cfg=await getIbTools();
+    if(!cfg.enabled){toast('外部工具已关闭，未执行');btn.disabled=false;btn.textContent='执行';return}
     var tool=(cfg.tools||[]).find(function(t){return t.name===ctx.name});
     if(!tool){toast('工具不存在或已删除');btn.disabled=false;btn.textContent='执行';return}
     r=await _ibToolFetch(tool,args);
     _ibQueueToolResult(ctx.author,ctx.name,r.ok,r.detail,ctx.actorId||'',_csc);
   }
+  }catch(_confirmToolError){
+    _ibTurnTraceTool(String((ctx&&ctx.traceId)||''),ctx&&ctx.name,'failed',{toolCount:1,errorCategory:'tool_execution'});
+    throw _confirmToolError;
+  }
+  _ibTurnTraceTool(String((ctx&&ctx.traceId)||''),ctx&&ctx.name,r&&r.ok?'succeeded':'failed',
+    {toolCount:1,resultChars:String((r&&r.detail)||'').length});
   btn.remove();
   var t=card.querySelector('.ws-op-text');
   if(t)t.innerHTML=esc(r.ok?'工具调用完成':'工具调用失败')+' · <b>'+esc(ctx.name)+'</b>';

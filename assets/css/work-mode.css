@@ -1,0 +1,1801 @@
+﻿/* ============================================================================
+   归墟 Work — Agent Workspace（UI-P2 Stage B）
+   ----------------------------------------------------------------------------
+   独立一级工作台：左侧项目与任务导航 · 中央任务主体 · 按需 Inspector。
+
+   契约（不得破坏，见 tests/test_work_mode_consent_ui.js）：
+     · .wm-workspace-grid 仍是工作台主网格容器
+     · .wm-inspector-content 必须保持独立可滚动（overflow: auto）
+     · body.wm-work-mode-active #page-overlay 必须保持收起（旧子页遮罩不得压暗本页）
+     · #page-work-mode 内 68 个 wm-* ID 全部存在且唯一；控件只能被 CSS 隐藏，不得从 DOM 移除
+
+   主题：只消费 core.css 语义 token。唯一直接写出的颜色是抽屉遮罩的 alpha 层。
+   ========================================================================= */
+
+#page-work-mode {
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  animation: none;
+}
+
+/* Work 是独立工作面：收起首页背景与旧子页遮罩，本页拥有自己的工作台基底。
+   只覆盖装饰层，不触碰内容与导航层。 */
+body.wm-work-mode-active #page-overlay,
+body.wm-work-mode-active #cal-widget,
+body.wm-work-mode-active #game-mini,
+body.wm-work-mode-active #music-mini,
+body.wm-work-mode-active #fab-dock,
+body.wm-work-mode-active #ib-bridge-panel {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+body.wm-work-mode-active #bg-internal-img,
+body.wm-work-mode-active #bg-infernal-img { opacity: 0 !important; }
+
+body.wm-work-mode-active #bg-overlay,
+body.wm-work-mode-active #bg-overlay::after { opacity: 0 !important; }
+
+/* #app 在 navigation-shell.css 里带 `opacity` 进场过渡、并带 `z-index:10`，
+   会把固定抽屉困在 #app 自己的层叠上下文内。这里只取消该过渡（消除合成层），
+   **不**提升 #app —— 提升它会让 #app 盖住 z-index:100 的 #navbar。
+   抽屉在窄屏改为贴在本页内容区左侧，避开导航条所占的那条竖带（见窄屏段）。 */
+body.wm-work-mode-active #app {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+/* ── 工作台外壳 ────────────────────────────────────────────────────────── */
+/* 四级视觉纵深（Level 1 → 4）。全部为**不透明**表面：既保留层次，又不让下层
+   背景图/按钮底色透出（半透明面曾把正文对比度压到 1.3:1）。
+   每一级都用 color-mix 从既有 canvas token 推导，因此深浅主题各自成立，
+   不会出现"浅色可读、暗色打平"的情况。 */
+.wm-page {
+  --wm-nav-w: 264px;
+  --wm-inspector-w: 340px;
+  --wm-cap: 720px;
+  --wm-rail-w: 66px;
+  --wm-scrim: rgba(8, 16, 32, .38);
+
+  /* L1 应用外壳 / 头部带 */
+  --wm-surface-shell: color-mix(in srgb, var(--ib-token-canvas-subtle) 96%, #ffffff);
+  /* L2 导航层：明确后退一档（本页最深），中央工作区因此成为主体 */
+  --wm-surface-nav: color-mix(in srgb, var(--pale) 80%, var(--content-primary) 20%);
+  /* L3 工作画布：比外壳再亮一档，工作区因此"浮起来"成为主体 */
+  --wm-surface-canvas: color-mix(in srgb, var(--ib-token-canvas-subtle) 82%, #ffffff);
+  /* L4 任务焦点（入口卡 / 汇总卡）：最亮一档，配轻量阴影 */
+  --wm-surface-focus: color-mix(in srgb, var(--ib-token-canvas-subtle) 46%, #ffffff);
+  /* 侧栏与画布之间的结构线，比通用 border-soft 略实，用来"立起"导航层 */
+  --wm-edge: color-mix(in srgb, var(--border-soft) 82%, var(--content-muted) 18%);
+  --wm-shadow-focus: 0 6px 22px color-mix(in srgb, var(--content-primary) 9%, transparent);
+
+  /* #navbar 是 position:fixed，不占据文档流。所以本页整体用 padding-top 让开它；
+     不能把首个区块做成 sticky —— sticky 不预留空间，会导致网格从 y≈0 起排、
+     头部带浮动其上，出现互相覆盖。 */
+  --wm-top: 76px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100dvh;
+  margin: 0;
+  padding: var(--wm-top) 0 0;
+  /* 不加 padding-left：#page-work-mode 位于 #app 内，而 #app 已经带
+     margin-left: var(--ib-navigation-width)。再加一次会双倍偏移。 */
+  background: var(--wm-surface-shell);
+  color: var(--content-primary);
+}
+
+/* 暗色四级：与浅色同构——中央工作区是画面里**最亮**的平面，
+   导航层最暗、外壳略亮于导航，任务焦点再高一档。
+   注意 color-mix 语义：暗色与 #ffffff 混合变亮、与 #000000 混合变暗。 */
+body.theme-infernal .wm-page {
+  /* L1 外壳：比导航略亮，但仍低于画布 */
+  --wm-surface-shell: color-mix(in srgb, var(--bg-deep) 90%, #ffffff);
+  /* L2 导航层：本页最暗，明确后退 */
+  --wm-surface-nav: color-mix(in srgb, var(--bg-deep) 97%, #000000);
+  /* L3 工作画布：最亮的平面，工作区因此成为主体（留在暗色区间，不烧成灰板） */
+  --wm-surface-canvas: color-mix(in srgb, var(--bg-mid) 92%, #ffffff);
+  /* L4 任务焦点：再高一档 */
+  --wm-surface-focus: color-mix(in srgb, var(--bg-mid) 74%, #ffffff);
+  --wm-edge: color-mix(in srgb, var(--border-soft) 70%, var(--content-muted) 30%);
+  --wm-shadow-focus: 0 8px 26px color-mix(in srgb, #000000 42%, transparent);
+}
+
+.wm-page [hidden] { display: none !important; }
+
+/* 本页的静音文字需要在**每一级**表面上都达到 4.5:1，而 core.css 的
+   --content-muted（浅色 #526f96 / 暗色 #7e90b2）只对其中一部分表面成立：
+   浅色在后退后的导航底上只有 2.95:1，暗色在抬亮后的画布/卡片上只有 2.96:1。
+   两级各自收一档色深/色浅，不动色相，其余页面不受影响。 */
+.wm-page { --content-muted: #33507a; }
+body.theme-infernal .wm-page {
+  /* core.css 的 --content-muted(#7e90b2) 与 --content-secondary(#adb8d0)
+     在本页被抬亮的 L3/L4 表面上只有 2.87–4.2:1；焦点卡片内部的输入面
+     （--surface-input 在暗色是浅色叠加）更亮，元信息文字还要再上一档。
+     按"本页实际表面亮度"取一档更亮的蓝白，只动明度、不动色相。 */
+  --content-muted: #eef3fb;
+  --content-secondary: #e2eaf7;
+  --ib-token-content-muted: #eef3fb;
+  --ib-token-content-secondary: #e2eaf7;
+}
+
+/* 抽屉遮罩必须移出网格流：它若参与布局就会成为第一个网格项，
+   把导航与任务主体整体挤错列。默认不显示，仅在抽屉打开时由下方规则显示。 */
+.wm-scrim { display: none; }
+
+/* ── 头部带 ────────────────────────────────────────────────────────────── */
+.wm-page-header {
+  position: sticky;
+  top: var(--wm-top);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: 52px;
+  margin: 0;
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--wm-edge);
+  background: var(--wm-surface-shell);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--content-primary) 5%, transparent);
+}
+
+.wm-page-header > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.wm-page-header h1 {
+  margin: 0;
+  color: var(--content-primary);
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.wm-eyebrow,
+.wm-pane-kicker {
+  display: block;
+  color: var(--content-muted);
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
+.wm-page-header .wm-eyebrow {
+  display: inline;
+  letter-spacing: .04em;
+  text-transform: none;
+  font-size: 12px;
+}
+
+.wm-page-task {
+  margin: 0;
+  color: var(--content-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.wm-page-task code {
+  color: var(--content-secondary);
+  font: 400 12px/1.5 'Fira Code', Consolas, monospace;
+}
+
+.wm-page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-left: auto;
+}
+
+.wm-live-status {
+  max-width: 38ch;
+  overflow: hidden;
+  color: var(--content-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn,
+.wm-page button {
+  min-height: 32px;
+}
+
+.wm-page-toolbar .btn,
+.wm-section-heading .btn {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-input);
+  color: var(--content-primary);
+  font-size: 12px;
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+
+.wm-page-toolbar .btn:hover,
+.wm-section-heading .btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--content-primary);
+}
+
+.wm-page button:disabled { opacity: .62; cursor: not-allowed; }
+
+/* 禁用控件在 WCAG 下不受对比度约束，但暗色里 .62 透明度把文字压到 2.94:1，
+   连"这是哪个被禁用的操作"都读不清。只提高禁用态文字亮度，不动布局与尺寸。 */
+body.theme-infernal .wm-page button:disabled { color: var(--light); }
+
+/* ── 工作台主网格（类名由既有测试固定，不得改名）───────────────────────── */
+.wm-workspace-grid {
+  display: grid;
+  grid-template-columns: var(--wm-nav-w) minmax(0, 1fr);
+  align-items: start;
+  flex: 1 1 auto;
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.wm-task-navigation,
+.wm-execution-area,
+.wm-inspector { min-width: 0; }
+
+/* ── 左侧项目与任务导航 ────────────────────────────────────────────────── */
+.wm-task-navigation {
+  position: sticky;
+  top: var(--wm-top);
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--wm-top));
+  padding-right: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--wm-edge);
+  background: var(--wm-surface-nav);
+}
+
+.wm-nav-content {
+  display: grid;
+  align-content: start;
+  gap: var(--space-5);
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-3) var(--space-3) var(--space-5);
+  overflow: auto;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.wm-nav-section,
+.wm-nav-group {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* 导航分组标题必须显式压回小号 sans：
+   api-components.css 有一条全局 `.page h2{font-family:'Cormorant Garamond',serif;font-size:1.85rem}`
+   （0,1,1）。任何没被本文件更高优先级覆盖的 h2 都会被放大成衬线标题。
+   用后代选择器而非子选择器——分组里还有一层 .wm-nav-content 包裹。 */
+.wm-nav-section .wm-section-heading h2,
+.wm-nav-group .wm-section-heading h2,
+.wm-section-heading h2 {
+  margin: 0;
+  color: var(--content-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .16em;
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+.wm-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.wm-section-heading > span,
+.wm-nav-section .wm-section-heading > span,
+.wm-nav-group .wm-section-heading > span {
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+/* 防回归总闸：本页所有标题一律回到 UI sans。
+   用 :where() 把特异性降到 0，确保它只作为"零特异性兜底"存在——
+   任何本文件的其它标题规则（如 11px 导航分组标题）仍然照常胜出。
+   目的是挡住 api-components.css / pages.css 里遗留的 `.page h2/h3` 衬线规则。 */
+:where(.wm-page) :where(h1, h2, h3, h4) {
+  font-family: var(--font-ui);
+  letter-spacing: normal;
+}
+
+.wm-page .ib-form-group {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.wm-page .ib-form-group__label {
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+.wm-page .ib-select,
+.wm-page select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 28px 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-input);
+  color: var(--content-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.wm-create-task {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-input);
+  color: var(--content-primary);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wm-create-task:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+
+/* 记录列表（任务 / 结果） */
+.wm-record-list,
+.wm-provider-list,
+.wm-file-list,
+.wm-memory-record-list,
+.wm-event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wm-record-list {
+  display: grid;
+  gap: 2px;
+}
+
+.wm-record-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.wm-task-open,
+.wm-result-open {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  align-content: center;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--content-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.wm-task-open:hover,
+.wm-result-open:hover { background: var(--surface-hover); color: var(--content-primary); }
+
+.wm-task-open[aria-current="true"],
+.wm-result-open[aria-current="true"] {
+  border-left-color: var(--accent);
+  background: var(--surface-pressed);
+  box-shadow: none;
+  color: var(--content-primary);
+}
+
+.wm-task-open strong,
+.wm-result-open strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-task-open span,
+.wm-result-open span,
+.wm-record-list > li > div:first-child span {
+  color: var(--content-muted);
+  font-size: 11px;
+  letter-spacing: .04em;
+}
+
+.wm-task-cancel,
+.wm-record-list > li > .wm-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--content-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wm-task-cancel:hover,
+.wm-record-list > li > .wm-delete:hover {
+  background: var(--surface-hover);
+  color: var(--status-danger);
+}
+
+.wm-nav-empty,
+.wm-results-limit,
+.wm-muted-line,
+.wm-empty-state,
+.wm-result-run-ref {
+  margin: var(--space-1) var(--space-2);
+  color: var(--content-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ── 中央任务主体 ──────────────────────────────────────────────────────── */
+.wm-execution-area {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: calc(100dvh - var(--wm-top));
+  /* L3 工作画布：中央任务主体所在的平面，比导航层更靠前 */
+  background: var(--wm-surface-canvas);
+}
+
+.wm-run-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: 0 clamp(var(--space-5), 4vw, var(--space-8));
+  border-bottom: 1px solid var(--wm-edge);
+  background: var(--wm-surface-canvas);
+}
+
+.wm-run-header > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.wm-workflow-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 6px var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid var(--status-info);
+  border-radius: var(--radius-control);
+  background: var(--surface-panel);
+}
+
+.wm-workflow-status strong { color: var(--status-info); font-size: 12px; font-weight: 500; }
+.wm-workflow-status span { min-width: 0; color: var(--content-secondary); font-size: 11px; line-height: 1.5; }
+.wm-workflow-status .btn { min-height: 30px; padding: 0 var(--space-2); font-size: 11px; }
+.wm-workflow-status[data-state="waiting-review"] { border-left-color: var(--status-warning); }
+.wm-workflow-status[data-state="waiting-review"] strong { color: var(--status-warning); }
+.wm-workflow-status[data-state="completed"] { border-left-color: var(--status-success); }
+.wm-workflow-status[data-state="completed"] strong { color: var(--status-success); }
+.wm-workflow-status[data-state="failed"] { border-left-color: var(--status-danger); }
+.wm-workflow-status[data-state="failed"] strong { color: var(--status-danger); }
+.wm-workflow-status[data-state="cancelled"] { border-left-color: var(--content-muted); }
+.wm-workflow-status[data-state="cancelled"] strong { color: var(--content-secondary); }
+
+.wm-executor-picker {
+  display: grid;
+  flex: 0 1 220px;
+  min-width: 174px;
+  gap: var(--space-1);
+}
+
+.wm-executor-picker .ib-form-group { margin: 0; }
+.wm-executor-picker .ib-form-group__label { margin-bottom: 2px; }
+.wm-executor-picker .ib-select { min-height: 32px; font-size: 12px; }
+.wm-executor-picker .wm-muted-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wm-run-header .wm-pane-kicker {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--content-secondary);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.wm-run-header h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--content-primary);
+  font-size: 15px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  min-width: 0;
+}
+
+.wm-run-facts > div { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
+.wm-run-facts dt,
+.wm-run-facts dd { margin: 0; color: var(--content-muted); font-size: 12px; }
+.wm-run-facts dd { color: var(--content-secondary); }
+
+.wm-run-header > .btn { flex: 0 0 auto; min-height: 32px; }
+
+/* 中央滚动区：所有状态在此排布 */
+.wm-stage-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: clamp(var(--space-6), 8vh, 96px) clamp(var(--space-5), 4vw, var(--space-8)) var(--space-8);
+}
+
+.wm-stage-cap {
+  width: 100%;
+  max-width: var(--wm-cap);
+  margin: 0 auto;
+}
+
+/* 运行中 / 已完成是"工作主体"页：起点与左栏对齐，不做居中留白 */
+.wm-stage-flow { max-width: 860px; margin: 0; }
+
+.wm-stage-flow--2col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 264px;
+  align-items: start;
+  gap: clamp(var(--space-5), 3vw, var(--space-8));
+  max-width: 1120px;
+}
+
+/* ── 空状态：居中任务入口 ──────────────────────────────────────────────── */
+.wm-work-state {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  text-align: center;
+}
+
+.wm-empty-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-4);
+  place-items: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  color: var(--content-secondary);
+  font-size: 18px;
+}
+
+.wm-work-state h3 {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--content-primary);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.wm-work-state p {
+  max-width: 46ch;
+  margin: 0 0 var(--space-5);
+  color: var(--content-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.wm-entry-card {
+  width: 100%;
+  /* L4 任务焦点：最靠前的面 + 结构线 + 轻量阴影（不用厚重阴影/卡片套卡片） */
+  border: 1px solid var(--wm-edge);
+  border-radius: var(--radius-card);
+  background: var(--wm-surface-focus);
+  box-shadow: var(--wm-shadow-focus);
+  text-align: left;
+}
+
+.wm-entry-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: var(--space-2) var(--space-4);
+}
+
+.wm-entry-row + .wm-entry-row { border-top: 1px solid var(--border-soft); }
+
+.wm-entry-row__glyph { flex: 0 0 auto; width: 20px; color: var(--content-muted); text-align: center; }
+.wm-entry-row__label { flex: 0 0 auto; color: var(--content-primary); font-size: 15px; }
+
+.wm-entry-row__range {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--content-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-entry-row__range b {
+  color: var(--content-secondary);
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+}
+
+.wm-entry-row__control { flex: 0 0 auto; display: flex; justify-content: flex-end; }
+
+.wm-entry-row__hint {
+  margin: 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  border-top: 1px solid var(--border-soft);
+  color: var(--content-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.wm-work-state .btn,
+.wm-entry-row__go {
+  min-height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  border-radius: 8px;
+  background: var(--ib-token-accent-soft);
+  color: var(--content-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wm-state-caption {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+/* ── 授权态：逐项核对卡 ────────────────────────────────────────────────── */
+.wm-auth-card {
+  display: grid;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: var(--space-5);
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid var(--status-warning);
+  border-radius: var(--radius-card);
+  background: var(--surface-panel);
+}
+
+.wm-auth-card h3 { margin: 0; color: var(--content-primary); font-size: 16px; font-weight: 500; text-align: left; }
+.wm-auth-card p { margin: 0; color: var(--content-secondary); font-size: 13px; line-height: 1.7; text-align: left; }
+
+.wm-auth-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; text-align: left; }
+
+.wm-auth-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--content-secondary);
+  font-size: 13px;
+}
+
+.wm-auth-list li::before { content: "✓"; flex: 0 0 auto; color: var(--status-success); font-size: 12px; }
+.wm-auth-list li[data-state="pending"] { color: var(--content-muted); }
+.wm-auth-list li[data-state="pending"]::before { content: "○"; color: var(--content-muted); }
+
+.wm-auth-card .btn { justify-self: start; min-height: 32px; }
+
+/* ── 运行中：步骤 / 工具调用 / 进度 ────────────────────────────────────── */
+.wm-running-state {
+  display: grid;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  justify-items: stretch;
+  text-align: left;
+}
+
+.wm-run-head { display: grid; gap: var(--space-2); margin-bottom: var(--space-5); }
+
+.wm-state-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  color: var(--content-primary);
+  font-size: 13px;
+  letter-spacing: .04em;
+}
+
+.wm-state-indicator::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-info);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-info) 60%, transparent);
+  animation: wm-breathe 2.6s var(--transition) infinite;
+}
+
+@keyframes wm-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-info) 50%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--status-info) 0%, transparent); }
+}
+
+.wm-progress {
+  height: 2px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--content-muted) 22%, transparent);
+}
+
+.wm-progress > span { display: block; width: 42%; height: 100%; background: var(--status-info); }
+
+.wm-running-state > p {
+  max-width: none;
+  margin: 0;
+  color: var(--content-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+  text-align: left;
+}
+
+/* 执行轨迹 */
+.wm-trace-section { min-width: 0; margin-top: var(--space-2); }
+
+.wm-memory-provenance { display: grid; gap: var(--space-2); min-width: 0; margin-top: var(--space-2); }
+.wm-memory-provenance-purpose,
+.wm-memory-provenance-result { margin: 0; color: var(--content-secondary); font-size: 12px; line-height: 1.6; }
+.wm-memory-provenance-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.wm-memory-provenance-list li { display: grid; gap: 3px; min-width: 0; padding-top: var(--space-2); border-top: 1px solid var(--border-soft); }
+.wm-memory-provenance-list strong { color: var(--content-primary); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.wm-memory-provenance-list span { color: var(--content-secondary); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.wm-memory-provenance-list code { color: var(--content-muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; white-space: normal; }
+
+/* ── 无 Run 时的中央区：只留空状态 ────────────────────────────────────────
+   执行轨迹与 Result 区域在没有任何 Run / Result 时不应出现，否则中央区域会
+   多出两条空标题与空容器，破坏"空状态单一聚焦点"的设计意图。
+   用 #page-work-mode[data-work-state] 前缀提高优先级，避免被分段规则覆盖；
+   这里只控制"显示与否"，不影响 JS 对 hidden 属性的既有写入。 */
+#page-work-mode[data-work-state="empty"] .wm-trace-section,
+#page-work-mode[data-work-state="empty"] .wm-run-summary,
+#page-work-mode[data-work-state="empty"] .wm-runtime-diagnostics,
+#page-work-mode[data-work-state="empty"] .wm-memory-provenance,
+#page-work-mode[data-work-state="empty"] .wm-execution-stages,
+#page-work-mode[data-work-state="empty"] .wm-result-section {
+  display: none;
+}
+
+/* ── 阶段区内的段落标题 ──────────────────────────────────────────────────
+   显式收口字号：遗留的全局标题规则（api-components.css / pages.css）会以
+   em 为单位放大它们，实测「执行轨迹」曾被放大到 16.38px / 700。 */
+.wm-section-heading h3,
+.wm-events-title,
+.wm-result-title {
+  margin: 0;
+  color: var(--content-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  line-height: 1.5;
+}
+
+/* ── 让开固定导航条 ──────────────────────────────────────────────────────
+   #navbar 是 position:fixed。实测其包围盒为 top:10 / bottom:54，
+   因此本页内容从 96px 起排布才算真正让开（同时给头部带留出呼吸）。
+   注意：网格内的 .wm-run-header 与 .wm-task-navigation 必须与头部带起点对齐，
+   所以这里对齐的是 --wm-top 本身，而不是额外再加一段 margin。 */
+.wm-run-header { margin-top: 0; }
+
+.wm-run-summary { margin: 0 auto var(--space-4); }
+.wm-run-summary > .wm-section-heading { align-items: baseline; }
+.wm-summary-kicker,
+.wm-summary-label { display: block; color: var(--content-muted); font-size: var(--fs-meta); letter-spacing: 0.1em; line-height: 1.5; }
+.wm-summary-kicker { margin-bottom: 2px; }
+.wm-summary-status { flex: 0 0 auto; color: var(--content-secondary); font-size: var(--fs-meta); }
+.wm-run-summary[data-state="waiting-review"] .wm-summary-status,
+.wm-run-summary[data-state="not-started"] .wm-summary-status { color: var(--status-warning); }
+.wm-run-summary[data-state="running"] .wm-summary-status { color: var(--status-info); }
+.wm-run-summary[data-state="failed"] .wm-summary-status { color: var(--status-danger); }
+.wm-run-summary[data-state="completed"] .wm-summary-status { color: var(--status-success); }
+.wm-run-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-2) var(--space-4); }
+.wm-summary-item { min-width: 0; padding-top: var(--space-2); border-top: 1px solid var(--border-soft); }
+.wm-summary-item strong { display: block; margin-top: 3px; color: var(--content-primary); font-size: var(--fs-body); font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.wm-summary-item p { margin: 3px 0 0; color: var(--content-secondary); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+.wm-summary-identity { grid-column: 1 / -1; }
+.wm-summary-reason { grid-column: 1 / -1; }
+.wm-summary-reason p { margin-top: var(--space-1); }
+
+/* 导航分组标题右侧的计数保持在最右 */
+.wm-nav-group .wm-section-heading h2 { margin-right: auto; }
+.wm-nav-group .wm-section-heading { gap: var(--space-2); }
+
+.wm-execution-stages { min-width: 0; margin: var(--space-4) 0; }
+.wm-execution-stages > .wm-section-heading { align-items: baseline; }
+.wm-stage-current { color: var(--content-secondary); font-size: 11px; }
+.wm-runtime-diagnostics { min-width: 0; margin: var(--space-3) 0 var(--space-4); }
+.wm-runtime-diagnostics > .wm-section-heading { align-items: baseline; }
+.wm-diagnostics-kicker,
+.wm-diagnostics-label { display: block; color: var(--content-muted); font-size: var(--fs-meta); letter-spacing: 0.1em; line-height: 1.5; }
+.wm-diagnostics-kicker { margin-bottom: 2px; }
+.wm-runtime-diagnostics[data-state="failed"] #wm-diagnostics-state { color: var(--status-danger); }
+.wm-runtime-diagnostics[data-state="completed"] #wm-diagnostics-state { color: var(--status-success); }
+.wm-runtime-diagnostics[data-state="running"] #wm-diagnostics-state,
+.wm-runtime-diagnostics[data-state="cancel_requested"] #wm-diagnostics-state { color: var(--status-info); }
+.wm-runtime-diagnostics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-2) var(--space-4); }
+.wm-runtime-diagnostic { min-width: 0; padding-top: var(--space-2); border-top: 1px solid var(--border-soft); }
+.wm-runtime-diagnostic strong { display: block; margin-top: 3px; color: var(--content-primary); font-size: var(--fs-body); font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.wm-runtime-diagnostic p { margin: 3px 0 0; color: var(--content-secondary); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+.wm-diagnostics-completed { display: grid; gap: 2px; margin: 3px 0 0; padding-left: 1.4em; color: var(--content-secondary); font-size: var(--fs-meta); line-height: 1.55; }
+.wm-diagnostics-completed .wm-diagnostics-empty { list-style: none; margin-left: -1.4em; color: var(--content-muted); }
+.wm-diagnostics-hint { margin: var(--space-2) 0 0; padding-top: var(--space-2); border-top: 1px solid var(--border-soft); color: var(--content-secondary); font-size: var(--fs-meta); line-height: 1.6; }
+.wm-execution-stages > .wm-muted-line { margin: var(--space-1) 0 var(--space-2); font-size: 11px; line-height: 1.55; }
+.wm-execution-stage-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wm-execution-stage-list > li {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  min-height: 76px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-panel);
+}
+.wm-execution-stage-list > li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.wm-execution-stage-list > li strong { min-width: 0; color: var(--content-secondary); font-size: 11px; font-weight: 500; }
+.wm-execution-stage-list > li .wm-stage-state { flex: 0 0 auto; color: var(--content-muted); font-size: 10px; }
+.wm-execution-stage-list > li p { margin: 0; color: var(--content-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.wm-execution-stage-list > li[data-state="active"] { border-color: color-mix(in srgb, var(--status-info) 42%, var(--border-soft)); background: color-mix(in srgb, var(--status-info) 7%, var(--surface-panel)); }
+.wm-execution-stage-list > li[data-state="active"] strong,
+.wm-execution-stage-list > li[data-state="active"] .wm-stage-state { color: var(--status-info); }
+.wm-execution-stage-list > li[data-state="done"] strong,
+.wm-execution-stage-list > li[data-state="done"] .wm-stage-state { color: var(--status-success); }
+.wm-execution-stage-list > li[data-state="last-observed"] { border-color: color-mix(in srgb, var(--status-warning) 38%, var(--border-soft)); }
+.wm-execution-stage-list > li[data-state="last-observed"] .wm-stage-state { color: var(--status-warning); }
+.wm-execution-stage-list > li[data-state="unrecorded"] { border-style: dashed; }
+
+.wm-event-list { display: grid; }
+
+.wm-event-list > li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
+  min-height: 0;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wm-event-sequence {
+  display: grid;
+  gap: 2px;
+  color: var(--content-muted);
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+  text-align: center;
+}
+
+/* 状态字形由行的 data-state 生成，避免额外 span 被全局 [aria-hidden] 规则隐藏 */
+.wm-event-list > li[data-state] .wm-event-sequence::before {
+  content: "○";
+  display: block;
+  color: var(--content-muted);
+  text-align: center;
+}
+
+.wm-event-list > li[data-state="done"] .wm-event-sequence::before { content: "✓"; color: var(--status-success); }
+.wm-event-list > li[data-state="active"] .wm-event-sequence::before { content: "●"; color: var(--status-info); }
+
+.wm-event-list > li > div {
+  grid-row: 1;
+  grid-column: 2;
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.wm-event-list > li > div > * { min-width: 0; }
+
+.wm-event-list strong { color: var(--content-primary); font-size: 14px; font-weight: 500; }
+.wm-event-list > li > div span { color: var(--content-secondary); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+
+.wm-event-list time {
+  grid-row: 1;
+  grid-column: 3;
+  color: var(--content-muted);
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+  white-space: nowrap;
+}
+
+.wm-event-tool {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  color: var(--content-secondary);
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.wm-scope-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-soft);
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+.wm-scope-summary b { color: var(--content-secondary); font-weight: 500; }
+
+/* ── 已完成：报告 + 本次 Run 上下文 ───────────────────────────────────── */
+.wm-result-section { min-width: 0; }
+
+.wm-result-view { min-width: 0; overflow-wrap: anywhere; }
+
+.wm-review-section {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: var(--space-4) 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-soft);
+}
+.wm-review-section > h3 { margin: 0; color: var(--content-primary); font-size: 14px; font-weight: 500; }
+.wm-review-section > .wm-review-note,
+.wm-review-section > .wm-review-empty { margin: 0; color: var(--content-muted); font-size: 12px; line-height: 1.65; }
+.wm-review-findings,
+.wm-review-evidence,
+.wm-review-confirmations { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.wm-result-view .wm-review-finding {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-panel);
+}
+.wm-review-finding-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
+.wm-review-finding-heading h4 { margin: 0; color: var(--content-primary); font-size: 14px; font-weight: 500; }
+.wm-review-severity {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--content-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.wm-review-finding > .btn { justify-self: start; min-height: 36px; }
+.wm-review-evidence > li,
+.wm-review-confirmations > li {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-soft);
+}
+.wm-review-evidence strong,
+.wm-review-confirmations strong { color: var(--content-primary); font-size: 12px; font-weight: 500; }
+.wm-review-evidence span,
+.wm-review-confirmations span { color: var(--content-secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.wm-review-file-id { color: var(--content-muted) !important; font: 400 10px/1.5 'Fira Code', Consolas, monospace !important; }
+.wm-review-source-missing { color: var(--status-warning) !important; }
+
+.wm-result-view > h3 {
+  margin: 0 0 var(--space-2);
+  color: var(--content-primary);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.wm-report-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-4);
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+.wm-report-facts b { color: var(--content-secondary); font-weight: 500; }
+
+.wm-report-summary {
+  max-width: 78ch;
+  margin: 0 0 var(--space-4);
+  color: var(--content-primary);
+  font-size: 15px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+}
+
+.wm-result-view article {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wm-result-view article h4 {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--content-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.wm-result-view article p {
+  max-width: 78ch;
+  margin: 0;
+  color: var(--content-secondary);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.wm-result-view article .btn { justify-self: start; min-height: 34px; }
+
+.wm-result-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0 var(--space-2); }
+.wm-result-actions .btn { min-height: 40px; }
+.wm-export-note,
+.wm-export-status { margin: var(--space-1) 0 var(--space-3); color: var(--content-muted); font-size: 11px; line-height: 1.55; }
+.wm-export-status:empty { display: none; }
+
+.wm-finding-location {
+  color: var(--content-muted) !important;
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+}
+
+.wm-report-artifacts { display: grid; margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+
+.wm-report-artifacts > li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--border-soft);
+  color: var(--content-primary);
+  font-size: 13px;
+}
+
+.wm-report-artifacts > li > span:last-child { color: var(--content-muted); font-size: 12px; }
+
+.wm-summary-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--wm-edge);
+  border-radius: var(--radius-card);
+  background: var(--wm-surface-focus);
+  box-shadow: var(--wm-shadow-focus);
+}
+
+.wm-summary-card > h3 { margin: 0; color: var(--content-primary); font-size: 14px; font-weight: 500; }
+
+.wm-summary-list { display: grid; gap: var(--space-2); margin: 0; }
+.wm-summary-list > div { display: grid; gap: 2px; }
+.wm-summary-list dt { color: var(--content-muted); font-size: 11px; letter-spacing: .04em; }
+.wm-summary-list dd {
+  margin: 0;
+  color: var(--content-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.wm-summary-note { margin: 0; color: var(--content-muted); font-size: 12px; line-height: 1.65; }
+
+.wm-derived-badge { display: inline-block; color: var(--content-secondary); font-size: 12px; overflow-wrap: anywhere; }
+
+.wm-result-run-ref { font-family: 'Fira Code', Consolas, monospace; overflow-wrap: anywhere; }
+
+/* ── Inspector：按需展开的任务上下文与授权 ─────────────────────────────── */
+.wm-inspector { position: relative; }
+
+.wm-inspector-details {
+  position: sticky;
+  top: var(--wm-top);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: calc(100dvh - var(--wm-top));
+  /* Inspector 是独立前景层：比画布与左栏都更靠前，用最亮（浅色）/ 最亮一档
+     （暗色）的表面 + 向左的轻量阴影把它从工作画布上"抬起来"，
+     而不是与画布同色、看起来像普通第三列。 */
+  border-left: 1px solid var(--wm-edge);
+  background: var(--wm-surface-focus);
+  box-shadow: -12px 0 28px color-mix(in srgb, var(--content-primary) 7%, transparent);
+  color: var(--content-primary);
+  /* 覆盖态下必须自成一个绘制层：否则它被外壳祖先的合成层影响，
+     实测出现"背景色已是不透明 rgb 却仍透出下层正文"的合成问题。 */
+  isolation: isolate;
+}
+
+.wm-inspector-details:not([open]) {
+  display: none;
+}
+
+.wm-inspector-details > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  min-height: 48px;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--ib-token-canvas-subtle);
+  color: var(--content-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.wm-inspector-details > summary::-webkit-details-marker,
+.wm-inspector-group > summary::-webkit-details-marker,
+.wm-responsive-disclosure > summary::-webkit-details-marker { display: none; }
+
+.wm-inspector-details > summary .wm-pane-kicker {
+  display: inline-block;
+  color: var(--content-muted);
+  font-size: 11px;
+}
+
+.wm-inspector-details > summary strong { font-size: 14px; font-weight: 500; }
+
+.wm-inspector-close {
+  margin-left: auto;
+  color: var(--content-muted);
+  font-size: 12px;
+}
+
+/* 契约：Inspector 披露内容独立可滚动 */
+.wm-inspector-content {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  height: auto;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 0 var(--space-4) var(--space-5);
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.wm-inspector-footer {
+  flex: 0 0 auto;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-soft);
+  background: var(--ib-token-canvas-subtle);
+}
+
+.wm-consent-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.wm-consent-actions .btn {
+  min-width: 0;
+  min-height: 40px;
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-input);
+  color: var(--content-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wm-consent-actions .btn:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.wm-consent-actions .btn-primary { border-color: color-mix(in srgb, var(--accent) 46%, transparent); background: var(--ib-token-accent-soft); }
+.wm-consent-actions #wm-revoke-consent { grid-column: auto; }
+
+.wm-inspector-group {
+  min-width: 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.wm-inspector-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+  color: var(--content-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.wm-inspector-group > summary::after {
+  content: "+";
+  flex: 0 0 auto;
+  color: var(--content-muted);
+  font: 400 13px/1 var(--font-ui);
+}
+
+.wm-inspector-group[open] > summary::after { content: "−"; }
+
+.wm-inspector-group > summary strong { font-size: 13px; font-weight: 500; }
+.wm-inspector-group > summary span {
+  min-width: 0;
+  color: var(--content-muted);
+  font-size: 12px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.wm-inspector-group-content {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 0 0 var(--space-4);
+}
+
+.wm-provider-list li {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wm-provider-list li > strong { color: var(--content-primary); font-size: 13px; font-weight: 500; }
+.wm-provider-list li > span,
+.wm-provider-list li > code { color: var(--content-muted); font-size: 12px; overflow-wrap: anywhere; }
+.wm-provider-list li > code { font-family: 'Fira Code', Consolas, monospace; }
+
+.wm-file-list { display: grid; }
+.wm-file-list li { border-top: 1px solid var(--border-soft); }
+
+.wm-file-list label {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.wm-file-list input,
+.wm-memory-record-list input,
+.wm-memory-consent input,
+.wm-memory-derived-consent input,
+.wm-explicit-confirm input,
+.wm-storage-confirm input,
+.wm-memory-confirm input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
+.wm-file-list label > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wm-file-path {
+  color: var(--content-primary);
+  font: 400 12px/1.6 'Fira Code', Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.wm-file-size { color: var(--content-muted); font-size: 11px; }
+
+.wm-memory-recall,
+.wm-memory-candidate { min-width: 0; overflow-wrap: anywhere; }
+
+.wm-memory-recall > p,
+.wm-memory-candidate article p,
+.wm-memory-confirm {
+  color: var(--content-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.wm-memory-record-list {
+  display: grid;
+  max-height: 260px;
+  overflow: auto;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.wm-memory-record-list > li { min-width: 0; border-top: 1px solid var(--border-soft); }
+
+.wm-memory-record-list label {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: var(--space-2) 0;
+}
+
+.wm-memory-record-list label > span { display: grid; min-width: 0; gap: var(--space-1); }
+.wm-memory-record-list strong { color: var(--content-primary); font-size: 12px; font-weight: 600; }
+
+.wm-memory-record-content {
+  color: var(--content-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.wm-memory-source,
+.wm-memory-context-size { color: var(--content-muted); font-size: 11px; overflow-wrap: anywhere; }
+
+.wm-memory-consent,
+.wm-memory-derived-consent,
+.wm-explicit-confirm,
+.wm-storage-confirm,
+.wm-memory-confirm {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  min-height: 40px;
+  margin: var(--space-2) 0;
+  color: var(--content-primary);
+  font-size: 12px;
+  line-height: 1.7;
+  cursor: pointer;
+}
+
+.wm-memory-candidate { padding-top: var(--space-3); border-top: 1px solid var(--border-soft); }
+
+.wm-memory-candidate .wm-section-heading h2 {
+  margin: 0;
+  color: var(--content-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wm-memory-candidate article { padding: var(--space-2) 0; border-top: 1px solid var(--border-soft); }
+
+.wm-memory-candidate-content {
+  max-width: 90ch;
+  margin: var(--space-2) 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--content-primary);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.wm-memory-candidate .btn { min-height: 40px; }
+.wm-result-view > .wm-procedure-candidate-start,
+.wm-procedure-editor .btn,
+.wm-procedure-editor-action,
+#wm-memory-candidate-write { min-height: 44px; }
+
+.wm-procedure-editor {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.wm-procedure-field {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--content-secondary);
+  font-size: 12px;
+}
+
+.wm-procedure-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-input);
+  color: var(--content-primary);
+  font: inherit;
+  line-height: 1.6;
+}
+
+textarea.wm-procedure-input {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.wm-consent-state {
+  margin: var(--space-1) 0 var(--space-3);
+  color: var(--content-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wm-permission-summary {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--ib-token-canvas-subtle);
+}
+
+.wm-permission-summary > p {
+  margin: 0;
+  color: var(--content-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.wm-permission-summary > p:first-child { color: var(--content-primary); font-weight: 500; }
+.wm-permission-summary > ul { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.wm-permission-summary > ul > li { color: var(--content-muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+
+.wm-purpose { margin: 0; color: var(--content-secondary); font-size: 12px; line-height: 1.7; }
+
+.wm-coding-task { display: grid; gap: var(--space-2); color: var(--content-primary); font-size: 12px; }
+.wm-coding-task textarea {
+  width: 100%; min-height: 88px; resize: vertical; padding: var(--space-3);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-card);
+  background: var(--surface-subtle); color: var(--content-primary); font: inherit; line-height: 1.6;
+}
+
+.wm-storage-warning {
+  padding: var(--space-3);
+  border-left: 2px solid var(--status-warning);
+  background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  color: var(--content-primary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.wm-page button:focus-visible,
+.wm-page summary:focus-visible,
+.wm-page select:focus-visible,
+.wm-page input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ── 响应式 ────────────────────────────────────────────────────────────── */
+
+/* ≥1440：Inspector 在栏内，成为第三列 */
+@media (min-width: 1440px) {
+  .wm-workspace-grid:has(.wm-inspector-details[open]) {
+    grid-template-columns: var(--wm-nav-w) minmax(0, 1fr) var(--wm-inspector-w);
+  }
+
+  .wm-workspace-grid:has(.wm-inspector-details[open]) .wm-stage-cap { max-width: 100%; }
+  .wm-workspace-grid:has(.wm-inspector-details[open]) .wm-stage-flow { max-width: 100%; }
+  .wm-workspace-grid:has(.wm-inspector-details[open]) .wm-stage-flow--2col { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ≤1439：Inspector 变右侧抽屉，正文不重新居中 */
+@media (max-width: 1439px) {
+  .wm-inspector-details {
+    position: fixed;
+    z-index: 9200;
+    top: var(--wm-top);
+    right: 0;
+    width: min(380px, calc(100vw - var(--ib-navigation-width)));
+    height: calc(100dvh - var(--wm-top));
+    border-left: 1px solid var(--border-strong);
+    /* 覆盖式抽屉必须完全不透明，且不带任何玻璃/模糊效果 */
+    background: var(--ib-token-canvas-subtle);
+    box-shadow: var(--shadow-panel);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    isolation: isolate;
+  }
+
+  .wm-scrim {
+    display: none;
+    position: fixed;
+    z-index: 9100;
+    top: var(--wm-top);
+    right: 0;
+    bottom: 0;
+    left: var(--ib-navigation-width);
+    background: var(--wm-scrim);
+  }
+
+  /* 仅当抽屉真的打开时才压暗正文 */
+  .wm-workspace-grid:has(.wm-inspector-details[open]) .wm-scrim { display: block; }
+}
+
+/* 结果页右侧上下文列在中等宽度退到底部，避免挤压正文 */
+@media (max-width: 1279px) {
+  .wm-stage-flow--2col { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
+}
+
+@media (max-width: 1023px) {
+  .wm-page { --wm-nav-w: 232px; }
+  .wm-stage-cap { max-width: 100%; }
+}
+
+/* 窄屏：导航折叠 · 单列 · 取消 Run 固定到 Inspector 底部 */
+@media (max-width: 760px) {
+  /* 窄屏把左侧导航收成图标栏：否则 260px 的导航会吃掉一多半屏宽 */
+  body.wm-work-mode-active {
+    --ib-navigation-width: var(--ib-navigation-collapsed);
+  }
+
+  body.wm-work-mode-active #navbar { width: var(--ib-navigation-width); }
+
+  body.wm-work-mode-active #navbar .nav-label,
+  body.wm-work-mode-active #navbar .nav-brand-label,
+  body.wm-work-mode-active #navbar .nav-group-label,
+  body.wm-work-mode-active #navbar .nav-action-label,
+  body.wm-work-mode-active #navbar .nav-user-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  body.wm-work-mode-active #navbar .nav-shell-header {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: var(--space-2);
+    padding: 0;
+  }
+
+  body.wm-work-mode-active #navbar .nav-brand { justify-content: center; }
+
+  body.wm-work-mode-active #navbar .nav-links a {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 0;
+    padding-inline: 0;
+  }
+
+  body.wm-work-mode-active #navbar .nav-glyph { width: 32px; height: 32px; }
+
+  body.wm-work-mode-active #navbar .nav-actions {
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-1);
+  }
+
+  body.wm-work-mode-active #navbar .nav-actions .nav-btn { width: 100%; height: 32px; padding: var(--space-1); }
+  body.wm-work-mode-active #navbar .nav-action-glyph { display: inline; }
+  body.wm-work-mode-active #navbar .nav-user-id { grid-column: 1 / -1; justify-content: center; }
+
+  .wm-page-header {
+    padding: 0 var(--space-3);
+    min-height: 44px;
+  }
+
+  .wm-page-header h1 { font-size: 14px; }
+  .wm-page-header .wm-page-task,
+  .wm-page-header .wm-eyebrow { display: none; }
+  .wm-live-status { display: none; }
+  .wm-page-toolbar .btn { min-height: 32px; padding: 0 var(--space-2); font-size: 12px; }
+
+  .wm-workspace-grid,
+  .wm-workspace-grid:has(.wm-inspector-details[open]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wm-task-navigation {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .wm-nav-content { padding: var(--space-2) var(--space-3) var(--space-3); overflow: visible; }
+
+  /* 窄屏把导航分区收成可折叠的标题行，避免吃掉整个首屏 */
+  .wm-responsive-disclosure > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 40px;
+    margin: 0;
+    color: var(--content-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .wm-responsive-disclosure > summary strong {
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  .wm-responsive-disclosure > summary::after {
+    content: "⌄";
+    margin-left: auto;
+    color: var(--content-muted);
+  }
+
+  .wm-responsive-disclosure[open] > summary::after { content: "⌃"; }
+  .wm-responsive-disclosure > summary .wm-pane-kicker { display: none; }
+  .wm-nav-group { border-top: 1px solid var(--border-soft); }
+
+  .wm-execution-area { min-height: 0; }
+
+  .wm-run-header {
+    flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--wm-surface-canvas);
+  }
+
+  .wm-run-header > div:first-child { flex: 1 1 auto; }
+  .wm-executor-picker { order: 3; flex: 1 1 100%; display: flex; align-items: center; min-width: 0; }
+  .wm-executor-picker .ib-form-group { flex: 0 1 210px; }
+  .wm-executor-picker .wm-muted-line { flex: 1 1 auto; }
+  .wm-run-header > #wm-cancel-run { order: 2; }
+
+  .wm-run-header h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 14px;
+    white-space: normal;
+  }
+
+  .wm-workflow-status { grid-template-columns: minmax(0, 1fr) auto; }
+  .wm-workflow-status span { grid-column: 1 / -1; grid-row: 2; }
+  .wm-workflow-status .btn { grid-column: 2; grid-row: 1; min-height: 44px; }
+
+  .wm-run-facts { display: none; }
+  .wm-execution-stage-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wm-execution-stage-list > li { min-height: 68px; }
+
+  /* 取消 Run 在窄屏由 Inspector 固定底部承载：仍是最初那个 #wm-cancel-run
+     元素，用 CSS 重新排布它，不复制 DOM（复制会得到没有绑定的死按钮）。 */
+  .wm-inspector-details #wm-cancel-run {
+    width: 100%;
+    min-height: 40px;
+    margin-top: var(--space-2);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-control);
+    background: var(--surface-input);
+    color: var(--content-primary);
+    font-size: 13px;
+  }
+
+  .wm-inspector-footer { padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom)); }
+
+  .wm-consent-actions { grid-template-columns: minmax(0, 1fr); }
+  .wm-consent-actions #wm-revoke-consent { grid-column: auto; }
+
+  .wm-stage-body { padding: var(--space-4) var(--space-3) var(--space-8); }
+
+  .wm-work-state { justify-items: start; text-align: left; }
+  .wm-work-state h3 { font-size: 18px; }
+  .wm-state-caption { justify-content: flex-start; }
+
+  .wm-entry-row { flex-wrap: wrap; gap: var(--space-1) var(--space-2); min-height: 0; padding: var(--space-2) var(--space-3); }
+  .wm-entry-row__label { flex: 1 1 auto; }
+  .wm-entry-row__range { flex: 1 1 100%; white-space: normal; }
+  .wm-entry-row__control { flex: 0 0 auto; }
+  .wm-page .ib-select, .wm-page select { min-height: 40px; }
+  .wm-work-state .btn, .wm-entry-row__go { min-height: 40px; }
+
+  .wm-event-list > li { grid-template-columns: 30px minmax(0, 1fr); }
+  .wm-event-list > li > div { grid-column: 2; }
+  .wm-event-list time { grid-row: auto; grid-column: 2; }
+
+  /* 窄屏抽屉改为贴在本页内容区：左边界让开 #navbar 所占竖带，
+     否则抽屉会与 z-index:100 的导航条叠在同一条带上（抽屉被困在 #app
+     的层叠上下文内，无法靠 z-index 越过导航条）。 */
+  .wm-inspector-details {
+    top: 0;
+    right: 0;
+    left: var(--ib-navigation-width);
+    width: auto;
+    height: 100dvh;
+    border-left: 0;
+  }
+
+  .wm-scrim { top: 0; left: var(--ib-navigation-width); }
+
+  .wm-consent-actions { grid-template-columns: minmax(0, 1fr); }
+  .wm-consent-actions #wm-revoke-consent { grid-column: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wm-page *,
+  .wm-page *::before,
+  .wm-page *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto;
+    transition-duration: .01ms !important;
+  }
+}

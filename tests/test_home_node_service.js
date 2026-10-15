@@ -200,12 +200,12 @@ function runNode(args, env) {
        浏览器接缝的默认状态是"未生效但可用"，而不是任何致命错误。
        断言方式：检查 bootstrap 里的降级分支存在且不抛错（静态契约）。 */
     const bootstrap = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'home-node-bootstrap.js'), 'utf8').replace(/^\uFEFF/, '');
-    check('isolation.remote 缺失时早退（不抛错、不阻塞页面）',
-      /if \(!_remoteFactory\) \{ warn\('remote-driver-missing'/.test(bootstrap));
-    check('isolation.authority 缺失时早退（不抛错、不阻塞页面）',
-      /if \(!_authorityFactory\) return;/.test(bootstrap));
-    check('isolation.core 接缝缺失时早退（不抛错、不阻塞页面）',
-      /if \(!window\.__ibCoreDb\) \{ console\.warn/.test(bootstrap));
+    check('isolation.remote 缺失时降级并早退（不抛错、不阻塞页面）',
+      /if \(!_remoteFactory\) \{[\s\S]*?exposeDegradedMemorySurface\('memory-bootstrap-dependency-missing:home-node-client'\);[\s\S]*?warn\('remote-driver-missing'[\s\S]*?return;\s*\}/.test(bootstrap));
+    check('isolation.authority 缺失时降级并早退（不抛错、不阻塞页面）',
+      /if \(!_authorityFactory\) \{[\s\S]*?exposeDegradedMemorySurface\('memory-bootstrap-dependency-missing:chat-authority'\);[\s\S]*?return;\s*\}/.test(bootstrap));
+    check('isolation.core 接缝缺失时降级并早退（不抛错、不阻塞页面）',
+      /if \(!window\.__ibCoreDb\) \{[\s\S]*?exposeDegradedMemorySurface\('memory-bootstrap-dependency-missing:core-db'\);[\s\S]*?return;\s*\}/.test(bootstrap));
     check('isolation.file:// 承载显式降级而不是静默失败',
       /FILE_ORIGIN/.test(bootstrap) && /file-origin/.test(fs.readFileSync(path.join(ROOT, 'assets', 'js', 'chat-authority.js'), 'utf8')));
     check('isolation 同步失败只记日志，不抛出到页面',

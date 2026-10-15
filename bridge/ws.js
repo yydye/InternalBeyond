@@ -4,6 +4,8 @@
    原逻辑逐字不变（含 close 帧先发后置 closed 的修复注释）。 */
 'use strict';
 
+const { constantTimeTokenMatch } = require('./util');
+
 function createWs(deps) {
   const config = deps.config;
   const executeTool = deps.executeTool;
@@ -59,6 +61,7 @@ function createWs(deps) {
       this.fragOp = null;
       this.closed = false;
       this.alive = true;
+      this.tokenAuthenticated = false;
       this.remote = req.socket && (req.socket.remoteAddress || '');
     }
 
@@ -163,17 +166,20 @@ function createWs(deps) {
       }
       if (t === 'pong') return;
       if (t === 'hello') {
-        const token = String(msg.token || '');
-        const expect = String(config.token || '');
-        if (expect && token !== expect) {
+        const token = String(msg.token || '').trim();
+        const expect = String(config.token || '').trim();
+        const matchedToken = constantTimeTokenMatch(token, expect);
+        if ((expect && !matchedToken) || (!expect && token)) {
           this.close(4401, 'unauthorized');
           return;
         }
+        this.tokenAuthenticated = matchedToken;
         this.authorized = true;
         wsSockets.add(this);
         this.sendFrame(0x1, Buffer.from(JSON.stringify({
           type: 'hello_ack', ok: true, server: serverName, version: version,
-          tools: tools.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema }))
+          toolAuthRequired: !this.tokenAuthenticated,
+          tools: this.tokenAuthenticated ? tools.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema, alwaysConfirm: x.alwaysConfirm === true })) : []
         })));
         return;
       }
@@ -183,11 +189,17 @@ function createWs(deps) {
       }
       if (voiceRuntime && voiceRuntime.handleEvent(this, msg)) return;
       if (t === 'tool_catalog_request') {
-        this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_catalog', tools: tools.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema })) })));
+        this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_catalog', toolAuthRequired: !this.tokenAuthenticated,
+          tools: this.tokenAuthenticated ? tools.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema, alwaysConfirm: x.alwaysConfirm === true })) : [] })));
         return;
       }
       if (t === 'tool_call') {
         const id = String(msg.id || '');
+        if (!this.tokenAuthenticated) {
+          this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_result', id, ok: false,
+            error: 'Bridge 工具执行需要先在服务端配置访问令牌，并在客户端填写同一令牌。', text: '' })));
+          return;
+        }
         const name = String(msg.name || '');
         const args = msg.args && typeof msg.args === 'object' ? msg.args : {};
         Promise.resolve(executeTool(name, args)).then(r => {

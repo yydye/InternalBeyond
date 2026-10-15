@@ -152,7 +152,7 @@ JSON Schema：[`packaging-job.schema.json`](../../tools/packaging-control-plane/
 本轮在当前工作区运行了 Inspector 和 dry-run Planner，没有执行计划中的步骤：
 
 - `ready: true`；required toolchain、source closure、version、output/temp permission 和 free-space checks 为 PASS。
-- 当前 `release-manifest.resolve()` 返回闭包完整（386 个文件），且不包含 `tools/packaging-control-plane/`；新控制面没有进入产品 payload。
+- P35.0 本机只读核对时，`release-manifest.resolve()` 返回闭包完整（当时 386 个文件），且不包含 `tools/packaging-control-plane/`；这是阶段快照，不是当前发行文件数量。当前 payload 数量以每次 `release-manifest.resolve()` 和真实 Stage 对账为准；新控制面仍不得进入产品 payload。
 - `git-cleanliness: WARN`，因为工作区已有改动；`host-build-writable: WARN`，目标目录尚不存在但最近父目录可写。
 - Planner 为 `READY_WITH_WARNINGS`，`releaseEligible: false`（source dirty），`executes: false`，`publication: not-included`。
 

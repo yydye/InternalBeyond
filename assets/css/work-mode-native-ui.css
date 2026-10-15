@@ -1,0 +1,288 @@
+﻿/* ============================================================================
+   归墟 Work · DSH 原生工作台 — 宿主外壳
+   ----------------------------------------------------------------------------
+   DSH 是 iframe 内的独立文档，这里只负责归墟侧的"外壳"：分段切换 + 浮层容器 +
+   头部条。视觉语言对齐 chat.css 的浮层玻璃面板（#chat-panel）与
+   ui-primitives.css 的 .ib-page-header，只消费既有 --ib-token-* / --glass-* /
+   --radius-* token，不新增硬编码颜色。
+   ========================================================================= */
+
+#page-work-mode .wm-native-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: var(--space-4, 16px);
+  padding: 4px;
+  border: 1px solid var(--glass-border-floating);
+  border-radius: 999px;
+  background: var(--glass-bg-floating);
+  backdrop-filter: var(--glass-filter-md);
+  -webkit-backdrop-filter: var(--glass-filter-md);
+  box-shadow: var(--glass-shadow-soft);
+}
+#page-work-mode .wm-native-switch .btn {
+  min-height: 32px;
+  padding: 0 var(--space-4, 16px);
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--content-secondary);
+  font-size: var(--fs-meta, 12px);
+  letter-spacing: .02em;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+#page-work-mode .wm-native-switch .btn:hover {
+  background: var(--ib-token-surface-interactive);
+  color: var(--content-primary);
+}
+#page-work-mode .wm-native-switch [aria-pressed="true"] {
+  color: var(--ib-token-accent-brand);
+  background: var(--ib-token-accent-soft);
+}
+#page-work-mode .wm-native-switch [aria-pressed="true"]:hover {
+  background: var(--ib-token-accent-soft);
+}
+#page-work-mode .wm-native-switch .wm-native-dsh-debug {
+  align-self: center;
+  margin: 0 8px;
+  min-width: 0;
+}
+#page-work-mode .wm-native-switch .wm-native-dsh-debug > summary {
+  color: var(--content-muted);
+  font-size: var(--fs-meta, 12px);
+  cursor: pointer;
+}
+#page-work-mode .wm-native-switch .wm-native-dev-detail-body {
+  max-width: min(560px, 72vw);
+  overflow-wrap: anywhere;
+}
+
+#wm-native-candidate {
+  height: calc(100dvh - 160px);
+  min-height: 540px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--glass-border-floating);
+  border-radius: var(--radius-panel);
+  background: var(--glass-bg-floating);
+  backdrop-filter: var(--glass-filter-lg);
+  -webkit-backdrop-filter: var(--glass-filter-lg);
+  box-shadow: var(--glass-shadow-floating);
+  color: var(--content-primary);
+}
+#wm-native-candidate:not([hidden]) { display: flex; }
+#wm-native-candidate[hidden] { display: none; }
+
+.wm-native-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px) var(--space-5, 20px);
+  border-bottom: 1px solid var(--glass-border-soft);
+}
+.wm-native-header p {
+  margin: 2px 0 0;
+  color: var(--content-muted);
+  font: var(--ib-token-text-meta, var(--fs-meta, 12px) / 1.4 var(--font-ui));
+}
+.wm-native-label {
+  color: var(--content-primary);
+  font: var(--ib-token-text-section-title, 500 var(--fs-h3, 15px) / 1.3 var(--font-ui));
+}
+#wm-native-status {
+  margin: 0;
+  padding: var(--space-2, 8px) var(--space-5, 20px);
+  border-bottom: 1px solid var(--glass-border-soft);
+  color: var(--content-muted);
+  font-size: var(--fs-meta, 12px);
+}
+#wm-dsh-frame {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  background: transparent;
+}
+#wm-dsh-frame[hidden] { display: none; }
+
+.wm-dsh-install {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--space-4, 16px);
+  overflow: auto;
+  padding: clamp(var(--space-5, 20px), 5vw, var(--space-8, 32px));
+  color: var(--content-primary);
+}
+.wm-dsh-install[hidden] { display: none; }
+.wm-dsh-install-copy {
+  width: min(100%, 560px);
+  text-align: center;
+}
+.wm-dsh-online-runtime {
+  display: grid;
+  gap: var(--space-3, 12px);
+  width: min(100%, 720px);
+  padding: var(--space-4, 16px);
+  border: 1px solid var(--glass-border-soft);
+  border-radius: var(--radius-card);
+  background: var(--ib-token-surface-elevated);
+}
+.wm-dsh-online-runtime-copy h3 {
+  margin: 0;
+  color: var(--content-primary);
+  font: var(--ib-token-text-section-title, 500 var(--fs-h3, 15px)/1.35 var(--font-ui));
+}
+.wm-dsh-online-runtime-copy p {
+  margin: var(--space-1, 4px) 0 0;
+  color: var(--content-muted);
+  font: var(--ib-token-text-meta, var(--fs-meta, 12px)/1.55 var(--font-ui));
+}
+.wm-dsh-online-runtime-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+.wm-dsh-online-runtime-actions select {
+  flex: 1 1 220px;
+  min-width: min(100%, 220px);
+  min-height: 36px;
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--glass-border-soft);
+  border-radius: var(--radius-control);
+  background: var(--ib-token-canvas-subtle);
+  color: var(--content-primary);
+  font: var(--ib-token-text-control, 400 var(--fs-body, 14px)/1.4 var(--font-ui));
+}
+.wm-dsh-online-runtime-actions button:disabled,
+.wm-dsh-online-runtime-actions select:disabled { opacity: .58; cursor: not-allowed; }
+.wm-dsh-install > #wm-dsh-install-select { min-height: 40px; }
+.wm-dsh-install-kicker {
+  color: var(--content-muted);
+  font: 500 var(--fs-meta, 12px)/1.4 var(--font-ui);
+  letter-spacing: .16em;
+}
+.wm-dsh-install-copy h2 {
+  margin: var(--space-2, 8px) 0;
+  color: var(--content-primary);
+  font: var(--ib-token-text-section-title, 500 var(--fs-h2, 22px)/1.35 var(--font-reading));
+}
+.wm-dsh-install-copy p {
+  margin: var(--space-2, 8px) 0;
+  color: var(--content-secondary);
+  font: var(--ib-token-text-body, var(--fs-body, 14px)/1.75 var(--font-ui));
+}
+.wm-dsh-install-version,
+.wm-dsh-install-progress-label {
+  color: var(--content-muted) !important;
+  font: var(--ib-token-text-meta, var(--fs-meta, 12px)/1.5 var(--font-ui)) !important;
+}
+.wm-dsh-install-progress {
+  width: min(100%, 560px);
+  height: 6px;
+  overflow: hidden;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-pressed);
+  color: var(--accent);
+}
+.wm-dsh-install-progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--surface-pressed);
+}
+.wm-dsh-install-progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--motion-fast);
+}
+.wm-dsh-install-progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--accent);
+}
+.wm-dsh-install-error {
+  width: min(100%, 560px);
+  margin: 0;
+  color: var(--status-danger);
+  font-size: var(--fs-meta, 12px);
+  line-height: 1.6;
+  text-align: center;
+}
+.wm-dsh-install-error[hidden] { display: none; }
+.wm-dsh-install :focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ── 高级执行详情（旧原生 Work UI 的折叠外壳）──────────────────────────── */
+.wm-native-advanced {
+  margin-top: var(--space-4, 16px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--ib-token-canvas-subtle);
+}
+.wm-native-advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-height: 40px;
+  padding: 0 var(--space-4, 16px);
+  color: var(--content-secondary);
+  font-size: var(--fs-meta, 12px);
+  letter-spacing: .02em;
+  cursor: pointer;
+  list-style: none;
+}
+.wm-native-advanced > summary::-webkit-details-marker { display: none; }
+.wm-native-advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--content-muted);
+  transition: transform var(--motion-fast);
+}
+.wm-native-advanced[open] > summary::before { transform: rotate(90deg); }
+.wm-native-advanced > summary:hover { color: var(--content-primary); }
+
+/* --full：原生 UI 处于主导态（DSH 未选中）时，详情外壳本身不应带视觉噪音，
+   要看起来和过去的全页原生 Work UI 完全一致。 */
+.wm-native-advanced.wm-native-advanced--full {
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.wm-native-advanced.wm-native-advanced--full > summary { display: none; }
+
+/* ── 开发者详情（原始 Run ID / Session ID / revision 等技术信息）──────── */
+.wm-native-dev-detail {
+  margin: var(--space-2, 8px) var(--space-5, 20px) 0;
+}
+.wm-native-dev-detail > summary {
+  color: var(--content-muted);
+  font-size: var(--fs-meta, 12px);
+  cursor: pointer;
+  list-style: none;
+}
+.wm-native-dev-detail > summary::-webkit-details-marker { display: none; }
+.wm-native-dev-detail[open] > summary { color: var(--content-secondary); }
+.wm-native-dev-detail-body {
+  margin-top: var(--space-1, 4px);
+  color: var(--content-muted);
+  font: 400 11px/1.6 'Fira Code', Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1023px), (max-width: 760px) {
+  #wm-native-candidate {
+    height: calc(100dvh - 120px);
+    min-height: 420px;
+  }
+}
+@media (max-width: 760px) {
+  #wm-dsh-frame { min-height: 360px; }
+}

@@ -170,14 +170,16 @@
     raw = raw || {};
     var provider = str(raw.provider, 64);
     var model = str(raw.model, 256);
-    var endpoint = str(raw.endpoint, 512);
+    var routeCore = (typeof window !== 'undefined' && window.IBWorkModeProviderRoute)
+      || (typeof module === 'object' && module.exports ? require('./work-mode-provider-route.js') : null);
+    var route = routeCore && routeCore.normalize({
+      id: raw.id, credentialRef: raw.credentialRef, provider: raw.provider, model: raw.model, endpoint: raw.endpoint
+    });
     /* P34.3-B · Home Node Vault authority: publish the non-secret credentialRef;
        old configs without it fall back to character id. The Home Node resolves
        the secret from the Vault at request time (credential-access.js). */
-    var hasCredentialRef = Object.prototype.hasOwnProperty.call(raw, 'credentialRef');
-    var credentialRef = hasCredentialRef ? str(raw.credentialRef, 180) : str(raw.id, 180);
-    if (!provider || !model || !endpoint || !credentialRef) return null;
-    var spec = { provider: provider, model: model, endpoint: endpoint, credentialRef: credentialRef };
+    if (!provider || !model || !route) return null;
+    var spec = { provider: route.provider, model: route.model, endpoint: route.endpoint, credentialRef: route.credentialRef };
     var systemPrompt = str(raw.systemPrompt, 200000);
     if (systemPrompt) spec.systemPrompt = systemPrompt;
     if (raw.temperature != null) spec.temperature = num(raw.temperature, 1);

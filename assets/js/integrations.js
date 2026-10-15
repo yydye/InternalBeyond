@@ -35,12 +35,23 @@ const IBMCP = {
   cfg(){
     let c = {};
     try{ c = JSON.parse(localStorage.getItem(this.KEY) || '{}'); }catch(e){}
+    if(typeof window!=='undefined'&&window.__IB_DEV_MODE__===true){
+      const dev=window.__IB_DEV_SERVICE_CONFIG__;
+      const bridge=String(dev&&dev.bridgeUrl||'');
+      c.url=/^https?:\/\/127\.0\.0\.1:\d+$/.test(bridge)?bridge.replace(/^http:/,'ws:').replace(/^https:/,'wss:'):'';
+      c.token='';
+    }
     if(typeof c.enabled === 'undefined') c.enabled = true;
     if(typeof c.confirm === 'undefined') c.confirm = true;   // 调用前需确认, 默认开
     if(!Array.isArray(c.servers)) c.servers = [];
     return c;
   },
   save(c){ try{ localStorage.setItem(this.KEY, JSON.stringify(c)); }catch(e){} },
+  validAlias(alias){ return /^[A-Za-z0-9_-]{1,32}$/.test(String(alias||'')); },
+  validToolName(name){
+    const s=String(name==null?'':name);
+    return !!s&&s===s.trim()&&!/[\r\n\u0000]/.test(s)&&s.length<=200;
+  },
 
   /* ---- 底层 RPC: 兼容 直接JSON / SSE 包裹 两种返回; 自动管理会话头 ---- */
   async _rpc(server, method, params, _retried){
@@ -126,6 +137,8 @@ const IBMCP = {
     const c = this.cfg();
     const s = c.servers.find(x => x.alias === alias);
     if(!s) throw new Error('未找到服务器: ' + alias);
+    if(c.enabled===false||s.enabled===false)throw new Error('MCP 或该服务器已关闭');
+    if(!this.validAlias(s.alias))throw new Error('MCP 服务器别名无效：只允许字母、数字、下划线和连字符');
     delete this._sessions[alias];
 
     const init = await this._rpc(s, 'initialize', {
@@ -145,14 +158,18 @@ const IBMCP = {
       guard++;
     }while(cursor && guard < 20 && tools.length < 200);
 
-    const oldOn = {};
-    (s.tools || []).forEach(t => { oldOn[t.name] = t.enabled !== false; });
-    s.tools = tools.map(t => ({
-      name: t.name,
-      description: String(t.description || '').slice(0, 600),
-      inputSchema: t.inputSchema || { type: 'object' },
-      enabled: Object.prototype.hasOwnProperty.call(oldOn, t.name) ? oldOn[t.name] : true
-    }));
+    const oldOn = {},seenNames=Object.create(null);
+    (s.tools || []).forEach(t => { if(t&&typeof t==='object'&&this.validToolName(t.name))oldOn[t.name] = t.enabled !== false; });
+    s.tools = tools.map(t => {
+      if(!t||typeof t!=='object'||!this.validToolName(t.name)||seenNames[t.name])return null;
+      seenNames[t.name]=true;
+      return {
+        name: t.name,
+        description: String(t.description || '').slice(0, 600),
+        inputSchema: t.inputSchema || { type: 'object', properties: {} },
+        enabled: Object.prototype.hasOwnProperty.call(oldOn, t.name) ? oldOn[t.name] : true
+      };
+    }).filter(Boolean);
     s.status = 'ok';
     s.lastError = '';
     s.lastSync = Date.now();
@@ -164,11 +181,15 @@ const IBMCP = {
   enabledTools(){
     const c = this.cfg();
     if(c.enabled === false) return [];
-    const out = [];
+    const aliasCounts=Object.create(null);
+    c.servers.forEach(s=>{const alias=String(s&&s.alias||'');if(alias)aliasCounts[alias]=(aliasCounts[alias]||0)+1});
+    const out = [],seen=Object.create(null);
     c.servers.forEach(s => {
-      if(s.enabled === false) return;
+      if(s.enabled === false||!this.validAlias(s.alias)||aliasCounts[s.alias]!==1) return;
       (s.tools || []).forEach(t => {
-        if(t.enabled !== false) out.push({ alias: s.alias, tool: t });
+        if(!t||t.enabled===false||!this.validToolName(t.name))return;
+        const key=s.alias+'\u0000'+t.name;if(seen[key])return;seen[key]=true;
+        out.push({ alias: s.alias, tool: t });
       });
     });
     return out;
@@ -196,13 +217,18 @@ const IBMCP = {
 
   /* ---- 名称解析 + 调用(带会话失效重试) ---- */
   resolve(fullName){
-    let n = String(fullName || '').replace(/^mcp\./, '');
+    const full=String(fullName||'');
     const c = this.cfg();
-    for(const s of c.servers){
-      if(n.indexOf(s.alias + '.') === 0) return { server: s, toolName: n.slice(s.alias.length + 1) };
-    }
-    for(const s of c.servers){
-      if((s.tools || []).some(t => t.name === n)) return { server: s, toolName: n };
+    if(c.enabled===false||full.indexOf('mcp.')!==0)return null;
+    const n=full.slice(4),aliasCounts=Object.create(null);
+    c.servers.forEach(s=>{const alias=String(s&&s.alias||'');if(alias)aliasCounts[alias]=(aliasCounts[alias]||0)+1});
+    const matches=c.servers.filter(s=>this.validAlias(s&&s.alias)&&n.indexOf(s.alias+'.')===0)
+      .sort((a,b)=>String(b.alias).length-String(a.alias).length);
+    for(const s of matches){
+      if(s.enabled===false||aliasCounts[s.alias]!==1)continue;
+      const toolName=n.slice(String(s.alias).length+1);
+      const tool=(s.tools||[]).find(t=>t&&t.name===toolName&&t.enabled!==false&&this.validToolName(t.name));
+      if(tool)return{server:s,toolName:toolName,tool:tool};
     }
     return null;
   },
@@ -210,9 +236,13 @@ const IBMCP = {
   async call(fullName, args){
     const c = this.cfg();
     if(c.enabled === false) throw new Error('MCP 已在设置中关闭');
-    const r = this.resolve(fullName);
+    let r = this.resolve(fullName);
     if(!r) throw new Error('未找到 MCP 工具: ' + fullName);
-    if(!this._sessions[r.server.alias]) await this.connect(r.server.alias);
+    if(!this._sessions[r.server.alias]){
+      await this.connect(r.server.alias);
+      r=this.resolve(fullName);
+      if(!r)throw new Error('MCP 工具已失效或已关闭: '+fullName);
+    }
     let res;
     try{
       res = await this._rpc(r.server, 'tools/call', { name: r.toolName, arguments: args || {} });
@@ -220,6 +250,8 @@ const IBMCP = {
       // 会话可能过期: 重连再试一次
       delete this._sessions[r.server.alias];
       await this.connect(r.server.alias);
+      r=this.resolve(fullName);
+      if(!r)throw new Error('MCP 工具已失效或已关闭: '+fullName);
       res = await this._rpc(r.server, 'tools/call', { name: r.toolName, arguments: args || {} });
     }
     return this._extract(res);
@@ -679,6 +711,11 @@ const IBFC = {
     if(!ctx || !ctx.active) return { done: true };
     calls = calls || this.takeCalls(ctx);
     if(!calls.length) return { done: true };
+    const _traceId=String((ctx._ibTurn&&ctx._ibTurn.traceId)||'');
+    const _traceTool=(name,status,extra)=>{
+      try{if(_traceId&&typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.turnTraceEvent==='function')
+        window.IBModelCore.turnTraceEvent(_traceId,'tool_execution',Object.assign({toolName:String(name||''),toolStatus:String(status||'')},extra||{}))}catch(e){}
+    };
     /* 本回合的 guard 周期：**只认本回合 turn 上记着的那个实例**。
        P11-3D.1：内存里的 period 归属由 turn 显式携带，不再用"全局当前实例"
        推断 —— 全局实例在并发回合里可能属于别人，用它就等于把本次执行
@@ -690,6 +727,19 @@ const IBFC = {
     else if(ctx._guard && typeof ctx._guard.active === 'function' && ctx._guard.active()) g = ctx._guard;
     else g = this.cycleBegin(ctx, null, ctx._ibTurn);
 
+    /* A production tool round must belong to an active host-turn guard. The
+       old null-guard fallback let direct/stale runRound calls execute unbudgeted. */
+    if(!g){
+      const reason='no-active-cycle';
+      calls.forEach(c=>{
+        _traceTool(c.name,'blocked',{reasonCode:reason,toolCount:1});
+        const r={ok:false,reason:'工具执行已拒绝（'+reason+'）',response:'',guardBlocked:true,guardReason:reason};
+        ctx.ledger[this.ledgerKey(c.name,c.args)]=r;
+        try{emit('\n'+this.serialize(c,true));}catch(e){}
+      });
+      return{done:true,breaker:{reason:reason,trigger:reason}};
+    }
+
     // 任一调用需确认 → 序列化为普通标签(无 fc), 交给原有 pendingConfirm 流程, 本轮结束
     if(calls.some(c => this.needsConfirm(c))){
       calls.forEach(c => emit('\n' + this.serialize(c, false)));
@@ -697,10 +747,7 @@ const IBFC = {
     }
 
     /* ── 执行前裁定：额度 / 重复分类。被拒的调用**不进入执行** ── */
-    const decisions = calls.map(c => {
-      if(!g) return { allowed: true, kind: 'unguarded' };
-      return g.beforeCall(c.name, c.args, { sName: c.sName });
-    });
+    const decisions = calls.map(c => g.beforeCall(c.name, c.args, { sName: c.sName }));
     if(g){
       const bad = decisions.find(d => !d.allowed);
       if(bad){
@@ -720,11 +767,13 @@ const IBFC = {
       if(d.allowed && g && g.tripped()) d = { allowed: false, reason: g.tripInfo().reason };
       let r;
       if(!d.allowed){
+        _traceTool(c.name,'blocked',{reasonCode:d.reason||'tool-budget-exhausted',toolCount:1});
         r = { ok: false, reason: '工具执行已熔断（' + d.reason + '）', response: '', guardBlocked: true, guardReason: d.reason };
         results.push(r);
         try{ emit('\n' + this.serialize(c, true)); }catch(e){}
         continue;
       }
+      _traceTool(c.name,'started',{toolCount:1});
       try{
         const _deadline = (g && g.policy) ? g.policy().toolCallTimeoutMs : 0;
         if(c.name.indexOf('mcp.') === 0) r = await this.callWithDeadline(() => IBMCP.execOp(c.name, c.args), _deadline);
@@ -744,6 +793,7 @@ const IBFC = {
         r.guardVerdict = this.verdictOf(r);
       }
       ctx.ledger[this.ledgerKey(c.name, c.args)] = r;
+      _traceTool(c.name,r.ok===true?'succeeded':'failed',{toolCount:1,resultChars:String(r.response||r.text||'').length});
       results.push(r);
       emit('\n' + this.serialize(c, true));   // fc="1": finalize 只渲染卡片, 不再执行/不再排队注入
     }
@@ -1041,7 +1091,7 @@ const IBDIY = {
   mounted: false,
   esc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); },
 
-  /* 在 DIY 页渲染后调用: 找到「外部工具」卡片 → 在其后插入 MCP / 沙箱卡 + 在其内追加 FC 开关 */
+  /* 在 Settings Center「服务与集成」分类渲染后调用；以「外部工具」卡片为锚点插入 MCP / 沙箱卡。 */
   mount(){
     if(typeof document === 'undefined') return;
     const anchor = this.findToolsCard();
@@ -1149,7 +1199,14 @@ const IBDIY = {
     box.querySelector('#ib-mcp-on').onchange = e => { const cc = IBMCP.cfg(); cc.enabled = e.target.checked; IBMCP.save(cc); };
     box.querySelector('#ib-mcp-cf').onchange = e => { const cc = IBMCP.cfg(); cc.confirm = e.target.checked; IBMCP.save(cc); };
     box.querySelector('#ib-mcp-add').onclick = () => { const cc = IBMCP.cfg(); cc.servers.push({ alias: 'srv' + (cc.servers.length + 1), url: '', enabled: true, tools: [] }); IBMCP.save(cc); self.renderMcp(); };
-    box.querySelectorAll('[data-ib-mcpalias]').forEach(inp => { inp.onchange = () => { const cc = IBMCP.cfg(); cc.servers[+inp.dataset.ibMcpalias].alias = inp.value.trim() || 'srv'; IBMCP.save(cc); }; });
+    box.querySelectorAll('[data-ib-mcpalias]').forEach(inp => { inp.onchange = () => {
+      const cc=IBMCP.cfg(),i=+inp.dataset.ibMcpalias,s=cc.servers[i];if(!s)return;
+      const alias=String(inp.value||'').trim();
+      if(!IBMCP.validAlias(alias)||cc.servers.some((x,j)=>j!==i&&String(x&&x.alias||'')===alias)){
+        ibExtSay('MCP 别名必须唯一，且只允许 1–32 位字母、数字、下划线或连字符');inp.value=s.alias||'';return;
+      }
+      s.alias=alias;IBMCP.save(cc);
+    }; });
     box.querySelectorAll('[data-ib-mcpurl]').forEach(inp => { inp.onchange = () => { const cc = IBMCP.cfg(); cc.servers[+inp.dataset.ibMcpurl].url = inp.value.trim(); IBMCP.save(cc); }; });
     box.querySelectorAll('[data-ib-mcpon]').forEach(inp => { inp.onchange = () => { const cc = IBMCP.cfg(); cc.servers[+inp.dataset.ibMcpon].enabled = inp.checked; IBMCP.save(cc); }; });
     box.querySelectorAll('[data-ib-mcprounds]').forEach(inp => { inp.onchange = () => {
@@ -1216,7 +1273,7 @@ const IBDIY = {
       '<label class="ibtools-sw"><input type="checkbox" id="ib-net-tools"' + (c.toolsEnabled ? ' checked' : '') + ' class="u-native-check"> 允许后端向 AI 提供工具（高权限）</label>' +
       '<label class="ibtools-sw ibtools-sw-last"><input type="checkbox" id="ib-net-tools-confirm"' + (c.confirmTools !== false ? ' checked' : '') + ' class="u-native-check"> 后端工具调用前询问</label>' +
       '<div class="api-form-group"><label>后端地址 <span class="field-note-inline">（ws:// 或 wss://；填 http(s):// 会自动转换）</span></label><input id="ib-net-url" value="' + this.esc(c.url) + '" placeholder="ws://192.168.1.10:8765 或 wss://your-server.com/ib"></div>' +
-      '<div class="api-form-group"><label>访问令牌（可选）<span class="field-note-inline">（连接后在首帧 hello 中发送，供后端鉴权，不会拼入地址）</span></label><input id="ib-net-token" type="password" value="' + this.esc(c.token) + '" placeholder="与后端约定的密钥，留空则不鉴权"></div>' +
+      '<div class="api-form-group"><label>访问令牌<span class="field-note-inline">（Bridge 未配置 token 时仍可接收推送，但工具目录与执行关闭；工具调用需与服务端配置一致）</span></label><input id="ib-net-token" type="password" value="' + this.esc(c.token) + '" placeholder="填写服务端 config.json 中的 token"></div>' +
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
       '<span id="ib-net-status" style="display:inline-flex;align-items:center;gap:7px;font-size:0.82rem"></span>' +
       '<button class="btn btn-primary" id="ib-net-btn-c" style="padding:5px 18px;font-size:0.82rem">连接</button>' +
@@ -1327,7 +1384,7 @@ const IBDIY = {
 };
 
 /* ---------- 5. IBNET: 后端连接器 (Internal Bridge · WebSocket 客户端) ----------
- * 可选的后端长连接模块。在 DIY 页填入一台持续运行的后端服务器地址
+ * 可选的后端长连接模块。在 Settings Center「服务与集成」中填入持续运行的后端服务器地址
  * （云 VPS、家用主机、NAS 等均可）并启用后，IB 打开期间与其保持
  * WebSocket 长连接，后端即可向本页面主动推送消息与提醒。
  * 未配置 / 未启用 / 连不上时静默降级，本体功能不受任何影响。
@@ -1338,9 +1395,9 @@ const IBDIY = {
  *    连接建立后客户端立即发送:
  *    { type:"hello", client:"InternalBeyond", version:"1.1", token:"<令牌>",
  *      capabilities:["push","tools","images"] }
- *    · token 字段来自用户在 DIY 设置卡中填写的「访问令牌」，不拼入
- *      URL，避免泄漏进服务器访问日志。留空时为空字符串。
- *    · 后端应校验 token，不通过时关闭连接（建议 close code 4001）。
+ *    · token 字段来自用户在服务连接卡中填写的「访问令牌」。
+ *    · Bridge 未配置 token 时仍可建立推送连接，但服务端不提供工具目录或执行；
+ *      配置了 token 时，后端按恒定时间比较校验首帧凭据。
  *
  * 2. 握手确认 (服务端 → 客户端, 可选)
  *    { type:"hello_ack", server:"<服务器显示名称>" }
@@ -1442,7 +1499,7 @@ const IBNET = {
   },
   resolveTool(fullName){
     const n=String(fullName||'').replace(/^bridge\./,'');
-    return this._tools.find(function(t){return t.name===n})||this._tools.find(function(t){return t.name.toLowerCase()===n.toLowerCase()})||null;
+    return this._tools.find(function(t){return t.name===n})||null;
   },
 
   /* 地址容错: http(s):// → ws(s)://; 无协议默认补 ws:// */
@@ -1458,6 +1515,11 @@ const IBNET = {
      accepts the configured token in this handshake URL and immediately checks
      it again in the hello frame.  The stored base address remains token-free. */
   _socketUrl(url, token){
+    if(typeof window!=='undefined'&&window.__IB_DEV_MODE__===true){
+      const dev=window.__IB_DEV_SERVICE_CONFIG__;
+      if(!dev||!dev.sessionToken||!dev.instanceId)return '';
+      try{const parsed=new URL(url);parsed.searchParams.set('ib_dev_session',String(dev.sessionToken));parsed.searchParams.set('ib_dev_instance',String(dev.instanceId));return parsed.toString()}catch(e){return ''}
+    }
     if(!token)return url;
     try{
       const parsed=new URL(url);
@@ -1631,8 +1693,9 @@ const IBNET = {
     this._tools=(Array.isArray(list)?list:[]).slice(0,100).map(function(t){
       if(!t||typeof t!=='object')return null;
       const name=String(t.name||'').trim();
-      if(!/^[A-Za-z0-9_.:-]{1,80}$/.test(name)||seen[name])return null;
-      seen[name]=1;
+      const identity=name.toLowerCase();
+      if(!/^[A-Za-z0-9_.:-]{1,80}$/.test(name)||seen[identity])return null;
+      seen[identity]=1;
       return{name:name,description:String(t.description||'').replace(/[\r\n\t]+/g,' ').slice(0,500),inputSchema:IBNET._safeSchema(t.inputSchema||t.input_schema),alwaysConfirm:!!t.alwaysConfirm};
     }).filter(Boolean);
     this._uiSync();
@@ -1794,7 +1857,7 @@ try{
     if(/^bridge\./.test(String(name||''))&&typeof IBNET!=='undefined')return IBNET.execOp(name,args||{});
     var c=await getIbTools();
     if(!c.enabled)return{ok:false,reason:'外部工具功能未启用（API 设置页可开启）',response:''};
-    var tool=(c.tools||[]).find(function(t){return t.name===name})||(c.tools||[]).find(function(t){return t.name.toLowerCase()===String(name).toLowerCase()});
+    var tool=(c.tools||[]).find(function(t){return t.name===name});
     if(!tool)return{ok:false,reason:'未找到该工具（名称须与配置完全一致）',response:''};
     var r=await _ibToolFetch(tool,args||{});
     return{ok:r.ok,reason:r.ok?'':String(r.detail||'').slice(0,200),response:String(r.detail||'')};

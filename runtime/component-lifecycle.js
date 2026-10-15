@@ -161,12 +161,13 @@ function legacyTargets(env) {
   const source = env || process.env;
   return LEGACY_ROUTES.map(function (route) {
     const n = Number(source[route.portEnv]);
+    const configured = Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0;
     return {
       id: route.id,
       name: route.id,
       label: route.id,
       layout: route.id,
-      port: Number.isInteger(n) && n >= 1 && n <= 65535 ? n : LEGACY_DEFAULTS[route.id],
+      port: configured || (String(source.IB_DEV_MODE || '') === '1' ? 0 : LEGACY_DEFAULTS[route.id]),
       portEnv: route.portEnv,
       defaultPort: LEGACY_DEFAULTS[route.id],
       /* Per-route, because the runner's health path and stop path are not the
@@ -212,7 +213,8 @@ function requestJson(opts) {
     try {
       req = http.request({
         host: HOST, port: o.port, path: o.path, method: o.method || 'GET',
-        timeout: o.timeoutMs || 1500
+        timeout: o.timeoutMs || 1500,
+        headers: o.headers || {}
       }, res => {
         let raw = '';
         res.setEncoding('utf8');
@@ -557,7 +559,8 @@ async function stopComponent(target, opts) {
   const answered = Number(probe.json && probe.json.pid);
   const answeringPid = Number.isInteger(answered) && answered > 0 ? answered : null;
   const cooperative = await requestJson({
-    port: target.port, path: target.stopPath, method: 'POST', timeoutMs: o.stopRequestMs || 3000
+    port: target.port, path: target.stopPath, method: 'POST', timeoutMs: o.stopRequestMs || 3000,
+    headers: o.requestHeaders || {}
   });
   const cooperativeRequestSentAt = Date.now();
   if (!cooperative.reachable || (cooperative.status !== 202 && cooperative.status !== 200)) {

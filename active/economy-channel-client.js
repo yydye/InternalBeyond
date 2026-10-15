@@ -70,26 +70,32 @@ const ENV = Object.freeze({
    通道的部署应该照常运行，只是提不出购买意图。 */
 function configFromEnv(env) {
   env = env || {};
+  const devMode = String(env.IB_DEV_MODE || '') === '1';
   const port = Number(env[ENV.HOME_NODE_PORT]);
-  const defaultBase = 'http://127.0.0.1:' +
-    (Number.isInteger(port) && port > 0 && port <= 65535 ? port : 23118);
-  const base = String(env[ENV.BASE] || defaultBase).replace(/\/+$/, '');
+  const validHomePort = Number.isInteger(port) && port > 0 && port <= 65535;
+  if (devMode && !validHomePort) throw new Error('dev-home-node-port-required');
+  const defaultBase = devMode
+    ? 'http://127.0.0.1:' + port
+    : 'http://127.0.0.1:' + (validHomePort ? port : 23118);
+  const base = String(devMode ? defaultBase : (env[ENV.BASE] || defaultBase)).replace(/\/+$/, '');
   const explicitSource = Number(env[ENV.SOURCE_PORT]);
   const activePort = Number(env[ENV.ACTIVE_PORT]);
   /* ★ 来源端口优先取显式的专用键；没有它时**退回** Active 的端口，并如实
      在 describe() 里说这是退回（fallbackUsed）。退回不是"安全默认"，
      而是一个明说的兼容姿态：在没有专用键的部署上，通道会在第一次提议时
      以 EADDRINUSE 失败，而不是悄悄换一个没人登记的端口发出去。 */
-  const sourcePort = Number.isInteger(explicitSource) && explicitSource > 0 && explicitSource <= 65535
+  const validExplicitSource = Number.isInteger(explicitSource) && explicitSource > 0 && explicitSource <= 65535;
+  const sourcePort = validExplicitSource
     ? explicitSource
     : (Number.isInteger(activePort) && activePort > 0 && activePort <= 65535 ? activePort : undefined);
+  if (devMode && !validExplicitSource) throw new Error('dev-economy-source-port-required');
   return {
     base: base,
     token: String(env[ENV.TOKEN] || ''),
     timeoutMs: Number(env[ENV.TIMEOUT_MS]) || undefined,
     maxAttempts: Number(env[ENV.MAX_ATTEMPTS]) || undefined,
     sourcePort: sourcePort,
-    sourcePortIsDedicated: Number.isInteger(explicitSource) && explicitSource > 0
+    sourcePortIsDedicated: validExplicitSource
   };
 }
 
@@ -105,6 +111,7 @@ function createActiveEconomyChannelClient(options) {
     /* ★ 出站端口绑定：Home Node 侧的来源登记册登记的是 Active 的端口，
        因此真实运行时必须从那条端口发出去 —— 否则那一半登记不生效。 */
     localPort: options.localPort === undefined ? fromEnv.sourcePort : options.localPort,
+    requestHeaders: options.identityHeaders,
     fetch: options.fetch
   });
 

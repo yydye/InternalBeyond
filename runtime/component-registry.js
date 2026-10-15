@@ -119,12 +119,18 @@ function portOf(id, env) {
   if (!c) return 0;
   const source = env || process.env;
   const n = Number(source[c.portEnv]);
+  if (String(source.IB_DEV_MODE || '') === '1') {
+    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0;
+  }
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : c.defaultPort;
 }
 
 function portOfEnv(portEnv, defaultPort, env) {
   const source = env || process.env;
   const n = Number(source[portEnv]);
+  if (String(source.IB_DEV_MODE || '') === '1') {
+    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0;
+  }
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : defaultPort;
 }
 

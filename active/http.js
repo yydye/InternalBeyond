@@ -5,7 +5,8 @@
 'use strict';
 
 const http = require('http');
-const { isTauriOrigin } = require('../runtime/host-origin.js');
+const { isTauriOrigin, blocksDevWebOrigin } = require('../runtime/host-origin.js');
+const devServiceContract = require('../runtime/dev-service-contract.js');
 
 /* Proactive Observability v1..v3：只读 debug 页（消费 /proactive/traces，不参与任何决策）
    v3 增加“WHY THIS PROACTIVE?”可读解释 + 结果链（sent → laterOutcome）。无 UI 框架（原生 details）。 */
@@ -65,6 +66,7 @@ function createHttp(ctx) {
     publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
     trimText, deepClone, finiteTimestamp,
     sanitizeMomentSchedule, publicMomentSchedule, proactiveTrace,
+    devIdentity, authorizeRequestIdentity,
     credentialVault,
     /* P22-11：Economy command channel 的两个注入点。
        · economyPropose：已净化提案 → 通道客户端（缺省时这条路由不存在）；
@@ -78,6 +80,10 @@ function createHttp(ctx) {
        createStopDispatch()）。缺省时整个停止分支不存在。 */
     stopDispatch
   } = ctx;
+  const environmentIdentity = devIdentity || Object.freeze({ mode: 'production', instanceId: null });
+  const authorizeMutation = typeof authorizeRequestIdentity === 'function'
+    ? authorizeRequestIdentity
+    : request => devServiceContract.authorizeRequestIdentity(request, process.env, environmentIdentity.webOrigin);
 
   /* 凭证剥离：业务 snapshot 持久化绝不写入完整 apiKey（凭证只走 /credentials → vault） */
   function stripCharacterCredential(character) {
@@ -88,6 +94,11 @@ function createHttp(ctx) {
   }
 
   function originAllowed(origin) {
+    if (environmentIdentity.mode === 'dev' || environmentIdentity.mode === 'synthetic') {
+      return !origin || origin === environmentIdentity.webOrigin;
+    }
+    if (blocksDevWebOrigin(origin)) return false;
+    if (devServiceContract.isKnownDevOrigin(origin)) return false;
     return !origin || origin === 'null' || isTauriOrigin(origin) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(origin);
   }
 
@@ -97,7 +108,7 @@ function createHttp(ctx) {
     response.setHeader('Access-Control-Allow-Origin', origin || 'null');
     response.setHeader('Vary', 'Origin');
     response.setHeader('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-IB-Dev-Session, X-IB-Dev-Instance');
     /* 注意：不再发送 Access-Control-Allow-Private-Network 放行头——
        现代浏览器 PNA 预检会拒绝公网网页对私网资源的请求，此头保留反而使
        公网恶意页面（经 sandboxed iframe / data: 页，Origin 为 null）可跨域读写本服务。 */
@@ -155,6 +166,10 @@ function createHttp(ctx) {
 
   const server = http.createServer(async (request, response) => {
     try {
+      if (blocksDevWebOrigin(request.headers && request.headers.origin)) {
+        json(response, 403, { error: 'Dev origin is not allowed by the formal Active service' });
+        return;
+      }
       /* P11-3H · 合作停止面：在**所有**路由与 CORS 之前判定。
          停止请求是本地运行时/安装器发出的，准入由注入的 stopDispatch 自己决定；
          让它走下面的 Origin 检查会让一次合法停止依赖 CORS 语义（那是"能不能读响应"
@@ -177,6 +192,12 @@ function createHttp(ctx) {
         return;
       }
 
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(request.method || '').toUpperCase())
+        && !authorizeMutation(request)) {
+        json(response, 403, { ok: false, error: 'environment-identity-mismatch' });
+        return;
+      }
+
       /* new URL 对畸形请求行（如非法百分号编码）可能抛错；必须位于 try 内，否则成为未捕获异常导致进程退出 */
       const url = new URL(request.url, `http://${HOST}:${PORT}`);
       const parts = url.pathname.split('/').filter(Boolean);
@@ -184,6 +205,8 @@ function createHttp(ctx) {
       if (request.method === 'GET' && url.pathname === '/health') {        json(response, 200, {
           ok: true,
           service: 'internal-beyond-active-messages',
+          environment: environmentIdentity.mode,
+          devInstanceId: environmentIdentity.instanceId || null,
           version: 3,
           tasks: Object.keys(s.tasks).length,
           plans: Object.keys(s.plans).length,

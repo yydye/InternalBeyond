@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const devServiceContract = require('../runtime/dev-service-contract.js');
 const { spawn } = require('child_process');
 
 if (typeof fetch !== 'function') {
@@ -23,13 +24,31 @@ if (typeof fetch !== 'function') {
 }
 
 const HOST = '127.0.0.1';
-const PORT = Math.max(1, Math.min(65535, Number(process.env.IB_ACTIVE_PORT) || 23114));
+const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+const DEV_PORTS = devServiceContract.portsFromEnvironment(process.env);
+const PORT = DEV_PORTS.active;
 const START_DELAY_MS = Math.max(500, Number(process.env.IB_ACTIVE_START_DELAY_MS) || 35000);
 const DATA_DIR = process.env.IB_ACTIVE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
     : path.join(os.homedir(), '.internal-beyond'));
-const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || DATA_DIR;
+const DEV_MODE = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic';
+if (DEV_MODE) {
+  const sandboxRoot = path.resolve(String(process.env.IB_DEV_SANDBOX_ROOT || ''));
+  const actualDataDir = path.resolve(DATA_DIR);
+  const expectedDataDir = path.resolve(sandboxRoot, 'active');
+  const relative = path.relative(sandboxRoot, actualDataDir);
+  if (!sandboxRoot || actualDataDir.toLowerCase() !== expectedDataDir.toLowerCase()
+    || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error('dev-data-directory-outside-sandbox');
+  }
+  for (const candidate of [sandboxRoot, actualDataDir]) {
+    try { if (fs.lstatSync(candidate).isSymbolicLink()) throw new Error('dev-sandbox-reparse-point-blocked'); }
+    catch (error) { if (error && error.code !== 'ENOENT') throw error; }
+  }
+}
+const CREDENTIAL_DATA_DIR = DEV_MODE ? path.join(DEV_IDENTITY.sandboxRoot, 'credential-vault')
+  : (process.env.IB_CREDENTIAL_DATA_DIR || DATA_DIR);
 const DATA_FILE = path.join(DATA_DIR, 'active-message-service.json');
 const DATA_TEMP_FILE = `${DATA_FILE}.tmp`;
 const DATA_BACKUP_FILE = `${DATA_FILE}.bak`;
@@ -296,6 +315,8 @@ const serviceControl = require('../runtime/service-control.js');
 let activeStopping = false;
 const activeStopDispatch = serviceControl.createStopDispatch({
   service: 'internal-beyond-active-messages',
+  authorize: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin)
+    ? null : { status: 403, error: 'environment-identity-mismatch' },
   stop: () => activeTeardown('http'),
   /* The dispatch owns the ENDING, uniformly for every component: run the
      teardown, then close the listener bounded, then exit. Before this the
@@ -315,7 +336,9 @@ const activeStopDispatch = serviceControl.createStopDispatch({
    地址与来源凭据来自**部署环境**（IB_ECONOMY_CHANNEL_*），缺省时
    configured === false —— 一条写路径**不**继承本机的 loopback 零门槛。 */
 const createActiveEconomyChannelClient = require('../active/economy-channel-client.js');
-const economyChannel = createActiveEconomyChannelClient({});
+const economyChannel = createActiveEconomyChannelClient({
+  identityHeaders: devServiceContract.identityHeaders(DEV_IDENTITY)
+});
 /* ── 净化：与浏览器侧**同一个答案**，但是 companion 的一份镜像 ─────────
    ★ 为什么不是 require assets/js/active-diary/active-plans.js：那是个
      浏览器 IIFE（末行 `window.IB || (window.IB = {})`），在 Node 里
@@ -407,6 +430,8 @@ function sanitizeActiveEconomyProposal(raw) {
 const createHttp = require('../active/http');
 const httpLayer = createHttp({
   HOST, PORT,
+  devIdentity: DEV_IDENTITY,
+  authorizeRequestIdentity: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin),
   maxBody: MAX_BODY,
   /* P11-3H：停止面的判定钩子（见上）。 */
   stopDispatch: activeStopDispatch,
@@ -473,7 +498,7 @@ if (require.main === module) {
     console.log('The local state file contains the API credentials required by those plans.');
     console.log('');
   });
-  startScheduler();
+  if (!DEV_MODE) startScheduler();
   /* P11-3H：信号路径与 HTTP 停止面走**同一份**拆除动作。POSIX 上信号有效，
      Windows 上不会到达 —— 因此 HTTP 那条才是生产上真正会跑的路径。 */
   const onSignal = reason => { activeTeardown(reason).then(() => process.exit(0), () => process.exit(0)); };

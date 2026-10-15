@@ -15,12 +15,20 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const createAdapter = require('./credential-authority-adapter.js');
+const devServiceContract = require('../runtime/dev-service-contract.js');
 
 const MAX_BINDINGS = 200;
+const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+devServiceContract.portsFromEnvironment(process.env);
 const activeDataDir = process.env.IB_ACTIVE_DATA_DIR || (process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
   : '');
-const dataDir = process.env.IB_CREDENTIAL_DATA_DIR || activeDataDir;
+const bindingDataDir = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic'
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'active')
+  : (process.env.IB_CREDENTIAL_BINDINGS_DIR || activeDataDir);
+const dataDir = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic'
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'credential-vault')
+  : (process.env.IB_CREDENTIAL_DATA_DIR || activeDataDir);
 
 /* P34.1 · Non-Active system bindings explicitly allowed to use the Vault.
    Adds a fixed constant id only; role binding status stays governed solely by
@@ -37,9 +45,9 @@ function validBindingId(value) {
 }
 
 function knownActiveBindings() {
-  if (!activeDataDir) return new Set(SYSTEM_BINDING_IDS);
+  if (!bindingDataDir) return new Set(SYSTEM_BINDING_IDS);
   try {
-    const file = path.join(activeDataDir, 'active-message-service.json');
+    const file = path.join(bindingDataDir, 'active-message-service.json');
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
     return new Set([
       ...SYSTEM_BINDING_IDS,

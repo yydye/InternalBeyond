@@ -15,11 +15,28 @@ var _busy = false;
 var _lastError = '';
 
 function restartBase(){
+  if(window.__IB_DEV_MODE__===true){
+    var dev=window.__IB_DEV_SERVICE_CONFIG__;
+    return dev&&(dev.mode==='dev'||dev.mode==='synthetic')&&/^https?:\/\/127\.0\.0\.1:\d+$/.test(String(dev.restartUrl||''))
+      ? String(dev.restartUrl) : '';
+  }
   var port = RESTART_DEFAULT_PORT;
   try{
     if(window.IB_RESTART_PORT && /^\d+$/.test(String(window.IB_RESTART_PORT))) port = Number(window.IB_RESTART_PORT);
   }catch(e){}
   return 'http://127.0.0.1:' + port;
+}
+
+function restartHeaders(){
+  if(window.__IB_DEV_MODE__!==true)return {};
+  var dev=window.__IB_DEV_SERVICE_CONFIG__;
+  if(!dev||!dev.sessionToken||!dev.instanceId)throw new Error('dev-service-config-unavailable');
+  return {'X-IB-Dev-Session':String(dev.sessionToken),'X-IB-Dev-Instance':String(dev.instanceId)};
+}
+function restartIdentityMatches(status){
+  if(window.__IB_DEV_MODE__!==true)return !!status&&status.environment!=='dev'&&status.environment!=='synthetic';
+  var dev=window.__IB_DEV_SERVICE_CONFIG__;
+  return !!dev&&!!status&&(status.environment===dev.mode)&&status.devInstanceId===dev.instanceId;
 }
 
 /* 确保注入的控制行在“后端连接卡”里存在（renderNet 会整卡重绘，用观察器补回）。 */
@@ -74,10 +91,13 @@ function syncStatusEl(){
 function say(msg){ try{ if(typeof toast === 'function') toast(msg); }catch(e){} }
 
 function getStatus(){
+  var base=restartBase();
+  if(!base)return Promise.resolve(null);
   var ctl = new AbortController();
   var tm = setTimeout(function(){ ctl.abort(); }, 4000);
-  return fetch(restartBase() + '/status', { cache: 'no-store', signal: ctl.signal })
+  return fetch(base + '/status', { cache: 'no-store', signal: ctl.signal, headers:restartHeaders() })
     .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(value){return restartIdentityMatches(value)?value:null;})
     .catch(function(){ return null; })
     .finally(function(){ clearTimeout(tm); });
 }
@@ -117,11 +137,15 @@ function pollUntilDone(){
 /* 主入口：幂等，_busy=true 期间重复调用直接被忽略（防重复点击 → 防多实例）。 */
 function ibRestartBackend(){
   if(_busy || _state === 'restarting'){ say('重启已在进行中'); return false; }
+  var base=restartBase();
+  var headers;
+  try{headers=restartHeaders();}catch(e){fail('restart-control-unavailable');return false;}
+  if(!base){fail('restart-control-unavailable');return false;}
   _busy = true;
   setState('restarting');
   var ctl = new AbortController();
   var tm = setTimeout(function(){ ctl.abort(); }, 6000);
-  fetch(restartBase() + '/restart', { method: 'POST', cache: 'no-store', signal: ctl.signal })
+  fetch(base + '/restart', { method: 'POST', cache: 'no-store', signal: ctl.signal, headers:headers })
     .then(function(r){
       return { status: r.status, body: r.json ? r.json().catch(function(){ return null; }) : null };
     })

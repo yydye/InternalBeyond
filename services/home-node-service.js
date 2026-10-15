@@ -24,8 +24,20 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('node:crypto');
+const { createRequire } = require('node:module');
+const { pathToFileURL } = require('node:url');
+const devServiceContract = require('../runtime/dev-service-contract.js');
 
 const createStore = require('../services/home-node/chat-store.js');
+const createWorkRunStore = require('../services/home-node/work-run-store.js');
+const createAppDraftStore = require('../services/home-node/app-draft-store.js');
+const createDshHostAdapter = require('../services/home-node/dsh-host-adapter.js');
+const createDshWebHost = require('../services/home-node/dsh-web-host.js');
+const createDshRuntimeInstaller = require('../services/home-node/dsh-runtime-installer.js');
+const createDshRuntimeOnlineInstaller = require('../services/home-node/dsh-runtime-online-installer.js');
+const createWorkspaceProjectBridge = require('../services/home-node/workspace-project-bridge.js');
+const createAgentMemoryStore = require('../services/home-node/agent-memory-store.js');
 const createMemoryStore = require('../services/home-node/memory-store.js');
 const createMemoryRetrieval = require('../services/home-node/memory-retrieval.js');
 const { createRecallSessionState } = require('../assets/js/memory-recall/recall-session-state.js');
@@ -45,6 +57,9 @@ const createDeviceRegistry = require('../services/home-node/device-registry.js')
 /* P5-B3-D4 · ONE_MAPPING_DEFINITION：turn terminal → RealityEvent 的唯一适配器 */
 const createTurnTerminalRealitySource = require('../services/home-node/turn-terminal-reality-source.js').createTurnTerminalRealitySource;
 const createRuntimeRealityEvent = require('../services/home-node/runtime-reality-event.js').createRuntimeRealityEvent;
+const createRuntimeSubjectiveOpportunityAuthority = require('../services/home-node/runtime-subjective-opportunity-authority.js').createRuntimeSubjectiveOpportunityAuthority;
+const createRuntimeEventOpportunityAuthority = require('../services/home-node/runtime-event-opportunity-authority.js').createRuntimeEventOpportunityAuthority;
+const createRuntimeOpportunityAuthority = require('../services/home-node/runtime-opportunity-authority.js').createRuntimeOpportunityAuthority;
 const createRuntimeOutcomeObservation = require('../services/home-node/runtime-outcome-observation.js').createRuntimeOutcomeObservation;
 const createRuntimeRealityFeedback = require('../services/home-node/runtime-reality-feedback.js').createRuntimeRealityFeedback;
 /* P5-B3-E-R1 · **唯一**的 explicit user preference report 链（三段，各自单一职责）：
@@ -102,6 +117,8 @@ const economyConfigurationModule = require('../services/home-node/economy-config
      就是下面的 options.runtimeInterpretationPolicy —— 本文件不读任何 env、
      http.js 也不写任何默认值（frozen：本阶段没有生产启用路径）。 */
 const createRuntimeInterpretation = require('../services/home-node/runtime-interpretation.js');
+const createRuntimeSelfNarrative = require('../services/home-node/runtime-self-narrative.js').createRuntimeSelfNarrative;
+const createRuntimeBehaviorModulation = require('../services/home-node/runtime-behavior-modulation.js').createRuntimeBehaviorModulation;
 /* ── P21-R4-LIVE-4.3 · 服务端自有的**成本权威文件**（唯一生产权威）。
    只有装配层 require 它：它没有 HTTP 路由、没有 window 面、本阶段没有 Tauri
    命令；唯一写者是 Node 侧的 `set()`（见 runtime-policy.js 头部）。 */
@@ -115,6 +132,8 @@ const createRuntimePolicy = require('../services/home-node/runtime-policy.js').c
    ★ 它不带 modelPort、不带 credentialAccess：这条边界不出网、不读 Vault，
      因此"召回顺手调一次 provider"在依赖闭包上就不可能。 */
 const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
+const createRuntimeMemoryAssociation = require('../services/home-node/runtime-memory-association.js').createRuntimeMemoryAssociation;
+const createRuntimeCounterfactualMemory = require('../services/home-node/runtime-counterfactual-memory.js').createRuntimeCounterfactualMemory;
 /* ── P21-R4-LIVE-5 · L5 期望运行时（**兄弟**模块，不是解释的一部分）──────
    它 require 的纯核心仍是既有实现（assets/js/memory-recall/
    expectation-shadow-core.js，UMD）+ 既有 runner —— 没有第二套期望。
@@ -123,15 +142,20 @@ const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
 const createRuntimeExpectation = require('../services/home-node/runtime-expectation.js').createRuntimeExpectation;
 /* ── P21-R4-F · L7 行为基调（**确定性**派生：没有模型调用、没有第三个成本位）──
    它只把已验证的 L3（且该回合 L5 已成立）投影成闭合枚举的基调，交给**下一轮**。 */
-const createRuntimeBehaviorEffect = require('../services/home-node/runtime-behavior-effect.js').createRuntimeBehaviorEffect;
+const runtimeBehaviorEffectModule = require('../services/home-node/runtime-behavior-effect.js');
+const createRuntimeBehaviorEffect = runtimeBehaviorEffectModule.createRuntimeBehaviorEffect;
 /* P2 · Prediction Registry（会话内 · 有界 · 纯进程内存；无 settlement authority）。 */
 const createRuntimePredictionRegistry = require('../services/home-node/runtime-prediction-registry.js').createRuntimePredictionRegistry;
 /* P3 · Prediction Settlement Engine（**唯一**结算权威；内部审计面；无 memory/relationship 写）。 */
-const createRuntimePredictionSettlement = require('../services/home-node/runtime-prediction-settlement.js').createRuntimePredictionSettlement;
+const predictionSettlementRuntimeModule = require('../services/home-node/runtime-prediction-settlement.js');
+const createRuntimePredictionSettlement = predictionSettlementRuntimeModule.createRuntimePredictionSettlement;
 /* P4 · Prediction Calibration Ledger（**唯一**校准统计权威；只读过去；无写回）。 */
 const createRuntimePredictionCalibration = require('../services/home-node/runtime-prediction-calibration.js').createRuntimePredictionCalibration;
+const createRuntimePredictionCalibrationDriver = require('../services/home-node/runtime-prediction-calibration-driver.js').createRuntimePredictionCalibrationDriver;
 /* P5-B · Evidence Matcher（**唯一** semantic relation 分类面；advisory only；默认关闭）。 */
 const createRuntimeEvidenceMatcher = require('../services/home-node/runtime-evidence-matcher.js').createRuntimeEvidenceMatcher;
+const createRuntimeLinguisticEvidenceProducer = require('../services/home-node/runtime-linguistic-evidence.js').createRuntimeLinguisticEvidenceProducer;
+const EVIDENCE_MATCHER_ENABLED_DEFAULT = false;
 /* ── P21-R4-PROD-1 · 认知控制面（产品级读写边界）────────────────────────
    它**不是**第二份 policy 权威：持久化仍然只有上面那一份 runtime-policy
    （同一份文件、同一个原子 writer `setCognitive`）。本层只负责"按角色的
@@ -166,18 +190,141 @@ if (typeof fetch !== 'function') {
   process.exit(1);
 }
 
+const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+const SERVICE_PORTS = devServiceContract.portsFromEnvironment(process.env);
 const HOST = String(process.env.IB_HOME_NODE_HOST || '127.0.0.1');
-const PORT = Math.max(1, Math.min(65535, Number(process.env.IB_HOME_NODE_PORT) || 23118));
-const DATA_DIR = process.env.IB_HOME_NODE_DATA_DIR ||
-  (process.platform === 'win32' && process.env.LOCALAPPDATA
+const PORT = SERVICE_PORTS.homeNode;
+const DSH_RUNTIME_REVISION = 'd743267388641bc76f17c45ce8b4c231aed1d32c';
+const DATA_DIR = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic'
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'home-node')
+  : (process.env.IB_HOME_NODE_DATA_DIR || (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'home-node')
-    : path.join(os.homedir(), '.internal-beyond', 'home-node'));
+    : path.join(os.homedir(), '.internal-beyond', 'home-node')));
+function isDevMode() {
+  return DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic';
+}
+function dshDevRuntimeConfig() {
+  if (!isDevMode() || String(process.env.IB_DEV_DSH_ENABLED || '') !== '1') return null;
+  const runtimeRoot = path.resolve(__dirname, '..', 'runtime', 'dsh-runtime');
+  const manifestPath = path.join(runtimeRoot, 'runtime-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  if (!manifest || manifest.schema !== 'internalbeyond.dsh-runtime'
+    || manifest.sourceRevision !== DSH_RUNTIME_REVISION || manifest.target !== 'windows-x64'
+    || Number(manifest.protocolVersion) !== 1) {
+    throw new Error('dev-dsh-runtime-pin-invalid');
+  }
+  const nodeModulesRequire = createRequire(path.join(runtimeRoot, 'package.json'));
+  const binScript = path.join(runtimeRoot, manifest.entry);
+  const patch = path.join(runtimeRoot, manifest.config);
+  if (!fs.existsSync(binScript) || !fs.existsSync(patch)) throw new Error('dev-dsh-runtime-incomplete');
+  return {
+    enabled: true,
+    protocolVersion: manifest.protocolVersion,
+    dsh: {
+      revision: manifest.sourceRevision,
+      nodeExe: process.execPath,
+      repoRoot: runtimeRoot,
+      tsxLoader: pathToFileURL(nodeModulesRequire.resolve('tsx/esm')).href,
+      binScript,
+      patches: [patch]
+    }
+  };
+}
+function dshProductionRuntimeConfig() {
+  if (isDevMode() || process.platform !== 'win32' || process.arch !== 'x64') return null;
+  const hostSessionId = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '');
+  const localAppData = process.env.LOCALAPPDATA || '';
+  if (!/^[a-f0-9]{32}$/i.test(hostSessionId) || !localAppData) return null;
+  try {
+    const appRoot = path.resolve(__dirname, '..');
+    const pin = JSON.parse(fs.readFileSync(path.join(appRoot, 'runtime', 'dsh-runtime-package-pin.json'), 'utf8'));
+    if (!pin || pin.schema !== 'internalbeyond.optional-dsh-runtime-pin' || Number(pin.schemaVersion) !== 1
+      || pin.runtimeVersion !== '0.2.1-alpha.2' || pin.sourceRevision !== DSH_RUNTIME_REVISION
+      || pin.target !== 'windows-x64' || !/^[a-f0-9]{64}$/i.test(String(pin.archiveSha256 || ''))) {
+      throw new Error('optional-runtime-pin-invalid');
+    }
+    const releaseTrustConfig = JSON.parse(fs.readFileSync(path.join(appRoot, 'runtime', 'dsh-runtime-release-trust.json'), 'utf8'));
+    const runtimeInstaller = createDshRuntimeInstaller({
+      localAppData: localAppData,
+      productVersion: productVersion(),
+      nodeVersion: process.version.replace(/^v/, ''),
+      expectedArchiveSha256: String(pin.archiveSha256).toLowerCase(),
+      releaseTrustConfig: releaseTrustConfig
+    });
+    const onlineInstaller = createDshRuntimeOnlineInstaller({
+      localAppData: localAppData,
+      productVersion: productVersion(),
+      nodeVersion: process.version.replace(/^v/, ''),
+      runtimeInstaller: runtimeInstaller,
+      releaseTrustConfig: releaseTrustConfig
+    });
+    const runtimeInstallationStatus = () => Object.assign({}, runtimeInstaller.describe(), {
+      online: onlineInstaller.describe()
+    });
+    const runtimeRoot = runtimeInstaller.runtimeRoot;
+    const binScript = path.join(runtimeRoot, 'apps', 'cli', 'src', 'bin.ts');
+    const patch = path.join(runtimeRoot, 'config', 'cordis.yml');
+    const tsxLoader = pathToFileURL(path.join(runtimeRoot, 'node_modules', 'tsx', 'dist', 'esm', 'index.mjs')).href;
+    const workUiPackageRoot = path.join(appRoot, 'runtime', 'dsh-native-work-ui');
+    const startupScreenRoot = path.join(appRoot, 'runtime', 'dsh-startup-screen');
+    for (const candidate of [path.join(workUiPackageRoot, 'host.mjs'), path.join(workUiPackageRoot, 'session.mjs'),
+      path.join(workUiPackageRoot, 'client.js'), path.join(startupScreenRoot, 'host.mjs')]) {
+      if (!fs.existsSync(candidate)) throw new Error('required-production-dsh-resource-missing');
+    }
+    return {
+      mode: 'production',
+      enabled: true,
+      protocolVersion: 1,
+      runtimeInstaller: runtimeInstaller,
+      onlineInstaller: onlineInstaller,
+      runtimeInstalled: runtimeInstaller.isInstalled,
+      runtimeInstallationStatus: runtimeInstallationStatus,
+      dsh: { revision: DSH_RUNTIME_REVISION, nodeExe: process.execPath, repoRoot: runtimeRoot,
+        tsxLoader: tsxLoader, binScript: binScript, patches: [patch] },
+      ui: {
+        enabled: true, revision: DSH_RUNTIME_REVISION, nodeExe: process.execPath,
+        runtimeRoot: runtimeRoot, tsxLoader: tsxLoader, binScript: binScript,
+        dataRoot: path.join(localAppData, 'InternalBeyond', 'dsh-work-mode'),
+        workUiPackageRoot: workUiPackageRoot,
+        startupScreenRoot: startupScreenRoot,
+        runtimeInstalled: runtimeInstaller.isInstalled,
+        runtimeInstallationStatus: runtimeInstallationStatus,
+        tauriHostSessionId: hostSessionId
+      }
+    };
+  } catch (error) {
+    log('warn', 'production-dsh-runtime-installer-disabled', { code: String(error && error.message || 'runtime-installation-unavailable').slice(0, 80) });
+    return null;
+  }
+}
+function assertDevHomeNodeDataDir(value) {
+  if (!isDevMode()) return path.resolve(value);
+  const root = path.resolve(String(process.env.IB_DEV_SANDBOX_ROOT || ''));
+  const actual = path.resolve(String(value || ''));
+  const expected = path.resolve(root, 'home-node');
+  const relative = path.relative(root, actual);
+  if (!root || actual.toLowerCase() !== expected.toLowerCase() || relative === '..'
+    || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error('dev-data-directory-outside-sandbox');
+  }
+  for (const candidate of [root, actual]) {
+    try { if (fs.lstatSync(candidate).isSymbolicLink()) throw new Error('dev-sandbox-reparse-point-blocked'); }
+    catch (error) { if (error && error.code !== 'ENOENT') throw error; }
+  }
+  return actual;
+}
+assertDevHomeNodeDataDir(DATA_DIR);
+function homeNodeDataDir(value) {
+  return assertDevHomeNodeDataDir(value || DATA_DIR);
+}
 /* Credential Vault is shared with Active and the Tauri resolver at the app data root,
    while Home Node's SQLite stores live in the `home-node` child directory. */
-const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
-  (process.platform === 'win32' && process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
-    : path.join(os.homedir(), '.internal-beyond'));
+const CREDENTIAL_DATA_DIR = isDevMode()
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'credential-vault')
+  : (process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
+    (process.platform === 'win32' && process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+      : path.join(os.homedir(), '.internal-beyond')));
 /* ── P22-23 · 桌面凭据的**唯一** authority ────────────────────────────
    这一行以前是 `String(process.env.IB_HOME_NODE_TOKEN || '')`。那个表达式
    在产品上的后果是：普通用户装好、启动、打开 Economy，看到的是"请先设置
@@ -257,7 +404,24 @@ catch (error) {
   process.exit(1);
 }
 
-const store = createStore({ dataDir: DATA_DIR, logger: (event, fields) => log('info', event, fields) });
+let runtimeLinguisticEvidenceProducer = null;
+const store = createStore({
+  dataDir: DATA_DIR,
+  logger: (event, fields) => log('info', event, fields),
+  onCanonicalUserMessage: function (fact) {
+    if (runtimeLinguisticEvidenceProducer) return runtimeLinguisticEvidenceProducer.onCanonicalUserMessage(fact);
+    return null;
+  }
+});
+const workRunStore = createWorkRunStore({
+  dataDir: DATA_DIR,
+  logger: (event, fields) => log('info', event, fields)
+});
+const appDraftStore = createAppDraftStore({ dataDir: DATA_DIR });
+const agentMemoryStore = createAgentMemoryStore({
+  dataDir: DATA_DIR,
+  logger: (event, fields) => log('info', event, fields)
+});
 const port = createNodeModelPort({});
 /* ── P5-B3-D4 · canonical terminal sink ────────────────────────────────
    execution runtime 只通知终局；RealityEvent authority 属于 runtime-reality-event。
@@ -282,21 +446,37 @@ const realityEventAuthority = createRuntimeRealityEvent({
      没有它，结构化偏好报告会走到 gate 就被判 FORBIDDEN ⇒ 主观链形同不存在。
      ★ 这是**加一个只读依赖**，不是给 driver 增加语义：driver 仍然只编排，
         attribution 决定完全由 P1/P3 做出（driver 不读、不判、不改写）。 */
-function buildRealityFeedbackDriver(registryRuntime, settlementRuntime, logger, attributionAuthority) {
-  const observationRuntime = createRuntimeOutcomeObservation({
+function buildRuntimeOutcomeObservationRuntime(registryRuntime, settlementRuntime, logger, attributionAuthority) {
+  return createRuntimeOutcomeObservation({
     registry: registryRuntime,
     isRealityEvent: realityEventAuthority.isRealityEvent,
     settlementRuntime: settlementRuntime,
     attributionAuthority: attributionAuthority || null,
     logger: logger
   });
+}
+function buildRealityFeedbackDriver(registryRuntime, settlementRuntime, logger, attributionAuthority, calibrationDriver, evidenceMatcher, observationRuntimeOverride) {
+  const observationRuntime = observationRuntimeOverride || buildRuntimeOutcomeObservationRuntime(
+    registryRuntime, settlementRuntime, logger, attributionAuthority);
   return createRuntimeRealityFeedback({
     registry: registryRuntime,
     observationRuntime: observationRuntime,
     settlementRuntime: settlementRuntime,
+    evidenceMatcherEnabled: !!(evidenceMatcher && typeof evidenceMatcher.describe === 'function'
+      && evidenceMatcher.describe().enabled === true),
     isRealityEvent: realityEventAuthority.isRealityEvent,
+    onSettlement: calibrationDriver && typeof calibrationDriver.dispatchSettlement === 'function'
+      ? function (settlement, predictionError) {
+          return calibrationDriver.dispatchSettlement(settlement, predictionError);
+        }
+      : null,
     logger: logger
   });
+}
+/* P4 needs the module-private P3 record validators plus this instance's
+   matcher-aware reachability view. Keep that capability view assembly-local. */
+function calibrationSettlementAuthority(settlementRuntime) {
+  return Object.assign({}, predictionSettlementRuntimeModule, settlementRuntime || {});
 }
 function buildTurnTerminalSink(logger) {
   const source = createTurnTerminalRealitySource({ realityEvent: realityEventAuthority, logger: logger });
@@ -330,6 +510,14 @@ const executor = createExecutor({
   store,
   port,
   credentialAccess: productionCredentialAccess,
+  /* M0 · lazy process-level delegate. The one attribution authority is
+     constructed later in this assembly; the callback is only invoked once a
+     trusted server-side prompt consumer accepts an external guidance entry. */
+  responseGuidanceAttribution: {
+    consumeExternalInfluence: input => runtimeBehaviorEffect.consumeExternalInfluence(input),
+    markExternalInfluenceNotConsumed: input => runtimeBehaviorEffect.markExternalInfluenceNotConsumed(input)
+  },
+  responseGuidanceProvider: (identity, serverEnvelope) => serverEnvelope || null,
   logger: (event, fields) => log('info', event, fields),
   /* ── P5-B3-D3-A · canonical character binding authority ──────────────
      与 runtime-recall / runtime-interpretation 用的是**同一个** accessor：
@@ -429,7 +617,7 @@ function lanAddress() {
    这条曾经被真正踩到（test_mobile_memory_continuity 的召回用例整组变空）。 */
 function memoryAssembly(options) {
   options = options || {};
-  const dataDir = options.dataDir || DATA_DIR;
+  const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const memoryStore = options.memoryStore ||
     createMemoryStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
@@ -439,7 +627,13 @@ function memoryAssembly(options) {
       store: memoryStore,
       clock: options.clock,
       random: options.random,
-      logger: serviceLog
+      logger: serviceLog,
+      /* Memory v2 Phase B: run the V2 selector beside V1 for sanitized,
+         in-memory aggregates. V1 remains the sole source of recalled content. */
+      selectorShadow: options.memorySelectorShadow !== false,
+      /* Explicit selector policy: missing/invalid values resolve to V1 inside
+         memory-retrieval. Supports a V2 canary resolver without request flags. */
+      selectorVersion: options.memorySelectorVersion
     })
   };
 }
@@ -500,7 +694,7 @@ function canonicalUnderstandingDeps(understanding, memoryStore) {
    不能推进它"。这比"建一个永远失败的派生器"诚实，也让隔离测试不必提供凭据。 */
 function understandingAssembly(options) {
   options = options || {};
-  const dataDir = options.dataDir || DATA_DIR;
+  const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const understandingStore = options.understandingStore ||
     createUnderstandingStore({ dataDir: dataDir, clock: options.clock, logger: (e, f) => serviceLog('info', e, f) });
@@ -548,7 +742,7 @@ function canonicalMomentsDeps(moments) {
    不可能只在一侧发生。 */
 function momentsAssembly(options) {
   options = options || {};
-  const dataDir = options.dataDir || DATA_DIR;
+  const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const momentsStore = options.momentsStore ||
     createMomentsStore({ dataDir: dataDir, clock: options.clock, logger: (e, f) => serviceLog('info', e, f) });
@@ -591,7 +785,7 @@ function momentsAssembly(options) {
    一个未就绪的注册表不该让整个装配炸掉，而"查不到就说存在"才是最坏的。 */
 function economyAssembly(options) {
   options = options || {};
-  const dataDir = options.dataDir || DATA_DIR;
+  const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const registry = options.registry || null;
   const ownerExists = typeof options.ownerExists === 'function' ? options.ownerExists : function (party) {
@@ -767,9 +961,10 @@ function defaultEconomyChannelSources() {
   const token = String(process.env.IB_ECONOMY_CHANNEL_TOKEN || '');
   if (!token) return [];
   const pick = value => (Number.isInteger(value) && value > 0 && value <= 65535 ? value : null);
-  const boundPort = pick(Number(process.env.IB_ECONOMY_CHANNEL_SOURCE_PORT))
-    || pick(Number(process.env.IB_ACTIVE_PORT))
-    || 23114;
+  const boundPort = isDevMode()
+    ? SERVICE_PORTS.activeChannelSource
+    : (pick(Number(process.env.IB_ECONOMY_CHANNEL_SOURCE_PORT))
+      || pick(Number(process.env.IB_ACTIVE_PORT)) || 23114);
   return [{
     consumer: economyCommandChannelModule.CONSUMER,
     token: token,
@@ -861,6 +1056,7 @@ function gatewayAssembly(options) {
     memoryRetrieval: options.memoryRetrieval,
     clock: options.clock,
     random: options.random,
+    memorySelectorVersion: options.memorySelectorVersion,
     logger: options.logger,
     sessionState: recallSessionState
   }));
@@ -901,6 +1097,7 @@ function gatewayAssembly(options) {
     store: options.store,
     registry: options.registry,
     executor: options.executor,
+    runtimeRecall: options.runtimeRecall,
     version: options.version || productVersion(),
     allowedOrigins: options.mobileOrigins || MOBILE_ORIGINS,
     lanMode: !options.loopbackBind,
@@ -931,12 +1128,70 @@ function gatewayAssembly(options) {
    （实测 EACCES），所以"每个测试一条隔离连接"的唯一可行方式就是
    **每个测试一个真实端口**。如果测试自己复制一遍接线，它验证的就不再是
    生产装配（这正是"测试与产品漂移"最典型的来源）。 */
+function openWorkRunStoreOptional(workRunStore, serviceLog) {
+  if (!workRunStore || typeof workRunStore.open !== 'function') return false;
+  try {
+    workRunStore.open();
+    return true;
+  } catch (error) {
+    const code = String(error && error.code || 'store-open-failed').slice(0, 80);
+    try { serviceLog('warn', 'work-run-store-unavailable', { code: code }); } catch (_) { /* diagnostics only */ }
+    return false;
+  }
+}
+
+function openAppDraftStoreOptional(appDraftStore, serviceLog) {
+  if (!appDraftStore || typeof appDraftStore.open !== 'function') return false;
+  try { appDraftStore.open(); return true; }
+  catch (error) {
+    const code = String(error && error.message || 'store-open-failed').slice(0, 80);
+    try { serviceLog('warn', 'app-draft-store-unavailable', { code: code }); } catch (_) { /* diagnostics only */ }
+    return false;
+  }
+}
+
+function openAgentMemoryStoreOptional(agentMemoryStore, serviceLog) {
+  if (!agentMemoryStore || typeof agentMemoryStore.open !== 'function') return false;
+  try {
+    agentMemoryStore.open();
+    return true;
+  } catch (error) {
+    const code = String(error && error.code || 'store-open-failed').slice(0, 80);
+    try { serviceLog('warn', 'agent-memory-store-unavailable', { code: code }); } catch (_) { /* diagnostics only */ }
+    return false;
+  }
+}
+
 function buildHomeNode(options) {
   options = options || {};
-  const dataDir = options.dataDir || DATA_DIR;
-  const credentialDataDir = options.credentialDataDir || (options.dataDir ? dataDir : CREDENTIAL_DATA_DIR);
+  const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
+  const credentialDataDir = options.credentialDataDir || (isDevMode() ? CREDENTIAL_DATA_DIR : (options.dataDir ? dataDir : CREDENTIAL_DATA_DIR));
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
-  const instanceStore = options.store || createStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  let instanceLinguisticEvidenceProducer = null;
+  const instanceStore = options.store || createStore({
+    dataDir: dataDir,
+    logger: (e, f) => serviceLog('info', e, f),
+    onCanonicalUserMessage: function (fact) {
+      if (instanceLinguisticEvidenceProducer) return instanceLinguisticEvidenceProducer.onCanonicalUserMessage(fact);
+      return null;
+    }
+  });
+  /* P28-WM-P1 · Work Run data uses the existing Home Node database file and
+     is exposed only by the authenticated desktop API. Its failure is isolated
+     to Work Mode so Chat and the existing canonical stores remain available. */
+  const instanceWorkRunStore = options.workRunStore || createWorkRunStore({
+    dataDir: dataDir,
+    clock: options.clock,
+    logger: (event, fields) => serviceLog('info', event, fields)
+  });
+  const instanceAppDraftStore = options.appDraftStore || createAppDraftStore({ dataDir: dataDir });
+  /* P28-WM-P3B.0 · Agent Memory owns an independent database and is optional to
+     existing Home Node domains. It is not bound to Chat Memory or Recall. */
+  const instanceAgentMemoryStore = options.agentMemoryStore || createAgentMemoryStore({
+    dataDir: dataDir,
+    clock: options.clock,
+    logger: (event, fields) => serviceLog('info', event, fields)
+  });
   /* M1-C.2d Wave 2：canonical `memories`（与 chatMessages 同一个 SQLite 文件，
      但拥有**自己的** revision / change_log 命名空间 —— 见 memory-store.js 头部）。
      刻意晚于 chat store 打开：chat store 负责损坏隔离（会给坏库改名），
@@ -949,6 +1204,7 @@ function buildHomeNode(options) {
     memoryRetrieval: options.memoryRetrieval,
     clock: options.clock,
     random: options.random,
+    memorySelectorVersion: options.memorySelectorVersion,
     logger: serviceLog,
     sessionState: recallSessionState
 
@@ -961,6 +1217,30 @@ function buildHomeNode(options) {
   const instanceCredentialAccess = options.credentialAccess || createCredentialAccess({
     dataDir: credentialDataDir,
     isAllowed: (id) => registryAllowsCredentialRef(instanceRegistry, id)
+  });
+  /* H2 · DSH is an explicitly injected, default-off execution service. Its
+     Workspace calls are relayed to the existing desktop Project Tool through
+     an in-memory bridge; the child receives neither Workspace paths nor APIs. */
+  const instanceDshWorkspaceBridge = options.dshWorkspaceBridge || createWorkspaceProjectBridge({
+    requestTimeoutMs: options.dshWorkspaceRequestTimeoutMs
+  });
+  const instanceDshHost = options.dshHostAdapter || createDshHostAdapter({
+    enabled: options.dshHostEnabled === true,
+    runtimeInstalled: options.dshRuntimeInstalled,
+    runtimeInstallationStatus: options.dshRuntimeInstallationStatus,
+    workRunStore: instanceWorkRunStore,
+    appDraftStore: instanceAppDraftStore,
+    registry: instanceRegistry,
+    credentialAccess: instanceCredentialAccess,
+    nodeModelPort: options.dshNodeModelPort || options.port || createNodeModelPort({}),
+    createProjectTool: options.createDshProjectTool || instanceDshWorkspaceBridge.createProjectTool,
+    spawn: options.dshSpawn,
+    dsh: options.dsh || {},
+    protocolVersion: options.dshProtocolVersion,
+    tempRoot: options.dshTempRoot,
+    timeoutMs: options.dshTimeoutMs,
+    logger: (level, event, fields) => serviceLog(level, event, fields),
+    onEvent: options.onDshHostEvent
   });
   /* M1-C.2i · canonical Middle Brain 执行缝（Node 宿主适配）。
      工厂本身不抛错：canonical 层加载失败时它返回一个"永远未参与"的降级对象，
@@ -985,9 +1265,21 @@ function buildHomeNode(options) {
     port: options.port || createNodeModelPort({}),
     middleBrain: instanceMiddleBrain,
     credentialAccess: instanceCredentialAccess,
+    /* M0 · test/provider capability stays assembly-injected; the mobile wire
+       cannot submit a guidance envelope or claim it was consumed. */
+    responseGuidanceProvider: options.responseGuidanceProvider
+      || ((identity, serverEnvelope) => serverEnvelope || null),
+    responseGuidanceAttribution: {
+      consumeExternalInfluence: input => instanceRuntimeBehaviorEffect.consumeExternalInfluence(input),
+      markExternalInfluenceNotConsumed: input => instanceRuntimeBehaviorEffect.markExternalInfluenceNotConsumed(input)
+    },
+    allowTestResponseGuidanceFixtures: options.allowTestResponseGuidanceFixtures === true,
     /* P5-B3-D4-R3 · assembly 注入的 clock 同时给 executor，保证 terminal occurredAt
        与 registry 观测窗使用同一时间轴。 */
     clock: options.clock,
+    /* D5 tests may pin the existing execution-owned turnIdFactory seam so a
+       canonical P2 fixture can target the exact turn; production passes none. */
+    turnIdFactory: options.turnIdFactory,
     logger: (e, f) => serviceLog('info', e, f),
     /* ── P5-B3-D3-A · canonical character binding authority ────────────
        与 runtime-recall / runtime-interpretation 同一个 accessor：
@@ -1118,12 +1410,35 @@ function buildHomeNode(options) {
       /* P5-B3-E-R1 · 与 P1 用的是**同一个** P5-B2 归因权威实例。 */
       attributionAuthority: instanceRuntimeBehaviorEffect
     });
+  const instancePreferenceReportProducer = options.runtimePreferenceReportProducer
+    || createRuntimeExplicitPreferenceReport({ clock: options.clock, logger: serviceLog });
+  const instancePreferenceReportAuthority = options.runtimePreferenceReport
+    ? (options.runtimePreferenceReport.producer || null)
+    : instancePreferenceReportProducer;
+  /* P5-B3-I · Only sealed preference-report RealityEvents establish this
+     target-specific completed choice. The report relation is not consulted. */
+  const instanceRuntimeSubjectiveOpportunityAuthority = options.runtimeSubjectiveOpportunityAuthority
+    || createRuntimeSubjectiveOpportunityAuthority({
+      realityEventAuthority: realityEventAuthority,
+      reportAuthority: instancePreferenceReportAuthority,
+      clock: options.clock
+    });
+  const instanceRuntimeEventOpportunityAuthority = options.runtimeEventOpportunityAuthority
+    || createRuntimeEventOpportunityAuthority({
+      realityEventAuthority: realityEventAuthority,
+      clock: options.clock
+    });
+  const instanceRuntimeOpportunityAuthority = options.runtimeOpportunityAuthority
+    || createRuntimeOpportunityAuthority({
+      eventAuthority: instanceRuntimeEventOpportunityAuthority,
+      subjectiveAuthority: instanceRuntimeSubjectiveOpportunityAuthority
+    });
   /* ── P5-B · Evidence Matcher（**唯一** semantic relation 分类面）────────
      advisory only：只产出 relation，**没有** source / domain / predictionType /
      admissibility / settlement state authority。
      ★ EVIDENCE_MATCHER_ENABLED_DEFAULT = false —— **不**默认全局开启。
        未启用时 statement 保持 unclassifiable，主观域 partition 保持 capability gap，
-       生产**零**新增模型调用。开启与否是 owner 配置，不是本相位擅自决定。
+        生产**零**新增模型调用。buildHomeNode 仅接受 owner 显式传入 true。
      ★ 先建 matcher、再建 settlement，让 "Settlement Engine → Evidence Matcher"
        成为**唯一**且**真实接线**的 seam（而不是留给调用方自己接）。 */
   const instanceRuntimeEvidenceMatcher = options.runtimeEvidenceMatcher
@@ -1132,6 +1447,7 @@ function buildHomeNode(options) {
       registry: instanceRegistry,
       credentialAccess: instanceCredentialAccess,
       enabled: options.evidenceMatcherEnabled === true,
+      attributionAuthority: instanceRuntimeBehaviorEffect,
       timeoutMs: options.evidenceMatcherTimeoutMs,
       logger: serviceLog
     });
@@ -1144,8 +1460,43 @@ function buildHomeNode(options) {
     || createRuntimePredictionSettlement({
       clock: options.clock,
       logger: serviceLog,
-      evidenceMatcher: instanceRuntimeEvidenceMatcher
+      evidenceMatcher: instanceRuntimeEvidenceMatcher,
+      opportunityAuthority: instanceRuntimeOpportunityAuthority
     });
+  const instanceRuntimePredictionCalibration = options.runtimePredictionCalibration
+    || createRuntimePredictionCalibration({
+      settlementRuntime: calibrationSettlementAuthority(instanceRuntimePredictionSettlement),
+      clock: options.clock,
+      logger: serviceLog,
+      /* R2 · P4 capability coverage remains independent of sample ingestion. */
+      matcherState: function () {
+        const d = instanceRuntimeEvidenceMatcher && typeof instanceRuntimeEvidenceMatcher.describe === 'function'
+          ? instanceRuntimeEvidenceMatcher.describe() : null;
+        return { present: !!d, enabled: !!(d && d.enabled === true) };
+      },
+      /* P5-B3-J-R1 · P4 verifies this exact P2/P1 BehaviorEffect runtime identity. */
+      attributionAuthority: instanceRuntimeBehaviorEffect
+    });
+  const instanceRuntimePredictionCalibrationDriver = options.runtimePredictionCalibrationDriver
+    || createRuntimePredictionCalibrationDriver({
+      settlementRuntime: instanceRuntimePredictionSettlement,
+      calibrationRuntime: instanceRuntimePredictionCalibration,
+      logger: (event, fields) => serviceLog('info', event, fields)
+    });
+  const instanceRuntimeOutcomeObservation = buildRuntimeOutcomeObservationRuntime(
+    instanceRuntimePredictionRegistry, instanceRuntimePredictionSettlement,
+    (event, fields) => serviceLog('info', event, fields), instanceRuntimeBehaviorEffect);
+  instanceLinguisticEvidenceProducer = createRuntimeLinguisticEvidenceProducer({
+    registry: instanceRuntimePredictionRegistry,
+    characterRegistry: instanceRegistry,
+    observationRuntime: instanceRuntimeOutcomeObservation,
+    settlementRuntime: instanceRuntimePredictionSettlement,
+    isCanonicalUserMessageFact: instanceStore.isCanonicalUserMessageFact,
+    matcherEnabled: !!(instanceRuntimeEvidenceMatcher.describe && instanceRuntimeEvidenceMatcher.describe().enabled),
+    onSettlement: (settlement, predictionError) => instanceRuntimePredictionCalibrationDriver.dispatchSettlement(settlement, predictionError),
+    clock: options.clock,
+    logger: (event, fields) => serviceLog('info', event, fields)
+  });
   /* ── P4 · Prediction Calibration Ledger（**唯一**校准统计权威）──────────
      它只消费 P3 标记 calibrationCounted=true 的 SettlementRecord；
      provenance 由 P3 模块的 module-private capability seal 提供。
@@ -1153,12 +1504,15 @@ function buildHomeNode(options) {
      ★ **没有**全局精度：不存在 accuracy / hitRate 这类可被 authority 消费的字段。 */
   /* P5-B3-D4-R3 · production feedback driver（instance 级 composition） */
   const instanceRealityFeedback = options.runtimeRealityFeedback
-    || buildRealityFeedbackDriver(instanceRuntimePredictionRegistry, instanceRuntimePredictionSettlement, (e, f) => serviceLog('info', e, f), instanceRuntimeBehaviorEffect);
+    || buildRealityFeedbackDriver(instanceRuntimePredictionRegistry, instanceRuntimePredictionSettlement,
+      (e, f) => serviceLog('info', e, f), instanceRuntimeBehaviorEffect, instanceRuntimePredictionCalibrationDriver,
+      instanceRuntimeEvidenceMatcher, instanceRuntimeOutcomeObservation);
   realityFeedbackDriver = instanceRealityFeedback;
   /* P5-B3-E-R1 · 结构化显式偏好报告（instance 级 composition）。
      ★ character binding 与 execution 用**同一个** accessor（instanceRegistry
        .getCharacterSpec），不新造 resolver。 */
   const instancePreferenceReport = options.runtimePreferenceReport || buildPreferenceReportSeam({
+    reportProducer: instancePreferenceReportProducer,
     clock: options.clock,
     logger: serviceLog,
     desktopCredential: options.token === undefined ? TOKEN : options.token,
@@ -1169,19 +1523,6 @@ function buildHomeNode(options) {
       }
     }
   });
-  const instanceRuntimePredictionCalibration = options.runtimePredictionCalibration
-    || createRuntimePredictionCalibration({
-      settlementRuntime: instanceRuntimePredictionSettlement,
-      clock: options.clock,
-      logger: serviceLog,
-      /* R2 · P4 必须跟**真实** enablement 一致：compiled ≠ enabled */
-      matcherState: function () {
-        const d = instanceRuntimeEvidenceMatcher && typeof instanceRuntimeEvidenceMatcher.describe === 'function'
-          ? instanceRuntimeEvidenceMatcher.describe() : null;
-        return { present: !!d, enabled: !!(d && d.enabled === true) };
-      },
-      attributionAuthorityAvailable: false
-    });
   const instanceRuntimeExpectation = options.runtimeExpectation || createRuntimeExpectation({
     modelPort: options.port || createNodeModelPort({}),
     policy: instanceRuntimePolicy,
@@ -1194,6 +1535,11 @@ function buildHomeNode(options) {
     credentialAccess: instanceCredentialAccess,
     /* P2：**唯一**批准的 Prediction Error 内部 seam（只建档、不结算）。 */
     predictionRegistry: instanceRuntimePredictionRegistry,
+    /* G2 event scope is resolved from D3's active immutable turn context and
+       requires the same request correlation id as the recall cognition turn. */
+    resolveActiveExecutionTurnBinding: typeof instanceExecutor.activeTurnBindingOf === 'function'
+      ? (conversationId, requestCorrelationId) => instanceExecutor.activeTurnBindingOf(conversationId, requestCorrelationId)
+      : function () { return null; },
     autoExpectationPolicy: options.runtimeAutoExpectationPolicy,
     clock: options.clock,
     logger: serviceLog
@@ -1222,6 +1568,44 @@ function buildHomeNode(options) {
     clock: options.clock,
     logger: serviceLog
   });
+  const instanceRuntimeMemoryAssociation = options.runtimeMemoryAssociation
+    || createRuntimeMemoryAssociation({
+      modelPort: options.port || createNodeModelPort({}),
+      registry: instanceRegistry,
+      credentialAccess: instanceCredentialAccess,
+      enabled: options.memoryAssociationEnabled !== false,
+      timeoutMs: options.memoryAssociationTimeoutMs,
+      clock: options.clock,
+      logger: (event, fields) => serviceLog('info', event, fields)
+    });
+  const instanceRuntimeSelfNarrative = options.runtimeSelfNarrative || createRuntimeSelfNarrative({
+    registry: instanceRegistry,
+    credentialAccess: instanceCredentialAccess,
+    modelPort: options.port || createNodeModelPort({}),
+    clock: options.clock,
+    logger: (event, fields) => serviceLog('info', event, fields)
+  });
+  const instanceRuntimeBehaviorModulation = options.runtimeBehaviorModulation
+    || createRuntimeBehaviorModulation({
+      modelPort: options.port || createNodeModelPort({}),
+      registry: instanceRegistry,
+      credentialAccess: instanceCredentialAccess,
+      attributionAuthority: instanceRuntimeBehaviorEffect,
+      timeoutMs: options.runtimeBehaviorModulationTimeoutMs,
+      clock: options.clock,
+      logger: (event, fields) => serviceLog('info', event, fields)
+    });
+  const instanceRuntimeCounterfactualMemory = options.runtimeCounterfactualMemory
+    || createRuntimeCounterfactualMemory({
+      modelPort: options.port || createNodeModelPort({}),
+      registry: instanceRegistry,
+      credentialAccess: instanceCredentialAccess,
+      predictionRegistry: instanceRuntimePredictionRegistry,
+      predictionSettlement: instanceRuntimePredictionSettlement,
+      realityEventAuthority: realityEventAuthority,
+      clock: options.clock,
+      logger: (event, fields) => serviceLog('info', event, fields)
+    });
   /* ── P21-R4-LIVE-3.3 · Runtime Recall 的挂载点 ────────────────────────
      依赖全部是**实例**作用域：这台实例的召回器、这台实例的 canonical memory
      store、这台实例的设备目录、这台实例的 cooldown session state。
@@ -1238,6 +1622,7 @@ function buildHomeNode(options) {
     memoryStore: instanceMemoryStore,
     registry: instanceRegistry,
     sessionState: recallSessionState,
+    associationRuntime: instanceRuntimeMemoryAssociation,
     clock: options.clock,
     random: options.random,
     glossaryProvider: options.glossaryProvider,
@@ -1246,6 +1631,9 @@ function buildHomeNode(options) {
        （与今天逐字节相同）；在场时它也只在 autoPolicy 为 ON 且通道 eligible
        时才会真的调用 provider。 */
     interpretation: instanceRuntimeInterpretation,
+    selfNarrative: instanceRuntimeSelfNarrative,
+    behaviorModulation: instanceRuntimeBehaviorModulation,
+    counterfactualMemory: instanceRuntimeCounterfactualMemory,
     /* P21-R4-LIVE-5 · 期望的兄弟依赖（POST_INTERPRETATION_NONBLOCKING）。
        缺席 ⇒ 期望这条路径整体不存在（与今天逐字节相同）。 */
     expectation: instanceRuntimeExpectation,
@@ -1263,6 +1651,7 @@ function buildHomeNode(options) {
     store: instanceStore,
     registry: instanceRegistry,
     executor: instanceExecutor,
+    runtimeRecall: instanceRuntimeRecall,
     memoryStore: instanceMemoryStore,
     memoryRetrieval: instanceMemoryRetrieval,
     understandingStore: instanceUnderstanding.understandingStore,
@@ -1287,6 +1676,13 @@ function buildHomeNode(options) {
   });
   const instanceHttp = createHttp({
     store: instanceStore,
+    workRunStore: instanceWorkRunStore,
+    appDraftStore: instanceAppDraftStore,
+    dshHost: instanceDshHost,
+    dshRuntimeInstaller: options.dshRuntimeInstaller || null,
+    dshRuntimeOnlineInstaller: options.dshRuntimeOnlineInstaller || null,
+    workspaceProjectBridge: instanceDshWorkspaceBridge,
+    agentMemoryStore: instanceAgentMemoryStore,
     executor: instanceExecutor,
     gateway: instanceGateway,
     token: options.token === undefined ? TOKEN : options.token,
@@ -1368,8 +1764,12 @@ function buildHomeNode(options) {
   runtimeExpectation: instanceRuntimeExpectation,
   runtimeRealityFeedback: instanceRealityFeedback,
   runtimePredictionRegistry: instanceRuntimePredictionRegistry,
+  runtimeSubjectiveOpportunityAuthority: instanceRuntimeSubjectiveOpportunityAuthority,
+    runtimeEventOpportunityAuthority: instanceRuntimeEventOpportunityAuthority,
+    runtimeOpportunityAuthority: instanceRuntimeOpportunityAuthority,
   runtimePredictionSettlement: instanceRuntimePredictionSettlement,
   runtimePredictionCalibration: instanceRuntimePredictionCalibration,
+  runtimePredictionCalibrationDriver: instanceRuntimePredictionCalibrationDriver,
   /* P5-B · Evidence Matcher（advisory only · 默认未启用 · 无 settlement authority）。 */
   runtimeEvidenceMatcher: instanceRuntimeEvidenceMatcher,
   runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
@@ -1384,6 +1784,7 @@ function buildHomeNode(options) {
         probe: instanceMomentProbe
       }
     ],
+    workRunStore: instanceWorkRunStore,
     /* LAN 门：显式非 loopback 绑定 **且** 设备鉴权此刻真的就绪。
        刻意传**函数**：http 层在这里被构造时 open() 还没发生（见下面 open()），
        固化成布尔就等于把"注册表一定会成功打开"这个尚未证实的假设写进安全决策。
@@ -1398,6 +1799,9 @@ function buildHomeNode(options) {
      `/moments/*` 靠它如实上报），而不是让整台节点连聊天都不服务。 */
   function open() {
     const openedStore = instanceStore.open();
+    openWorkRunStoreOptional(instanceWorkRunStore, serviceLog);
+    openAppDraftStoreOptional(instanceAppDraftStore, serviceLog);
+    openAgentMemoryStoreOptional(instanceAgentMemoryStore, serviceLog);
     instanceMemoryStore.open();
     instanceUnderstanding.understandingStore.open();
     openMomentStore(instanceMoments.momentsStore, instanceMomentProbe);
@@ -1415,6 +1819,15 @@ function buildHomeNode(options) {
     return openedStore;
   }
   function close() {
+    const dshStatus = instanceDshHost && typeof instanceDshHost.describe === 'function' ? instanceDshHost.describe() : null;
+    if (dshStatus && Number(dshStatus.activeRuns) > 0) {
+      return Promise.resolve(instanceDshHost.close()).catch(() => {}).then(closeStores);
+    }
+    closeStores();
+    return undefined;
+  }
+  function closeStores() {
+    try { instanceDshWorkspaceBridge.close(); } catch (_) { /* ephemeral bridge */ }
     try { instanceGateway.stop(); } catch (_) { /* 已停止 */ }
     /* 关掉监听并**主动断开**所有还在的 keep-alive 连接。
        只调 server.close() 是不够的：它只是停止接受新连接，已建立的空闲
@@ -1434,10 +1847,17 @@ function buildHomeNode(options) {
     try { instanceMoments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceEconomy.economyStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceMemoryStore.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceAgentMemoryStore.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceWorkRunStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceStore.close(); } catch (_) { /* 已关闭 */ }
   }
   return {
     store: instanceStore,
+    workRunStore: instanceWorkRunStore,
+    appDraftStore: instanceAppDraftStore,
+    dshHost: instanceDshHost,
+    workspaceProjectBridge: instanceDshWorkspaceBridge,
+    agentMemoryStore: instanceAgentMemoryStore,
     memoryStore: instanceMemoryStore,
     /* F1b：与 memoryRetrieval / gateway 注入的是**同一个**实例（§16 identity spy）。 */
     recallSessionState: recallSessionState,
@@ -1494,12 +1914,20 @@ function buildHomeNode(options) {
   runtimeExpectation: instanceRuntimeExpectation,
   runtimeRealityFeedback: instanceRealityFeedback,
   runtimePredictionRegistry: instanceRuntimePredictionRegistry,
+  runtimeSubjectiveOpportunityAuthority: instanceRuntimeSubjectiveOpportunityAuthority,
+    runtimeEventOpportunityAuthority: instanceRuntimeEventOpportunityAuthority,
+    runtimeOpportunityAuthority: instanceRuntimeOpportunityAuthority,
   runtimePredictionSettlement: instanceRuntimePredictionSettlement,
   runtimePredictionCalibration: instanceRuntimePredictionCalibration,
+  runtimePredictionCalibrationDriver: instanceRuntimePredictionCalibrationDriver,
   /* P5-B · Evidence Matcher（advisory only · 默认未启用 · 无 settlement authority）。 */
   runtimeEvidenceMatcher: instanceRuntimeEvidenceMatcher,
   runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
   runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
+  runtimeLinguisticEvidence: Object.freeze({
+    describe: instanceLinguisticEvidenceProducer.describe,
+    awaitIdle: instanceLinguisticEvidenceProducer.awaitIdle
+  }),
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1525,6 +1953,7 @@ const recallSessionState = createRecallSessionState();
 const memory = memoryAssembly({
   dataDir: DATA_DIR,
   logger: (level, event, fields) => log(level, event, fields),
+  memorySelectorVersion: process.env.IB_MEMORY_RECALL_SELECTOR_VERSION || 'v1',
   sessionState: recallSessionState
 });
 const registry = createDeviceRegistry({
@@ -1532,6 +1961,38 @@ const registry = createDeviceRegistry({
   logger: (event, fields) => log('info', event, fields)
 });
 productionRegistry = registry;
+/* The Dev and production DSH gates are separate. Dev still requires the explicit
+   Synthetic launcher opt-in. Production requires the packaged pinned runtime,
+   its verified Web frontend, and a Tauri Host session; neither path reads DSH
+   Provider credentials or authorizes Workspace access outside Home Node. */
+const dshWorkspaceBridge = createWorkspaceProjectBridge();
+const dshRuntime = isDevMode() ? dshDevRuntimeConfig() : dshProductionRuntimeConfig();
+const dshWebUiHost = dshRuntime && dshRuntime.ui
+  ? createDshWebHost(Object.assign({}, dshRuntime.ui, { logger: (level, event, fields) => log(level, event, fields) }))
+  : null;
+const dshHost = createDshHostAdapter({
+  enabled: !!(dshRuntime && dshRuntime.enabled),
+  runtimeInstalled: dshRuntime && dshRuntime.runtimeInstalled,
+  runtimeInstallationStatus: dshRuntime && dshRuntime.runtimeInstallationStatus,
+  workRunStore: workRunStore,
+  appDraftStore: appDraftStore,
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  nodeModelPort: port,
+  createProjectTool: dshWorkspaceBridge.createProjectTool,
+  dsh: dshRuntime ? dshRuntime.dsh : undefined,
+  protocolVersion: dshRuntime ? dshRuntime.protocolVersion : undefined,
+  webUiHost: dshWebUiHost,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+if (dshRuntime && dshRuntime.onlineInstaller && typeof dshRuntime.onlineInstaller.setUpgradeLifecycle === 'function') {
+  dshRuntime.onlineInstaller.setUpgradeLifecycle({
+    beginUpgrade: () => dshHost.beginRuntimeUpgrade(),
+    verifyUpgrade: () => dshHost.verifyRuntimeUpgrade(),
+    rollbackUpgrade: () => dshHost.rollbackRuntimeUpgrade(),
+    finishUpgrade: state => dshHost.finishRuntimeUpgrade(state)
+  });
+}
 /* M1-C.2m：进程级启动路径同样必须挂上理解域 —— 与 memory 那次教训逐字同形
    （只接 buildHomeNode 会让 23118 上的 /understanding/* 全 501，而测试全绿）。
    modelPort 复用进程级 port：派生与回合走同一条 wire 层。 */
@@ -1591,6 +2052,15 @@ const runtimeInterpretation = createRuntimeInterpretation({
      两侧都不传 ⇒ 文件权威生效；没有 env、没有 UI 开关、没有默认 true。 */
   logger: (level, event, fields) => log(level, event, fields)
 });
+/* P21-R4-L · bounded session-only narrative synthesis. It consumes only a
+   validated R4-K current meaning and the existing Association trace. */
+const runtimeSelfNarrative = createRuntimeSelfNarrative({
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  modelPort: port,
+  clock: function () { return Date.now(); },
+  logger: (event, fields) => log('info', event, fields)
+});
 /* ── P21-R4-LIVE-3.3 · **进程级**的 Runtime Recall ──────────────────────
    与 memory / understanding / moments / economy / interpretation 那几次的教训
    逐字同形：只接 buildHomeNode 会让**真实进程**上这条路径整个不存在
@@ -1612,6 +2082,13 @@ const runtimeBehaviorEffect = createRuntimeBehaviorEffect({
   clock: function () { return Date.now(); },
   logger: (level, event, fields) => log(level, event, fields)
 });
+const runtimeBehaviorModulation = createRuntimeBehaviorModulation({
+  modelPort: port,
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  attributionAuthority: runtimeBehaviorEffect,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 /* P21-R4-PROD-1 · 进程级认知控制面（与 buildHomeNode 那一份同源、同一 policy）。 */
 const runtimeCognitivePolicy = createRuntimeCognitivePolicy({
   policy: runtimePolicy,
@@ -1624,30 +2101,83 @@ const runtimePredictionRegistry = createRuntimePredictionRegistry({
   logger: (level, event, fields) => log(level, event, fields),
   attributionAuthority: runtimeBehaviorEffect
 });
-/* P5-B · 进程级 Evidence Matcher。★ 默认**未启用**：生产零新增模型调用。 */
+/* P5-B3-L · 进程级 Matcher 只接受严格 system-config opt-in。
+   未设置或任何非 "1" 值都保持冻结默认 false。 */
 const runtimeEvidenceMatcher = createRuntimeEvidenceMatcher({
   modelPort: port,
   registry: registry,
   credentialAccess: productionCredentialAccess,
-  enabled: false,
+  enabled: process.env.IB_EVIDENCE_MATCHER_ENABLED === '1',
+  attributionAuthority: runtimeBehaviorEffect,
   logger: (level, event, fields) => log(level, event, fields)
+});
+const runtimePreferenceReportProducer = createRuntimeExplicitPreferenceReport({
+  clock: function () { return Date.now(); },
+  logger: (event, fields) => log('info', event, fields)
+});
+const runtimeSubjectiveOpportunityAuthority = createRuntimeSubjectiveOpportunityAuthority({
+  realityEventAuthority: realityEventAuthority,
+  reportAuthority: runtimePreferenceReportProducer,
+  clock: function () { return Date.now(); }
+});
+const runtimeEventOpportunityAuthority = createRuntimeEventOpportunityAuthority({
+  realityEventAuthority: realityEventAuthority,
+  clock: function () { return Date.now(); }
+});
+const runtimeOpportunityAuthority = createRuntimeOpportunityAuthority({
+  eventAuthority: runtimeEventOpportunityAuthority,
+  subjectiveAuthority: runtimeSubjectiveOpportunityAuthority
 });
 /* P3 · 进程级 Prediction Settlement Engine（与 buildHomeNode 那一份同源）。 */
 const runtimePredictionSettlement = createRuntimePredictionSettlement({
   clock: function () { return Date.now(); },
   logger: (level, event, fields) => log(level, event, fields),
-  evidenceMatcher: runtimeEvidenceMatcher
+  evidenceMatcher: runtimeEvidenceMatcher,
+  opportunityAuthority: runtimeOpportunityAuthority
+});
+const runtimePredictionCalibration = createRuntimePredictionCalibration({
+  settlementRuntime: calibrationSettlementAuthority(runtimePredictionSettlement),
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields),
+  matcherState: function () {
+    const d = runtimeEvidenceMatcher && typeof runtimeEvidenceMatcher.describe === 'function'
+      ? runtimeEvidenceMatcher.describe() : null;
+    return { present: !!d, enabled: !!(d && d.enabled === true) };
+  },
+  /* P5-B3-J-R1 · same process-level runtime instance used by P2/P1/feedback. */
+  attributionAuthority: runtimeBehaviorEffect
+});
+const runtimePredictionCalibrationDriver = createRuntimePredictionCalibrationDriver({
+  settlementRuntime: runtimePredictionSettlement,
+  calibrationRuntime: runtimePredictionCalibration,
+  logger: (event, fields) => log('info', event, fields)
+});
+const runtimeOutcomeObservation = buildRuntimeOutcomeObservationRuntime(
+  runtimePredictionRegistry, runtimePredictionSettlement,
+  (event, fields) => log('info', event, fields), runtimeBehaviorEffect);
+runtimeLinguisticEvidenceProducer = createRuntimeLinguisticEvidenceProducer({
+  registry: runtimePredictionRegistry,
+  characterRegistry: registry,
+  observationRuntime: runtimeOutcomeObservation,
+  settlementRuntime: runtimePredictionSettlement,
+  isCanonicalUserMessageFact: store.isCanonicalUserMessageFact,
+  matcherEnabled: !!(runtimeEvidenceMatcher.describe && runtimeEvidenceMatcher.describe().enabled),
+  onSettlement: (settlement, predictionError) => runtimePredictionCalibrationDriver.dispatchSettlement(settlement, predictionError),
+  clock: function () { return Date.now(); },
+  logger: (event, fields) => log('info', event, fields)
 });
 /* P4 · 进程级 Prediction Calibration Ledger（与 buildHomeNode 那一份同源）。 */
 /* P5-B3-D4-R3 · module 级 feedback driver */
 const runtimeRealityFeedback = buildRealityFeedbackDriver(
-  runtimePredictionRegistry, runtimePredictionSettlement, (e, f) => log('info', e, f), runtimeBehaviorEffect);
+  runtimePredictionRegistry, runtimePredictionSettlement, (e, f) => log('info', e, f),
+  runtimeBehaviorEffect, runtimePredictionCalibrationDriver, runtimeEvidenceMatcher, runtimeOutcomeObservation);
 realityFeedbackDriver = runtimeRealityFeedback;
 /* P5-B3-E-R1 · 进程级 explicit preference report（与 buildHomeNode 那一份同源）。
    ★ 没有这一行，构造函数只是一个没人引用的对象：路由分支不存在、日志里永远
      不会出现一行 explicit-preference-report —— 而单元测试全绿（本文件已经
      记过多次同一种病）。 */
 const runtimePreferenceReport = buildPreferenceReportSeam({
+  reportProducer: runtimePreferenceReportProducer,
   clock: function () { return Date.now(); },
   logger: (level, event, fields) => log(level, event, fields),
   desktopCredential: TOKEN,
@@ -1657,17 +2187,6 @@ const runtimePreferenceReport = buildPreferenceReportSeam({
       return registry.getCharacterSpec(characterId);
     }
   }
-});
-const runtimePredictionCalibration = createRuntimePredictionCalibration({
-  settlementRuntime: runtimePredictionSettlement,
-  clock: function () { return Date.now(); },
-  logger: (level, event, fields) => log(level, event, fields),
-  matcherState: function () {
-    const d = runtimeEvidenceMatcher && typeof runtimeEvidenceMatcher.describe === 'function'
-      ? runtimeEvidenceMatcher.describe() : null;
-    return { present: !!d, enabled: !!(d && d.enabled === true) };
-  },
-  attributionAuthorityAvailable: false
 });
 const runtimeExpectation = createRuntimeExpectation({
   modelPort: port,
@@ -1679,13 +2198,38 @@ const runtimeExpectation = createRuntimeExpectation({
   credentialAccess: productionCredentialAccess,
   /* P2：唯一批准的 Prediction Error 内部 seam（只建档、不结算）。 */
   predictionRegistry: runtimePredictionRegistry,
+  resolveActiveExecutionTurnBinding: executor && typeof executor.activeTurnBindingOf === 'function'
+    ? (conversationId, requestCorrelationId) => executor.activeTurnBindingOf(conversationId, requestCorrelationId)
+    : function () { return null; },
   logger: (level, event, fields) => log(level, event, fields)
+});
+/* P21-R3 · bounded memory-to-memory relationship view. This capability is
+   session-derived, uses the same role registry / Vault / model port, and has
+   no canonical Memory or relationship writer. It can be disabled by setting
+   IB_MEMORY_ASSOCIATION_ENABLED=0; failures always fall back to direct Recall. */
+const runtimeMemoryAssociation = createRuntimeMemoryAssociation({
+  modelPort: port,
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  enabled: process.env.IB_MEMORY_ASSOCIATION_ENABLED !== '0',
+  logger: (level, event, fields) => log(level, event, fields)
+});
+const runtimeCounterfactualMemory = createRuntimeCounterfactualMemory({
+  modelPort: port,
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  predictionRegistry: runtimePredictionRegistry,
+  predictionSettlement: runtimePredictionSettlement,
+  realityEventAuthority: realityEventAuthority,
+  clock: function () { return Date.now(); },
+  logger: (event, fields) => log('info', event, fields)
 });
 const runtimeRecall = createRuntimeRecall({
   memoryRetrieval: memory.memoryRetrieval,
   memoryStore: memory.memoryStore,
   registry,
   sessionState: recallSessionState,
+  associationRuntime: runtimeMemoryAssociation,
   /* 词汇表条目来源：两个装配路径都必须**有能力**接上它（buildHomeNode 侧
      由 options.glossaryProvider / options.getGlossaryEntries 注入）。
      生产侧今天**没有**任何来源 —— 桌面 wrapper 与 Node wrapper 都没有真的
@@ -1698,9 +2242,12 @@ const runtimeRecall = createRuntimeRecall({
      少了它，真实进程上"自动解释"这条路径整体不存在，而所有 buildHomeNode 的
      测试全绿 —— 正是本文件已经记过五次的那种装配缺口。 */
   interpretation: runtimeInterpretation,
+  selfNarrative: runtimeSelfNarrative,
+  behaviorModulation: runtimeBehaviorModulation,
   /* P21-R4-LIVE-5 · 进程级的期望兄弟依赖（与 buildHomeNode 那一行逐字同源）。 */
   expectation: runtimeExpectation,
   behaviorEffect: runtimeBehaviorEffect,
+  counterfactualMemory: runtimeCounterfactualMemory,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -1712,6 +2259,7 @@ const gateway = gatewayAssembly({
   sessionState: recallSessionState,
   registry,
   executor,
+  runtimeRecall: runtimeRecall,
   memoryStore: memory.memoryStore,
   memoryRetrieval: memory.memoryRetrieval,
   understandingStore: understanding.understandingStore,
@@ -1730,6 +2278,15 @@ const gateway = gatewayAssembly({
 });
 const httpLayer = createHttp({
   store,
+  devIdentity: DEV_IDENTITY,
+  authorizeRequestIdentity: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin),
+  workRunStore,
+  appDraftStore,
+  dshHost,
+  dshRuntimeInstaller: dshRuntime && dshRuntime.runtimeInstaller || null,
+  dshRuntimeOnlineInstaller: dshRuntime && dshRuntime.onlineInstaller || null,
+  workspaceProjectBridge: dshWorkspaceBridge,
+  agentMemoryStore,
   executor,
   gateway,
   token: TOKEN,
@@ -1804,6 +2361,9 @@ const httpLayer = createHttp({
      机器可读形式 —— 没有这一行，"Registry 已接线"就只是一句话。
      ★ 它**没有** settlement / observation / memory / relationship authority。 */
   runtimePredictionRegistry: runtimePredictionRegistry,
+  runtimeSubjectiveOpportunityAuthority: runtimeSubjectiveOpportunityAuthority,
+  runtimeEventOpportunityAuthority: runtimeEventOpportunityAuthority,
+  runtimeOpportunityAuthority: runtimeOpportunityAuthority,
   /* P3 · 进程级 Prediction Settlement Engine。**唯一**结算权威：
      七状态、ordinal Prediction Error、internal audit only。
      它**没有** memory / relationship / model authority，也**不**写 calibration。 */
@@ -1812,6 +2372,7 @@ const httpLayer = createHttp({
      分区隔离的机械计数 + ordinal PE bucket + `calibrationConfidence = null`。
      ★ 它**没有**写回能力，也**不**产出任何可供 authority 消费的全局精度。 */
   runtimePredictionCalibration: runtimePredictionCalibration,
+  runtimePredictionCalibrationDriver: runtimePredictionCalibrationDriver,
   /* P5-B · 进程级 Evidence Matcher（advisory only · 默认未启用）。 */
   runtimeEvidenceMatcher: runtimeEvidenceMatcher,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
@@ -1859,6 +2420,8 @@ function installHomeNodeStopRoute(teardownFn, opts) {
      那是共享模块的唯一职责，抄一份到这里就会变成第二个实现。 */
   homeNodeStop.route = serviceControl.createStopDispatch({
     service: 'internal-beyond-home-node',
+    authorize: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin)
+      ? null : { status: 403, error: 'environment-identity-mismatch' },
     stop: () => teardownFn('http'),
     onAccepted: info => log('info', 'stop-requested', { via: 'http', pid: info.pid }),
     onStopped: result => log('info', 'stop-complete', {
@@ -1882,6 +2445,9 @@ function installHomeNodeStopRoute(teardownFn, opts) {
    tests/test_p11_3e_moments_canonical_closure.js 对**真实子进程**下断言。 */
 function openAll() {
   const opened = store.open();
+  openWorkRunStoreOptional(workRunStore, (level, event, fields) => log(level, event, fields));
+  openAppDraftStoreOptional(appDraftStore, (level, event, fields) => log(level, event, fields));
+  openAgentMemoryStoreOptional(agentMemoryStore, (level, event, fields) => log(level, event, fields));
   memory.memoryStore.open();
   understanding.understandingStore.open();
   openMomentStore(moments.momentsStore, momentStoreFailureProbe);
@@ -2031,8 +2597,11 @@ if (require.main === module) {
     const result = await serviceControl.runStop('homeNode', {
       entering: () => { /* shuttingDown 已置位；重复停止是 no-op */ },
       stopWork: () => {
-        try { server.close(); } catch (_) { /* 已关闭 */ }
-        try { gateway.stop(); } catch (_) { /* 已停止 */ }
+        return Promise.resolve(dshHost.close()).then(() => {
+          dshWorkspaceBridge.close();
+          try { server.close(); } catch (_) { /* 已关闭 */ }
+          try { gateway.stop(); } catch (_) { /* 已停止 */ }
+        });
       },
       stopTimers: () => {
         try { if (understanding.understandingDerivation) understanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
@@ -2043,6 +2612,8 @@ if (require.main === module) {
         try { economy.economyStore.close(); } catch (_) { /* 已关闭 */ }
         try { registry.close(); } catch (_) { /* 已关闭 */ }
         try { memory.memoryStore.close(); } catch (_) { /* 已关闭 */ }
+        try { agentMemoryStore.close(); } catch (_) { /* 已关闭 */ }
+        try { workRunStore.close(); } catch (_) { /* 已关闭 */ }
         try { store.close(); } catch (_) { /* 已关闭 */ }
       },
       report: () => {
@@ -2076,6 +2647,11 @@ if (require.main === module) {
 
 module.exports = {
   store,
+  workRunStore,
+  appDraftStore,
+  dshHost,
+  dshWorkspaceBridge,
+  agentMemoryStore,
   registry,
   gateway,
   executor,
@@ -2134,6 +2710,11 @@ module.exports = {
   /* P5-B3-D4 · 唯一 RealityEvent mint authority（供验收/诊断读取，不构成第二写入面） */
   runtimeRealityEvent: realityEventAuthority,
   runtimeRealityFeedback: runtimeRealityFeedback,
+  runtimeLinguisticEvidence: Object.freeze({
+    describe: runtimeLinguisticEvidenceProducer.describe,
+    awaitIdle: runtimeLinguisticEvidenceProducer.awaitIdle
+  }),
+  EVIDENCE_MATCHER_ENABLED_DEFAULT: EVIDENCE_MATCHER_ENABLED_DEFAULT,
   /* P5-B3-E-R1 · 结构化显式偏好报告（producer + reality source + seam）。
      ★ 导出的是**同一个** seam 对象（identity），与 buildHomeNode 那一份同源。 */
   runtimePreferenceReport: runtimePreferenceReport,
@@ -2141,6 +2722,10 @@ module.exports = {
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,
+  /* Read-only production status projection; the P4 runtime remains the truth owner. */
+  describePredictionCalibrationCapability: function () {
+    return runtimePredictionCalibration.describe();
+  },
   memoryAssembly,
   canonicalMemoryDeps,
   openAll,

@@ -77,6 +77,366 @@ async function wsGetProjects(){try{return await dbGetAll('projects')}catch(e){re
 async function wsGetFiles(projId){try{return(await dbGetAll('projectFiles')).filter(f=>f.projectId===projId)}catch(e){return[]}}
 async function wsGetFileByPath(projId,path){var all=await wsGetFiles(projId);return all.find(f=>f.path===path)||null}
 
+/* P28-WM-P2 · narrow, read-only project projection for the Work Mode tool.
+   It deliberately uses the existing Workspace IndexedDB authority. */
+var WS_WORK_MODE_MAX_FILES=200;
+var WS_WORK_MODE_MAX_FILE_BYTES=131072;
+var WS_WORK_MODE_HASH_RE=/^[a-f0-9]{64}$/;
+var WS_WORK_MODE_TEXT_EXTS={
+  '.c':1,'.cc':1,'.cpp':1,'.cs':1,'.css':1,'.go':1,'.h':1,'.hpp':1,'.htm':1,'.html':1,
+  '.ini':1,'.java':1,'.js':1,'.json':1,'.jsx':1,'.kt':1,'.md':1,'.mjs':1,'.cjs':1,
+  '.ps1':1,'.py':1,'.rb':1,'.rs':1,'.rst':1,'.scss':1,'.sh':1,'.sql':1,'.svg':1,
+  '.toml':1,'.ts':1,'.tsx':1,'.txt':1,'.xml':1,'.yaml':1,'.yml':1
+};
+var WS_WORK_MODE_TEXT_NAMES={
+  readme:1,license:1,makefile:1,dockerfile:1,procfile:1,'.gitignore':1,'.gitattributes':1,'.editorconfig':1
+};
+var WS_WORK_MODE_DENIED_NAMES={
+  '.env':1,'.npmrc':1,'.pypirc':1,'.netrc':1,'.dockercfg':1,'.htpasswd':1,
+  'authorized_keys':1,'id_rsa':1,'id_ed25519':1
+};
+function _wsWorkModePathIsSafe(value){
+  if(typeof value!=='string'||!value||value.length>400)return false;
+  if(value.charAt(0)==='/'||value.indexOf('\\')>=0||/^[A-Za-z]:/.test(value)||/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value))return false;
+  if(/[\u0000-\u001F\u007F]/.test(value))return false;
+  return value.split('/').every(function(part){return !!part&&part!=='.'&&part!=='..'});
+}
+function _wsWorkModeFileEligible(file){
+  if(!file||typeof file.id!=='string'||!/^[A-Za-z0-9_.:-]{1,180}$/.test(file.id)||!_wsWorkModePathIsSafe(file.path))return false;
+  var parts=file.path.split('/'),base=parts[parts.length-1].toLowerCase();
+  if(parts.some(function(part){return ['.git','node_modules','.venv','venv','vendor'].indexOf(part.toLowerCase())>=0}))return false;
+  if(WS_WORK_MODE_DENIED_NAMES[base]||base.indexOf('.env.')===0||base.indexOf('.env-')===0||/\.(pem|key|p12|pfx|keystore|jks)$/i.test(base))return false;
+  if(/(^|[._-])(secrets?|credentials?|private[-_]?key|id_rsa|id_ed25519|service[-_]?account)([._-]|$)/i.test(base))return false;
+  var declaredSize=Number(file.size);
+  if(Number.isSafeInteger(declaredSize)&&declaredSize>WS_WORK_MODE_MAX_FILE_BYTES)return false;
+  var dot=base.lastIndexOf('.'),ext=dot>=0?base.slice(dot):'';
+  return !!WS_WORK_MODE_TEXT_NAMES[base]||!!WS_WORK_MODE_TEXT_EXTS[ext];
+}
+function _wsWorkModeUtf8Size(value){
+  try{return new TextEncoder().encode(value).length}catch(e){return -1}
+}
+async function _wsWorkModeContentHash(value){
+  var api=typeof crypto!=='undefined'?crypto:null;
+  if(!api||!api.subtle||typeof api.subtle.digest!=='function')return'';
+  var digest=await api.subtle.digest('SHA-256',new TextEncoder().encode(value));
+  return Array.prototype.map.call(new Uint8Array(digest),function(byte){return byte.toString(16).padStart(2,'0')}).join('');
+}
+function _wsWorkModeScalar(value,keys,depth){
+  if(typeof value==='string'||typeof value==='number')return String(value).trim();
+  if(!value||typeof value!=='object'||depth<0)return'';
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i];
+    if(!Object.prototype.hasOwnProperty.call(value,key))continue;
+    var found=_wsWorkModeScalar(value[key],keys,depth-1);
+    if(found)return found;
+  }
+  return'';
+}
+function _wsWorkModeProjectIdentity(project){
+  if(!project||typeof project!=='object')return null;
+  var id=_wsWorkModeScalar(project.id,['id','projectId','ref','value'],2)
+    ||_wsWorkModeScalar(project.projectId,['id','projectId','ref','value'],2);
+  if(!/^[A-Za-z0-9_.:-]{1,180}$/.test(id))return null;
+  var nameKeys=['displayName','projectName','name','label','title','value','text'];
+  var pathKeys=['workspacePath','projectPath','rootPath','localPath','basePath','directory','path'];
+  var name=_wsWorkModeScalar(project.name,nameKeys,2)
+    ||_wsWorkModeScalar(project.displayName,nameKeys,2)
+    ||_wsWorkModeScalar(project.projectName,nameKeys,2)
+    ||_wsWorkModeScalar(project.project,nameKeys,2)
+    ||_wsWorkModeScalar(project.metadata,nameKeys,2);
+  var projectPath=_wsWorkModeScalar(project.path,pathKeys,2)
+    ||_wsWorkModeScalar(project.workspacePath,pathKeys,2)
+    ||_wsWorkModeScalar(project.projectPath,pathKeys,2)
+    ||_wsWorkModeScalar(project.rootPath,pathKeys,2)
+    ||_wsWorkModeScalar(project.localPath,pathKeys,2)
+    ||(project.name&&typeof project.name==='object'?_wsWorkModeScalar(project.name,pathKeys,2):'')
+    ||(project.project&&typeof project.project==='object'?_wsWorkModeScalar(project.project,pathKeys,2):'')
+    ||_wsWorkModeScalar(project.metadata,pathKeys,2);
+  return{id:id,name:(name||id).slice(0,160),path:projectPath.slice(0,400)};
+}
+async function wsGetWorkModeProjects(){
+  var rows;
+  try{rows=await dbGetAll('projects')}catch(e){return{ok:false,error:'workspace-unavailable'}};
+  if(!Array.isArray(rows))return{ok:false,error:'workspace-unavailable'};
+  var projects=[],seen=Object.create(null);
+  for(var i=0;i<rows.length;i++){
+    var project=_wsWorkModeProjectIdentity(rows[i]);
+    if(!project)continue;
+    if(seen[project.id])return{ok:false,error:'workspace-integrity'};
+    seen[project.id]=true;projects.push(project);
+  }
+  return{ok:true,projects:projects};
+}
+async function wsGetWorkModeProjectSnapshot(projectRef){
+  if(typeof projectRef!=='string'||!/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef))return{ok:false,error:'invalid-project-ref'};
+  var project;
+  try{project=await dbGet('projects',projectRef)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  var identity=_wsWorkModeProjectIdentity(project);
+  if(!identity||identity.id!==projectRef)return{ok:false,error:'project-not-found'};
+  var rows;
+  try{rows=await dbGetByIndex('projectFiles','byProject',projectRef)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  if(!Array.isArray(rows))return{ok:false,error:'workspace-unavailable'};
+  var readable=rows.filter(function(file){return file&&String(file.projectId||'')===projectRef&&_wsWorkModeFileEligible(file)});
+  if(readable.length>WS_WORK_MODE_MAX_FILES)return{ok:false,error:'project-file-limit'};
+  var seenIds=Object.create(null),seenPaths=Object.create(null),files=[];
+  for(var i=0;i<readable.length;i++){
+    var file=readable[i],size=Number(file.size);
+    if(seenIds[file.id]||seenPaths[file.path])return{ok:false,error:'workspace-integrity'};
+    seenIds[file.id]=true;seenPaths[file.path]=true;
+    if(typeof file.content!=='string'||file.content.indexOf('\0')>=0)return{ok:false,error:'file-read-failed'};
+    var actualSize=_wsWorkModeUtf8Size(file.content);
+    if(actualSize<0)return{ok:false,error:'file-read-failed'};
+    if(actualSize>WS_WORK_MODE_MAX_FILE_BYTES)return{ok:false,error:'file-size-limit'};
+    if(Number.isSafeInteger(size)&&size>=0&&size!==actualSize)return{ok:false,error:'file-changed'};
+    var contentHash='';try{contentHash=await _wsWorkModeContentHash(file.content)}catch(e){return{ok:false,error:'workspace-fingerprint-unavailable'}}
+    if(!/^[a-f0-9]{64}$/.test(contentHash))return{ok:false,error:'workspace-fingerprint-unavailable'};
+    files.push({fileId:file.id,path:file.path,size:actualSize,contentHash:contentHash,
+      lastModified:Number.isSafeInteger(Number(file.lastModified))?Number(file.lastModified):0});
+  }
+  return{ok:true,projectRef:projectRef,projectName:identity.name,projectPath:identity.path,files:files};
+}
+async function wsReadWorkModeFile(projectRef,fileId){
+  if(typeof projectRef!=='string'||!/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef)
+    ||typeof fileId!=='string'||!/^[A-Za-z0-9_.:-]{1,180}$/.test(fileId))return{ok:false,error:'invalid-reference'};
+  var project,file;
+  try{project=await dbGet('projects',projectRef)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  var identity=_wsWorkModeProjectIdentity(project);
+  if(!identity||identity.id!==projectRef)return{ok:false,error:'project-not-found'};
+  try{file=await dbGet('projectFiles',fileId)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  if(!file)return{ok:false,error:'file-not-found'};
+  if(String(file.projectId||'')!==projectRef)return{ok:false,error:'scope-denied'};
+  if(!_wsWorkModeFileEligible(file))return{ok:false,error:'file-not-readable'};
+  if(typeof file.content!=='string'||file.content.indexOf('\0')>=0)return{ok:false,error:'file-not-text'};
+  var bytes=_wsWorkModeUtf8Size(file.content);
+  if(bytes<0)return{ok:false,error:'file-not-text'};
+  if(bytes>WS_WORK_MODE_MAX_FILE_BYTES)return{ok:false,error:'file-size-limit'};
+  if(Number.isSafeInteger(Number(file.size))&&Number(file.size)>=0&&Number(file.size)!==bytes)return{ok:false,error:'file-changed'};
+  var contentHash='';try{contentHash=await _wsWorkModeContentHash(file.content)}catch(e){return{ok:false,error:'workspace-fingerprint-unavailable'}}
+  if(!/^[a-f0-9]{64}$/.test(contentHash))return{ok:false,error:'workspace-fingerprint-unavailable'};
+  return{ok:true,projectRef:projectRef,fileId:fileId,path:file.path,content:file.content,size:bytes,contentHash:contentHash,
+    lastModified:Number.isSafeInteger(Number(file.lastModified))?Number(file.lastModified):0};
+}
+
+/* Home Node Coding consent is the only caller. Each change uses one atomic
+   IndexedDB transaction, compares the Workspace revision, and refuses an
+   overwrite when the file changed after the consented snapshot. */
+function _wsWorkModeProjectExists(projectRef,done){
+  var request;
+  try{request=db.transaction('projects','readonly').objectStore('projects').get(projectRef)}catch(e){done(false);return}
+  request.onsuccess=function(){var identity=_wsWorkModeProjectIdentity(request.result);done(!!identity&&identity.id===projectRef)};
+  request.onerror=function(){done(false)};
+}
+function _wsWorkModeApplyFile(input){
+  input=input&&typeof input==='object'?input:{};
+  var projectRef=String(input.projectRef||''),operation=String(input.operation||''),fileId=String(input.fileId||''),filePath=String(input.path||''),content=input.content;
+  if(!/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef)||!['create','update'].includes(operation)
+    ||typeof content!=='string'||content.indexOf('\0')>=0||_wsWorkModeUtf8Size(content)>WS_WORK_MODE_MAX_FILE_BYTES
+    ||!_wsWorkModePathIsSafe(filePath))return Promise.resolve({ok:false,error:'invalid-reference'});
+  var eligible=_wsWorkModeFileEligible({id:operation==='create'?'candidate':fileId,projectId:projectRef,path:filePath,size:_wsWorkModeUtf8Size(content)});
+  if(!eligible)return Promise.resolve({ok:false,error:'file-not-readable'});
+  if(operation==='update'&&(!/^[A-Za-z0-9_.:-]{1,180}$/.test(fileId)
+    ||!WS_WORK_MODE_HASH_RE.test(String(input.expectedHash||''))||!Number.isSafeInteger(Number(input.expectedLastModified))))return Promise.resolve({ok:false,error:'invalid-reference'});
+  if(operation==='create'&&(!/^[A-Za-z0-9_.:-]{1,180}$/.test(String(input.anchorFileId||''))
+    ||!Number.isSafeInteger(Number(input.expectedAnchorLastModified))))return Promise.resolve({ok:false,error:'invalid-reference'});
+  return new Promise(function(resolve){
+    _wsWorkModeProjectExists(projectRef,function(exists){
+      if(!exists){resolve({ok:false,error:'project-not-found'});return}
+      var baseline=null;
+      Promise.resolve(operation==='update'?wsReadWorkModeFile(projectRef,fileId):wsReadWorkModeFile(projectRef,String(input.anchorFileId)))
+        .then(function(read){
+          if(!read||read.ok!==true){resolve(read||{ok:false,error:'workspace-unavailable'});return}
+          baseline=read;
+          if(operation==='update'&&(read.path!==filePath||read.contentHash!==String(input.expectedHash)
+            ||read.lastModified!==Number(input.expectedLastModified))){resolve({ok:false,error:'workspace-changed'});return}
+          if(operation==='create'&&(read.path!==String(input.anchorPath||read.path)
+            ||filePath.slice(0,filePath.lastIndexOf('/')<0?0:filePath.lastIndexOf('/'))
+              !==read.path.slice(0,read.path.lastIndexOf('/')<0?0:read.path.lastIndexOf('/')))){
+            resolve({ok:false,error:'scope-denied'});return;
+          }
+          var fileStore,projectStore,tx,outcome={ok:false,error:'workspace-write-failed'},written=null,projectRecord=null;
+          try{
+            tx=db.transaction(['projectFiles','projects'],'readwrite');
+            fileStore=tx.objectStore('projectFiles');projectStore=tx.objectStore('projects');
+          }catch(e){resolve({ok:false,error:'workspace-unavailable'});return}
+          tx.oncomplete=function(){
+            if(!written){resolve(outcome);return}
+            try{_ibMarkBusinessDataPresent('projectFiles',written);_ibMarkBusinessDataPresent('projects',projectRecord)}catch(e){}
+            _ibMirrorDirty=true;_ibFsDirty=true;
+            var hash='';
+            _wsWorkModeContentHash(content).then(function(value){hash=value;resolve({ok:true,projectRef:projectRef,fileId:written.id,path:filePath,
+              contentHash:hash,lastModified:written.lastModified,size:written.size})}).catch(function(){resolve({ok:false,error:'workspace-fingerprint-unavailable'})});
+          };
+          tx.onerror=function(){resolve({ok:false,error:'workspace-write-failed'})};
+          tx.onabort=function(){resolve({ok:false,error:'workspace-write-failed'})};
+          function updateProject(){
+            var getProject=projectStore.get(projectRef);
+            getProject.onsuccess=function(){
+              projectRecord=getProject.result;
+              if(!projectRecord){outcome={ok:false,error:'project-not-found'};return}
+              projectRecord.lastModified=written.lastModified;
+              projectStore.put(projectRecord);
+              outcome={ok:true};
+            };
+          }
+          if(operation==='update'){
+            var getFile=fileStore.get(fileId);
+            getFile.onsuccess=function(){
+              var current=getFile.result;
+              if(!current||current.projectId!==projectRef||current.path!==filePath
+                ||current.content!==baseline.content||Number(current.lastModified||0)!==baseline.lastModified
+                ||!_wsWorkModeFileEligible(current)){outcome={ok:false,error:'workspace-changed-atomic'};return}
+              var at=Math.max(Date.now(),baseline.lastModified+1);
+              current.content=content;current.size=_wsWorkModeUtf8Size(content);current.lastModified=at;
+              current.lastModifiedBy='归墟 Coding';_wsApplyFileProvenance(current,'归墟 Coding',{kind:'system'});
+              fileStore.put(current);written=current;updateProject();
+            };
+          }else{
+            var index=fileStore.indexNames.contains('byProject')?fileStore.index('byProject'):null;
+            var listRequest=index?index.getAll(projectRef):fileStore.getAll();
+            var anchorRequest=fileStore.get(String(input.anchorFileId||''));
+            var rowsReady=false,anchorReady=false,rows=[],anchorFile=null;
+            function createIfReady(){
+              if(!rowsReady||!anchorReady)return;
+              if(!anchorFile||String(anchorFile.projectId||'')!==projectRef||anchorFile.path!==String(input.anchorPath||'')
+                ||!_wsWorkModeFileEligible(anchorFile)){outcome={ok:false,error:'scope-denied'};return}
+              var directory=filePath.slice(0,filePath.lastIndexOf('/')<0?0:filePath.lastIndexOf('/'));
+              var anchorDirectory=anchorFile.path.slice(0,anchorFile.path.lastIndexOf('/')<0?0:anchorFile.path.lastIndexOf('/'));
+              if(directory!==anchorDirectory){outcome={ok:false,error:'scope-denied'};return}
+              var eligibleCount=rows.filter(function(file){return file&&String(file.projectId||'')===projectRef&&_wsWorkModeFileEligible(file)}).length;
+              if(eligibleCount>=WS_WORK_MODE_MAX_FILES){outcome={ok:false,error:'project-file-limit'};return;}
+              if(rows.some(function(file){return file&&String(file.projectId||'')===projectRef&&file.path===filePath})){
+                outcome={ok:false,error:'file-already-exists'};return;
+              }
+              var id='pf_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),at=Date.now();
+              written={id:id,projectId:projectRef,path:filePath,content:content,size:_wsWorkModeUtf8Size(content),created:at,
+                lastModified:at,lastModifiedBy:'归墟 Coding'};
+              _wsApplyFileProvenance(written,'归墟 Coding',{kind:'system'});
+              fileStore.add(written);updateProject();
+            }
+            listRequest.onsuccess=function(){rows=Array.isArray(listRequest.result)?listRequest.result:[];rowsReady=true;createIfReady()};
+            anchorRequest.onsuccess=function(){anchorFile=anchorRequest.result;anchorReady=true;createIfReady()};
+          }
+        }).catch(function(){resolve({ok:false,error:'workspace-unavailable'})});
+    });
+  });
+}
+async function wsWriteWorkModeFile(input){
+  input=input&&typeof input==='object'?input:{};
+  if(input.operation==='update'){
+    var before=await wsReadWorkModeFile(String(input.projectRef||''),String(input.fileId||''));
+    if(!before||before.ok!==true||before.contentHash!==String(input.expectedHash||'')
+      ||before.lastModified!==Number(input.expectedLastModified)||before.path!==String(input.path||''))return{ok:false,error:'workspace-changed-before-write'};
+  }else if(input.operation==='create'){
+    var anchor=await wsReadWorkModeFile(String(input.projectRef||''),String(input.anchorFileId||''));
+    if(!anchor||anchor.ok!==true)return{ok:false,error:'workspace-changed'};
+    input.anchorPath=anchor.path;
+  }else return{ok:false,error:'operation-denied'};
+  return _wsWorkModeApplyFile(input);
+}
+async function wsRollbackWorkModeFile(change){
+  change=change&&typeof change==='object'?change:{};
+  if(!['create','update'].includes(String(change.operation||''))||! /^[A-Za-z0-9_.:-]{1,180}$/.test(String(change.projectRef||''))
+    ||! /^[A-Za-z0-9_.:-]{1,180}$/.test(String(change.fileId||''))||!_wsWorkModePathIsSafe(change.path)
+    ||typeof change.beforeContent!=='string'||typeof change.afterContent!=='string'
+    ||!WS_WORK_MODE_HASH_RE.test(String(change.afterHash||''))||!Number.isSafeInteger(Number(change.afterLastModified)))return{ok:false,error:'invalid-rollback'};
+  var current=await wsReadWorkModeFile(change.projectRef,change.fileId);
+  if(!current||current.ok!==true||current.path!==change.path||current.contentHash!==change.afterHash
+    ||current.lastModified!==Number(change.afterLastModified)||current.content!==change.afterContent)return{ok:false,error:'workspace-changed'};
+  return new Promise(function(resolve){
+    var tx,files,projects,outcome={ok:false,error:'workspace-rollback-failed'},file=null,project=null;
+    try{tx=db.transaction(['projectFiles','projects'],'readwrite');files=tx.objectStore('projectFiles');projects=tx.objectStore('projects')}
+    catch(e){resolve({ok:false,error:'workspace-unavailable'});return}
+    tx.oncomplete=function(){if(!file){resolve(outcome);return}try{_ibMarkBusinessDataPresent('projectFiles',file);_ibMarkBusinessDataPresent('projects',project)}catch(e){}
+      _ibMirrorDirty=true;_ibFsDirty=true;resolve({ok:true,status:'rolled-back'})};
+    tx.onerror=function(){resolve({ok:false,error:'workspace-rollback-failed'})};
+    tx.onabort=function(){resolve({ok:false,error:'workspace-rollback-failed'})};
+    var get=files.get(change.fileId);
+    get.onsuccess=function(){
+      var currentFile=get.result;
+      if(!currentFile||currentFile.projectId!==change.projectRef||currentFile.path!==change.path
+        ||currentFile.content!==change.afterContent||Number(currentFile.lastModified||0)!==Number(change.afterLastModified)){
+        outcome={ok:false,error:'workspace-changed'};return;
+      }
+      var getProject=projects.get(change.projectRef);
+      getProject.onsuccess=function(){
+        project=getProject.result;if(!project){outcome={ok:false,error:'project-not-found'};return}
+        if(change.operation==='create')files.delete(change.fileId);
+        else{
+          currentFile.content=change.beforeContent;currentFile.size=_wsWorkModeUtf8Size(change.beforeContent);
+          currentFile.lastModified=Math.max(Date.now(),Number(change.afterLastModified)+1);
+          currentFile.lastModifiedBy='归墟 Coding 回退';_wsApplyFileProvenance(currentFile,'归墟 Coding 回退',{kind:'system'});
+          files.put(currentFile);file=currentFile;
+        }
+        project.lastModified=Math.max(Date.now(),Number(project.lastModified||0)+1);projects.put(project);
+        if(change.operation==='create')file={id:change.fileId,projectId:change.projectRef,path:change.path,
+          lastModified:project.lastModified,lastModifiedBy:'归墟 Coding 回退'};
+        outcome={ok:true};
+      };
+    };
+  });
+}
+
+/* Work Mode onboarding stores only files explicitly returned by the native/browser picker.
+   It reuses the existing Workspace IndexedDB projectFiles store and wsSaveFile writer. */
+async function wsImportWorkModeFiles(projectRef,selectedFiles){
+  if(typeof projectRef!=='string'||!/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef))return{ok:false,error:'invalid-project-ref'};
+  if(!Array.isArray(selectedFiles)||!selectedFiles.length)return{ok:false,error:'no-files-selected'};
+  if(selectedFiles.length>WS_WORK_MODE_MAX_FILES)return{ok:false,error:'project-file-limit'};
+  var project,rows;
+  try{project=await dbGet('projects',projectRef)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  var identity=_wsWorkModeProjectIdentity(project);
+  if(!identity||identity.id!==projectRef)return{ok:false,error:'project-not-found'};
+  try{rows=await dbGetByIndex('projectFiles','byProject',projectRef)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  if(!Array.isArray(rows))return{ok:false,error:'workspace-unavailable'};
+  var current=rows.filter(function(file){return file&&String(file.projectId||'')===projectRef&&_wsWorkModeFileEligible(file)});
+  if(current.length>WS_WORK_MODE_MAX_FILES)return{ok:false,error:'project-file-limit'};
+  var candidates=[],skip={unsupported:0,large:0,binary:0},seen=Object.create(null);
+  for(var i=0;i<selectedFiles.length;i++){
+    var input=selectedFiles[i];if(!input||typeof input.name!=='string'||!input.name)continue;
+    var relativePath=typeof input.webkitRelativePath==='string'&&input.webkitRelativePath?input.webkitRelativePath:input.name;
+    var descriptor={id:'pf_work_mode_import',path:relativePath,size:Number(input.size)};
+    if(!_wsWorkModePathIsSafe(relativePath))return{ok:false,error:'workspace-file-path-invalid'};
+    if(!_wsWorkModeFileEligible(descriptor)){skip.unsupported++;continue}
+    if(Number.isSafeInteger(descriptor.size)&&descriptor.size>WS_WORK_MODE_MAX_FILE_BYTES){skip.large++;continue}
+    if(seen[relativePath])return{ok:false,error:'workspace-file-conflict'};
+    seen[relativePath]=true;
+    if(typeof input.text!=='function')return{ok:false,error:'file-read-failed'};
+    var content;
+    try{content=await input.text()}catch(e){return{ok:false,error:'file-read-failed'}}
+    if(typeof content!=='string'||content.indexOf('\0')>=0){skip.binary++;continue}
+    var size=_wsWorkModeUtf8Size(content);
+    if(size<0)return{ok:false,error:'file-read-failed'};
+    if(size>WS_WORK_MODE_MAX_FILE_BYTES){skip.large++;continue}
+    if(!_wsWorkModeFileEligible({id:'pf_work_mode_import',path:relativePath,size:size})){skip.unsupported++;continue}
+    candidates.push({path:relativePath,content:content,size:size});
+  }
+  if(!candidates.length)return{ok:false,error:'no-eligible-files',skipped:skip};
+  var existingByPath=Object.create(null);
+  rows.forEach(function(file){if(file&&typeof file.path==='string'&&String(file.projectId||'')===projectRef){
+    if(existingByPath[file.path])existingByPath[file.path+'\u0000duplicate']=true;
+    else existingByPath[file.path]=file;
+  }});
+  var writes=[],unchanged=[];
+  for(var j=0;j<candidates.length;j++){
+    var candidate=candidates[j],old=existingByPath[candidate.path];
+    if(existingByPath[candidate.path+'\u0000duplicate'])return{ok:false,error:'workspace-integrity'};
+    if(old){
+      if(old.content===candidate.content){unchanged.push(old.id);continue}
+      return{ok:false,error:'workspace-file-conflict',path:candidate.path};
+    }
+    writes.push(candidate);
+  }
+  if(current.length+writes.length>WS_WORK_MODE_MAX_FILES)return{ok:false,error:'project-file-limit'};
+  var imported=[];
+  for(var k=0;k<writes.length;k++){
+    try{imported.push(await wsSaveFile(projectRef,writes[k].path,writes[k].content,'Work Mode import',{kind:'import'}))}
+    catch(e){return{ok:false,error:imported.length?'workspace-import-partial':'workspace-unavailable',imported:imported,unchanged:unchanged,skipped:skip}}
+  }
+  var snapshot=await wsGetWorkModeProjectSnapshot(projectRef);
+  if(!snapshot.ok)return{ok:false,error:snapshot.error,imported:imported,unchanged:unchanged,skipped:skip};
+  return{ok:true,projectRef:projectRef,imported:imported,unchanged:unchanged,skipped:skip,snapshot:snapshot};
+}
+
 /* R4-2 · persisted file provenance。
    lastModifiedBy 永远是 display label；canonical fields 只来自 producer 明确传入的
    frozen kind/id，不从 label 猜测，也不为缺失的 context 伪造 identity。 */
@@ -115,6 +475,23 @@ async function wsCreateProject(name){
   var id='proj_'+Date.now();
   await dbPut('projects',{id:id,name:name,created:Date.now(),lastModified:Date.now()});
   _wsActiveProject=id;return id;
+}
+async function wsCreateWorkModeProject(name){
+  if(typeof name!=='string')return{ok:false,error:'project-name-required'};
+  name=name.trim();
+  if(!name)return{ok:false,error:'project-name-required'};
+  if(name.length>60||/[\u0000-\u001F\u007F]/.test(name))return{ok:false,error:'invalid-project-name'};
+  var available=await wsGetWorkModeProjects();
+  if(!available.ok)return available;
+  var existing=available.projects.find(function(project){return project.name===name});
+  if(existing)return{ok:true,projectRef:existing.id,projectName:existing.name,created:false};
+  var id;
+  try{id=await wsCreateProject(name)}catch(e){return{ok:false,error:'workspace-unavailable'}}
+  var confirmed=await wsGetWorkModeProjects();
+  if(!confirmed.ok)return confirmed;
+  var created=confirmed.projects.find(function(project){return project.id===id});
+  if(!created)return{ok:false,error:'workspace-unavailable'};
+  return{ok:true,projectRef:created.id,projectName:created.name,created:true};
 }
 async function wsEnsureProject(name){
   /* 默认文件夹的各种叫法（ICode/默认/default…）一律落到默认文件夹本体，绝不另建同义项目 */
@@ -1264,6 +1641,8 @@ window.wsCreateProject=wsCreateProject;
 window.wsEnsureProject=wsEnsureProject;
 window.wsDeleteProject=wsDeleteProject;
 window.wsSaveFile=wsSaveFile;
+window.wsWriteWorkModeFile=wsWriteWorkModeFile;
+window.wsRollbackWorkModeFile=wsRollbackWorkModeFile;
 window._wsFileProvenanceFields=_wsFileProvenanceFields;
 window._wsFileRoleProvenance=_wsFileRoleProvenance;
 window._wsUniquePath=_wsUniquePath;
@@ -1338,7 +1717,14 @@ NS.expose('workspace.files', {
   wsGetProjects: wsGetProjects,
   wsGetFiles: wsGetFiles,
   wsGetFileByPath: wsGetFileByPath,
+  wsGetWorkModeProjectSnapshot: wsGetWorkModeProjectSnapshot,
+  wsGetWorkModeProjects: wsGetWorkModeProjects,
+  wsReadWorkModeFile: wsReadWorkModeFile,
+  wsWriteWorkModeFile: wsWriteWorkModeFile,
+  wsRollbackWorkModeFile: wsRollbackWorkModeFile,
+  wsImportWorkModeFiles: wsImportWorkModeFiles,
   wsCreateProject: wsCreateProject,
+  wsCreateWorkModeProject: wsCreateWorkModeProject,
   wsEnsureProject: wsEnsureProject,
   wsDeleteProject: wsDeleteProject,
   wsSaveFile: wsSaveFile,

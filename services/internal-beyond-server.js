@@ -72,7 +72,8 @@ const bootState = require('../runtime/boot-state.js');
 const productVersion = require('../runtime/product-version.js');
 /* P11-3H：停止面判定（唯一实现；Bridge / Active / Home Node 用的是同一份）。 */
 const serviceControl = require('../runtime/service-control.js');
-const { isTauriOrigin } = require('../runtime/host-origin.js');
+const devServiceContract = require('../runtime/dev-service-contract.js');
+const { isTauriOrigin, blocksDevWebOrigin } = require('../runtime/host-origin.js');
 const { createProjectKnowledge } = require('./project-knowledge.js');
 const { createPackagingCenterApi } = require('./packaging-center-api.js');
 
@@ -121,9 +122,13 @@ const ROOT = path.resolve(__dirname, '..');
    serving a 92 MB node.exe or internal helper scripts over HTTP is pointless. */
 const DENY_SEGMENTS = ['logs', 'node_modules', 'browser-data', '__pycache__', '.venv-vision', 'runtime', 'tools'];
 
+const WEB_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+const WEB_PORTS = devServiceContract.portsFromEnvironment(process.env);
 function optionPort(name, fallback) {
+  if (name === 'IB_WEB_PORT') return WEB_PORTS.web || fallback;
   const raw = process.env[name];
   const n = Number(raw);
+  if (WEB_IDENTITY.mode !== 'production') return 0;
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
 }
 
@@ -143,6 +148,7 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
   '.webm': 'audio/webm',
   '.ogg': 'audio/ogg',
   '.woff': 'font/woff',
@@ -198,6 +204,7 @@ function resolveRequest(root, urlPath) {
    open a page). */
 function shutdownOriginAllowed(req) {
   const origin = String(req.headers.origin || '').trim();
+  if (blocksDevWebOrigin(origin)) return false;
   if (!origin) return true;
   if (origin === 'null') return true;
   try {
@@ -321,6 +328,10 @@ function respondUpdateStart(req, res, ctx) {
     respond(status, { ok: false, error: { kind: kind, message: message } });
   };
 
+  if (process.env.IB_DEV_MODE === '1') {
+    return refuse(403, 'dev-mode-update-disabled', 'updates are disabled in the Dev Launcher');
+  }
+
   if (req.method !== 'POST') return refuse(405, 'method-not-allowed', 'POST only');
   if (!shutdownOriginAllowed(req)) return refuse(403, 'origin-denied', 'the request came from another origin');
   if (!install || !check) {
@@ -431,18 +442,47 @@ function createWebServer(opts) {
   const stopDispatch = serviceControl.createStopDispatch({
     service: identity,
     exposeBody: false,
+    authorize: req => devServiceContract.authorizeRequestIdentity(req, process.env, WEB_IDENTITY.webOrigin)
+      ? null : { status: 403, error: 'environment-identity-mismatch' },
     onAccepted: info => { try { console.log('[web] stop requested (pid ' + info.pid + ', port ' + port + ')'); } catch (e) { } }
+  });
+  const tauriStopDispatch = serviceControl.createStopDispatch({
+    service: identity,
+    path: '/__tauri/shutdown',
+    exposeBody: false,
+    authorize: req => {
+      if (!devServiceContract.authorizeRequestIdentity(req, process.env, WEB_IDENTITY.webOrigin)) {
+        return { status: 403, error: 'environment-identity-mismatch' };
+      }
+      const expected = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '');
+      const actual = String(req && req.headers && req.headers['x-ib-tauri-host-session'] || '');
+      return expected && actual === expected ? null : { status: 403, error: 'host-session-mismatch' };
+    },
+    onAccepted: info => { try { console.log('[web] Tauri-owned stop requested (pid ' + info.pid + ', port ' + port + ')'); } catch (e) { } }
   });
 
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     if (dispatchTauriCors(req, res, pathname)) return;
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())
+      && !devServiceContract.authorizeRequestIdentity(req, process.env, WEB_IDENTITY.webOrigin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, error: 'environment-identity-mismatch' }));
+      return;
+    }
     let requestUrl = null;
     try { requestUrl = new URL(String(req.url || '/'), 'http://127.0.0.1'); } catch (_) { }
     if (packagingApi.handle(req, res, pathname, requestUrl)) return;
     if (pathname === '/health' || pathname === '/__health') {
       const pv = productVersion.get();
-      const body = JSON.stringify({ ok: true, server: identity, version: pv.ok ? pv.version : '' });
+      const body = JSON.stringify({
+        ok: true, server: identity, version: pv.ok ? pv.version : '',
+        pid: process.pid,
+        environment: WEB_IDENTITY.mode,
+        devInstanceId: WEB_IDENTITY.instanceId || null,
+        startedAt: Date.now() - Math.round(process.uptime() * 1000),
+        tauriHostSessionId: String(process.env.IB_TAURI_HOST_INSTANCE_ID || '')
+      });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(body);
       return;
@@ -625,14 +665,15 @@ function createWebServer(opts) {
       });
       return;
     }
-    if (pathname === '/__shutdown') {
+    if (pathname === '/__shutdown' || pathname === '/__tauri/shutdown') {
       /* P11-3H：同一个停止判定来自 runtime/service-control.js（与 Bridge /
          Active / Home Node 逐字同一份），而不是本文件自己再写一遍方法与来源
          检查 —— 四个组件里三份实现正是这一阶段要收口的东西。
          返回值：true = 已接受（202 已发出）；'origin-denied' / 'method-not-allowed'
          = 停止面拒绝，拒绝文案仍由本文件按既有形状发出（P7 契约与既有测试断言
          依赖这两个错误名与状态码，不停用它们）。 */
-      const decision = stopDispatch(req, res);
+      const dispatcher = pathname === '/__tauri/shutdown' ? tauriStopDispatch : stopDispatch;
+      const decision = dispatcher(req, res);
       if (decision === true) {
         /* P7 契约（被 installer 与 tests/test_installer.js 钉住）：202 + 这个载荷。 */
         res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });

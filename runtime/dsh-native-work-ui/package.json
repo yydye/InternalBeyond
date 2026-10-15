@@ -1,0 +1,15 @@
+{
+  "name": "@internalbeyond/dsh-native-work-ui",
+  "version": "1.0.0-ib.1",
+  "private": true,
+  "type": "module",
+  "main": "./host.mjs",
+  "exports": {
+    ".": "./host.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": { "platform": "web" }
+  }
+}

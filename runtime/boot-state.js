@@ -252,7 +252,8 @@ function normalizeComponent(id, raw, absent) {
     state: state,
     reason: healthy ? null : reasonOf(r.reason != null ? r.reason : r.message, state)
   };
-  const detail = ['port', 'host', 'url', 'identity', 'identityRequiresOk', 'version', 'reused', 'controlState'];
+  const detail = ['port', 'host', 'url', 'identity', 'identityRequiresOk', 'version', 'reused', 'controlState',
+    'pid', 'startedAt', 'spawnedByHost', 'tauriHostSessionId'];
   for (const key of detail) {
     if (r[key] === undefined || r[key] === null) continue;
     out[key] = typeof r[key] === 'string' ? r[key].slice(0, MAX_STRING) : r[key];
@@ -357,11 +358,15 @@ function buildBootState(input) {
         state: String(mgr.state || 'unknown'),
         wasRunning: mgr.wasRunning === true,
         startedByLauncher: mgr.started === true,
+        pid: Number(mgr.pid) > 0 ? Number(mgr.pid) : null,
+        startedAt: Number(mgr.startedAt) > 0 ? iso(mgr.startedAt, now) : null,
+        tauriHostSessionId: String(mgr.tauriHostSessionId || '').slice(0, 80),
         error: mgr.error ? reasonOf(mgr.error, REASON.SPAWN_FAILED) : null
       },
       runtime: {
         runtimeMode: String(runtime.runtimeMode || 'unknown').slice(0, 40),
         runtimeRootClass: String(runtime.runtimeRootClass || 'unknown').slice(0, 40),
+        tauriHostSessionId: String(runtime.tauriHostSessionId || '').slice(0, 80),
         productVersion: String(runtime.productVersion || product.version || '').slice(0, 40),
         payloadManifestVersion: Number.isFinite(Number(runtime.payloadManifestVersion))
           ? Number(runtime.payloadManifestVersion)

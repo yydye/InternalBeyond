@@ -253,6 +253,7 @@ function createMobileGateway(deps) {
   const store = deps.store;
   const registry = deps.registry;
   const executor = deps.executor || null;
+  const runtimeRecall = deps.runtimeRecall || null;
   const clock = deps.clock || (() => Date.now());
   /* P0 时区语义：默认 Home Node 进程本地时区（与桌面浏览器本地时区一致，
      单机部署下即"同一个本地时间"）；显式 timeZone 只在 LAN + 时区不一致时用。 */
@@ -969,7 +970,7 @@ function createMobileGateway(deps) {
      这样流式/非流式、成功/失败只有一处强化点。
      recallTurnIndex 由调用方传入：本函数**绝不**自己 begin（§10），
      也绝不在缺席时猜一个 index（缺席 ⇒ retrieval 退回 legacy 无 cooldown）。 */
-  function buildTurnRequest(parsed, recallTurnIndex) {
+  async function buildTurnRequest(parsed, recallTurnIndex) {
     const character = parsed.character;
     const characterId = parsed.characterId;
     const spec = parsed.spec;
@@ -983,7 +984,70 @@ function createMobileGateway(deps) {
       conversationSignalAvailable: parsed.conversationSignalAvailable,
       turnIndex: recallTurnIndex == null ? null : recallTurnIndex
     });
+    let responseGuidance = null;
+    let memoryAwarenessText = '';
+    let memoryUnreliabilityText = '';
+    let sharedMemoryText = '';
+    let sharedMemoryView = null;
+    let counterfactualMemoryText = '';
+    let counterfactualMemoryView = null;
+    if (runtimeRecall && typeof runtimeRecall.deriveFromExistingRecall === 'function'
+      && runtime && runtime.memoryConsulted === true
+      && Array.isArray(runtime.selectedMemoryIds) && runtime.selectedMemoryIds.length) {
+      try {
+        const cognition = await runtimeRecall.deriveFromExistingRecall({
+          characterId: characterId,
+          conversationId: conversationId,
+          requestId: parsed.requestId,
+          turnId: parsed.turnId,
+          message: String(userMessage && userMessage.content || ''),
+          selectedIds: runtime.selectedMemoryIds,
+          semanticForgettingById: Array.isArray(runtime.semanticForgettingById)
+            ? runtime.semanticForgettingById : [],
+          memoryProvenanceById: Array.isArray(runtime.memoryProvenanceById)
+            ? runtime.memoryProvenanceById : [],
+          candidateRecords: Array.isArray(runtime.recallCandidateRecords) ? runtime.recallCandidateRecords : null,
+          candidateRecordsTruncated: runtime.recallCandidateRecordsTruncated === true,
+          channel: runtime.recallChannel,
+          isGroup: false,
+          memoryText: runtime.memoryBlock,
+          remainingBudgetMs: 5000,
+          fingerprint: [characterId, conversationId, parsed.turnId,
+            runtime.selectedMemoryIds.join(',')].join('|')
+        });
+        responseGuidance = cognition && cognition.ok === true ? cognition.responseGuidance : null;
+        memoryAwarenessText = cognition && cognition.ok === true
+          && typeof cognition.memoryAwarenessText === 'string' ? cognition.memoryAwarenessText : '';
+        memoryUnreliabilityText = cognition && cognition.ok === true
+          && typeof cognition.memoryUnreliabilityText === 'string' ? cognition.memoryUnreliabilityText : '';
+        sharedMemoryText = cognition && cognition.ok === true
+          && typeof cognition.sharedMemoryText === 'string' ? cognition.sharedMemoryText : '';
+        sharedMemoryView = cognition && cognition.ok === true ? cognition.sharedMemoryView || null : null;
+        counterfactualMemoryText = cognition && cognition.ok === true
+          && typeof cognition.counterfactualMemoryText === 'string' ? cognition.counterfactualMemoryText : '';
+        counterfactualMemoryView = cognition && cognition.ok === true ? cognition.counterfactualMemoryView || null : null;
+      } catch (error) {
+        record('warn', 'memory-behavior-modulation-failed', {
+          turnId: parsed.turnId,
+          reason: String((error && error.message) || error).slice(0, 160)
+        });
+      }
+    }
 
+    const memoryCognitionContext = [memoryAwarenessText, memoryUnreliabilityText, sharedMemoryText, counterfactualMemoryText]
+      .filter(Boolean).join('\n\n');
+    const originalRuntimeContext = String(runtime.runtimeContext || '');
+    let cognitionRuntimeContext = originalRuntimeContext;
+    if (memoryCognitionContext) {
+      const finalTime = String(runtime.p0Time || '');
+      if (finalTime && originalRuntimeContext.endsWith(finalTime)) {
+        const prefix = originalRuntimeContext.slice(0, -finalTime.length).replace(/\n+$/, '');
+        cognitionRuntimeContext = prefix + (prefix ? '\n\n' : '') + memoryCognitionContext + '\n\n' + finalTime;
+      } else {
+        cognitionRuntimeContext = originalRuntimeContext
+          + (originalRuntimeContext ? '\n\n' : '') + memoryCognitionContext;
+      }
+    }
     return {
       ok: true,
       requestId: parsed.requestId,
@@ -1017,14 +1081,20 @@ function createMobileGateway(deps) {
            上传"现在几点"，也不能构造这段上下文，**更不知道记忆是怎么被选出来的**。
            runtimeContext 由 execution.buildPrompt 追加到 system 尾部，
            与 systemPrompt 同属私有面，永不进任何 DTO / SSE。 */
-        runtimeContext: runtime.runtimeContext,
+        runtimeContext: cognitionRuntimeContext,
+        /* Server-owned result from this turn's already-selected Memory set.
+           Mobile clients cannot submit or claim this guidance. */
+        responseGuidance: responseGuidance,
+        sharedMemoryView: sharedMemoryView,
+        counterfactualMemoryView: counterfactualMemoryView,
         /* M1-C.2i：canonical 上下文**分块**（与 runtimeContext 是同一次计算的产物，
            不是第二次读取）。执行缝只该拿到"记忆块"，而不是整段 runtimeContext ——
            后者还含 P0 身份/关系/时间，那些不是 Middle Brain 的输入，
            也不该被它的压缩结果吃掉。memoryConsulted 让快照能区分
            "已读但为空"与"根本没读成功"（C1 契约的两个不同真相）。 */
         runtimeContextParts: {
-          runtimeContext: runtime.runtimeContext,
+          runtimeContext: cognitionRuntimeContext,
+          memoryAwarenessContext: memoryCognitionContext,
           memoryBlock: runtime.memoryBlock || '',
           memoryConsulted: runtime.memoryConsulted === true,
           /* M1-C.2k：线索块（canonical memory 上的确定性派生）。
@@ -1124,6 +1194,10 @@ function createMobileGateway(deps) {
              这里如实透传，三态（present/empty/missing）才真的成立。 */
           memoryBlock: built.memoryBlock || '',
           memoryConsulted: built.memoryConsulted === true,
+          semanticForgettingById: Array.isArray(built.semanticForgettingById)
+            ? built.semanticForgettingById.slice(0, 32) : [],
+          memoryProvenanceById: Array.isArray(built.memoryProvenanceById)
+            ? built.memoryProvenanceById.slice(0, 32) : [],
           p0Stable: built.p0Stable || '',
           p0Time: built.p0Time || '',
           /* M1-C.2k：线索证据与记忆**同一次**装配产出（不是第二次读取）。
@@ -1157,6 +1231,8 @@ function createMobileGateway(deps) {
         memoryReason: 'memory-store-unavailable',
         memoryBlock: '',
         memoryConsulted: false,
+        semanticForgettingById: [],
+        memoryProvenanceById: [],
         p0Stable: '',
         p0Time: '',
         thread: threadRetrieval ? threadRetrieval.snapshotField(
@@ -1170,7 +1246,8 @@ function createMobileGateway(deps) {
       record('warn', 'runtime-context-failed', { error: String((error && error.message) || error) });
       return {
         runtimeContext: '', selectedMemoryIds: [], memoryCount: 0, memoryReason: 'context-failed',
-        memoryBlock: '', memoryConsulted: false, p0Stable: '', p0Time: '', thread: null, understanding: null
+        memoryBlock: '', memoryConsulted: false, semanticForgettingById: [], memoryProvenanceById: [],
+        p0Stable: '', p0Time: '', thread: null, understanding: null
       };
     }
   }
@@ -2500,7 +2577,7 @@ function createMobileGateway(deps) {
         const lifecycle = beginRecallTurn(parsed);
         let turn;
         try {
-          turn = beginTurn(buildTurnRequest(parsed, lifecycle.recallTurnIndex), device);
+          turn = beginTurn(await buildTurnRequest(parsed, lifecycle.recallTurnIndex), device);
         } catch (error) {
           /* §15 · begin 已经发生、而 runTurn 尚未开始 ⇒ 必须释放 Home turn 身份。
              begin 被提前之后，这条清理是"失败请求不泄漏 lifecycle"的唯一保证。 */

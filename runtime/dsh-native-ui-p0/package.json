@@ -1,0 +1,8 @@
+{
+  "name": "@internalbeyond/dsh-native-ui-p0",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./host.mjs", "./client": "./client.js", "./package.json": "./package.json" },
+  "dsh": { "client": { "platform": "web" } }
+}

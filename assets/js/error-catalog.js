@@ -561,6 +561,7 @@
      技术详情只在展开后出现（已脱敏）。重试仅在 model.retryable 且调用方
      提供 onRetry（= 已有能力，例如按钮重新点击）时出现。 */
   var _shown = {};
+  var _detailSequence = 0;
   function detailsText(m){
     m = m || {};
     var d = m.technicalDetails || {};
@@ -634,14 +635,21 @@
 
       var det = document.createElement('pre');
       det.className = 'ib-err-details';
+      det.id = 'ib-err-details-' + (++_detailSequence);
+      det.hidden = true;
       det.style.cssText = 'display:none;margin:10px 0 0;padding:8px 10px;border-radius:var(--radius-control);background:var(--surface-input);font-size:var(--fs-meta);line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto';
       det.textContent = detailsText(m);
 
       var toggle = mkBtn('查看详情', 'ib-err-toggle');
+      toggle.setAttribute('aria-controls', det.id);
+      toggle.setAttribute('aria-expanded', 'false');
       toggle.onclick = function(){
-        var open = det.style.display !== 'none';
-        det.style.display = open ? 'none' : 'block';
-        toggle.textContent = open ? '查看详情' : '收起详情';
+        var open = toggle.getAttribute('aria-expanded') === 'true';
+        var nextOpen = !open;
+        toggle.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+        det.hidden = !nextOpen;
+        det.style.display = nextOpen ? 'block' : 'none';
+        toggle.textContent = nextOpen ? '收起详情' : '查看详情';
       };
       acts.appendChild(toggle);
 
@@ -653,7 +661,32 @@
       }
       if (opts.onRetry && m.retryable){
         var rb = mkBtn('重试', 'ib-err-retry');
-        rb.onclick = function(){ remove(); try{ opts.onRetry(); }catch(e){} };
+        var retryBusy = false;
+        function resetRetry(){
+          retryBusy = false;
+          card.removeAttribute('aria-busy');
+          close.disabled = false;
+          rb.disabled = false;
+          rb.removeAttribute('aria-busy');
+          rb.textContent = '重试';
+        }
+        rb.onclick = function(){
+          if (retryBusy) return;
+          var result;
+          try{ result = opts.onRetry(); }catch(e){ resetRetry(); return; }
+          if (result === false) { resetRetry(); return; }
+          if (!result || typeof result.then !== 'function') { remove(); return; }
+          retryBusy = true;
+          card.setAttribute('aria-busy', 'true');
+          close.disabled = true;
+          rb.disabled = true;
+          rb.setAttribute('aria-busy', 'true');
+          rb.textContent = '正在重试…';
+          Promise.resolve(result).then(function(value){
+            if (value === false) { resetRetry(); return; }
+            remove();
+          }, function(){ resetRetry(); });
+        };
         acts.appendChild(rb);
       }
 
@@ -662,6 +695,7 @@
       /* 30 秒后自动收起；鼠标停留或展开详情时保持不动，避免用户还没来得及点「查看详情」 */
       var timer = setTimeout(function(){ if (det.style.display === 'none') remove(); }, 30000);
       card.addEventListener('mouseenter', function(){ clearTimeout(timer); });
+      card.addEventListener('focusin', function(){ clearTimeout(timer); });
 
       card.appendChild(head);
       card.appendChild(msg);

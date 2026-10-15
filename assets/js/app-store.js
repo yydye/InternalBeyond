@@ -13,12 +13,60 @@
   var CATALOG_URL='apps/catalog.json';
   var CATALOG_JS='apps/catalog.js';
   var ON_KEY='ib_apps_on_v1';
+  var GENERATED_KEY='ib_generated_apps_v1';
   var ID_RE=/^[a-z][a-z0-9_-]{1,31}$/;
   var _catalog=null,_defs={},_enabled={},_loaded={},_missing={},_activeShell=null,_activeId=null,_ev={};
 
   function _toast(m){try{if(typeof toast==='function')toast(m);return}catch(e){}try{console.info('[Apps]',m)}catch(e2){}}
   function _onLoad(key){try{return JSON.parse(localStorage.getItem(key)||'{}')}catch(e){return{}}}
   function _save(key,v){try{localStorage.setItem(key,JSON.stringify(v))}catch(e){}}
+  function _generatedApps(){try{var value=JSON.parse(localStorage.getItem(GENERATED_KEY)||'{}');return value&&typeof value==='object'&&!Array.isArray(value)?value:{}}catch(e){return{}}}
+  function _saveGeneratedApps(value){try{var text=JSON.stringify(value);if(text.length>1024*1024)return false;localStorage.setItem(GENERATED_KEY,text);return true}catch(e){return false}}
+  function _installGeneratedDefinition(item){
+    var core=window.IBAppBuilderCore;
+    var draft=core&&typeof core.normalizeDraft==='function'?core.normalizeDraft(item):null;
+    if(!draft)return false;
+    var id=core.appIdForDraft(draft.draftRef);if(!id||!ID_RE.test(id))return false;
+    _defs[id]={id:id,name:draft.name,version:'1.'+String(draft.version||0),sdk:2,
+      mount:function(body,ctx){
+        var frame=document.createElement('iframe');frame.className='ib-generated-app-frame';
+        frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');
+        frame.title=draft.name;frame.srcdoc=core.buildSrcdoc(draft);body.appendChild(frame);
+        function receive(event){
+          if(event.source!==frame.contentWindow||event.origin!=='null'||!event.data||event.data.type!=='ib-generated-app-storage-request')return;
+          var data=event.data,key=String(data.key||''),action=String(data.action||''),value;
+          var response={type:'ib-generated-app-storage-response',requestId:String(data.requestId||''),ok:false};
+          if(!/^[A-Za-z0-9_.:-]{1,64}$/.test(key)||!['get','set','remove'].includes(action)){
+            response.error='storage-scope-denied';
+          }else if(action==='get'){
+            response.ok=true;response.value=ctx.storage.get(key);
+          }else if(action==='remove'){
+            ctx.storage.remove(key);response.ok=true;
+          }else{
+            try{value=JSON.stringify(data.value);if(value===undefined||value.length>32768)throw new Error('size');
+              ctx.storage.set(key,data.value);response.ok=true;}catch(e){response.error='storage-value-denied';}
+          }
+          try{frame.contentWindow.postMessage(response,'*')}catch(e){}
+        }
+        window.addEventListener('message',receive);
+        defState[id]={frame:frame,receive:receive};
+      },
+      unmount:function(){var active=defState[id];if(active){window.removeEventListener('message',active.receive);delete defState[id];}}
+    };
+    var existing=(_catalog||[]).filter(function(entry){return entry&&entry.id!==id;});
+    existing.push({id:id,name:draft.name,desc:'DSH 生成的本地 APP · v'+String(draft.version||0),icon:'',file:'generated',generated:true,builtin:false,draftRef:draft.draftRef});
+    _catalog=existing;
+    return true;
+  }
+  var defState=Object.create(null);
+  function _loadGeneratedApps(){
+    var stored=_generatedApps();
+    Object.keys(stored).forEach(function(id){
+      var item=stored[id];
+      if(!item||typeof item!=='object'||!window.IBAppBuilderCore||window.IBAppBuilderCore.appIdForDraft(item.draftRef)!==id)return;
+      _installGeneratedDefinition(item);
+    });
+  }
 
   /* ---- 清单加载：fetch → script fallback ---- */
   function _catFromJs(){try{return (window.IB_APP_CATALOG&&window.IB_APP_CATALOG.apps)?window.IB_APP_CATALOG:null}catch(e){return null}}
@@ -32,10 +80,11 @@
     try{var r=await fetch(CATALOG_URL,{cache:'no-store'});if(r.ok)cat=await r.json()}catch(e){cat=null}
     if(!cat||!cat.apps)cat=await _loadCatalogJs();
     _catalog=(cat&&cat.apps)||[];
+    _loadGeneratedApps();
     /* 预检已安装的外部 APP 是否已注册；未注册则按需加载 */
     for(var a of _catalog){
       if(a&&a.builtin)continue;
-      if(_enabled[a.id]&&a.file&&a.file!=='inline'&&!_defs[a.id])_load(a);
+      if(_enabled[a.id]&&a.file&&a.file!=='inline'&&a.file!=='generated'&&!_defs[a.id])_load(a);
     }
     if(typeof currentPage!=='undefined'&&currentPage==='apps'&&typeof renderAppStore==='function'){try{renderAppStore()}catch(e){}}
     return _catalog;
@@ -219,7 +268,7 @@
     return m;
   }
   function _setOn(id,on){if(on)_enabled[id]=1;else delete _enabled[id];_save(ON_KEY,_enabled)}
-  function install(id){_setOn(id,true);var a=(_catalog||[]).find(function(x){return x&&x.id===id});if(a&&a.file&&a.file!=='inline'&&!_defs[id])_load(a);return true}
+  function install(id){_setOn(id,true);var a=(_catalog||[]).find(function(x){return x&&x.id===id});if(a&&a.file&&a.file!=='inline'&&a.file!=='generated'&&!_defs[id])_load(a);return true}
   function uninstall(id){
     var a=(_catalog||[]).find(function(x){return x&&x.id===id});
     if(a&&a.builtin)return false;
@@ -241,7 +290,7 @@
       var on=isInstalled(a.id);
       var icon=a.icon||'';
       var btnOn = a.builtin ? ('<button class="appstore-btn primary" data-open="'+a.id+'" type="button">打开</button>')
-        : (on ? ('<button class="appstore-btn primary" data-open="'+a.id+'" type="button">打开</button><button class="appstore-btn" data-off="'+a.id+'" type="button">卸载</button>')
+      : (on ? ('<button class="appstore-btn primary" data-open="'+a.id+'" type="button">打开</button><button class="appstore-btn" data-off="'+a.id+'" type="button">卸载</button>')
              : ('<button class="appstore-btn" data-on="'+a.id+'" type="button">安装</button>'));
       return '<div class="appstore-card"><svg viewBox="0 0 24 24">'+(icon||'')+'</svg>'+
         '<div class="appstory-name">'+_escHtml(a.name||a.id)+'</div>'+
@@ -253,6 +302,23 @@
     var offs=grid.querySelectorAll('[data-off]');for(var k=0;k<offs.length;k++)(function(el){el.onclick=function(){uninstall(el.getAttribute('data-off'));renderAppStore()}})(offs[k]);
   }
 
+  function installGeneratedApp(value, options){
+    options=options||{};
+    if(options.confirmed!==true)return{ok:false,error:'explicit-app-install-confirmation-required'};
+    var core=window.IBAppBuilderCore,draft=core&&typeof core.normalizeDraft==='function'?core.normalizeDraft(value):null;
+    if(!draft)return{ok:false,error:'app-draft-package-invalid'};
+    var id=core.appIdForDraft(draft.draftRef),stored=_generatedApps(),previous=stored[id];
+    if(previous&&Number(previous.version)>Number(draft.version))return{ok:false,error:'app-draft-version-stale'};
+    stored[id]={draftRef:draft.draftRef,projectRef:draft.projectRef,name:draft.name,version:draft.version,files:draft.files,changes:draft.changes};
+    if(!_saveGeneratedApps(stored))return{ok:false,error:'app-store-generated-app-persist-failed'};
+    _installGeneratedDefinition(stored[id]);
+    install(id);
+    if(typeof renderAppStore==='function'){try{renderAppStore()}catch(e){}}
+    return{ok:true,appId:id,draftRef:draft.draftRef,version:draft.version,updated:!!previous};
+  }
+  function generatedAppId(draftRef){return window.IBAppBuilderCore?window.IBAppBuilderCore.appIdForDraft(draftRef):''}
+  function isGeneratedInstalled(draftRef,version){var id=generatedAppId(draftRef),stored=id&&_generatedApps()[id];return !!stored&&isInstalled(id)&&(version==null||Number(stored.version)===Number(version))}
+
   /* 宿主 → 当前打开 App 的事件广播（供 ctx.on('turn'|'delta'|'message') 订阅）。
      幂等：无 App 打开时是 no-op；对未打开的 App 不投递；异常被 try 隔离。 */
   function broadcast(ev,payload){if(!_activeId||!_ev[_activeId]||!_ev[_activeId][ev])return;var a=_ev[_activeId][ev];for(var i=0;i<a.length;i++){try{a[i](payload)}catch(e){}}}
@@ -260,6 +326,9 @@
   /* ---- 注册：window + IB.apps ---- */
   var api={boot:_boot,register:register,open:open,close:closeActive,closeEach:closeEach,isOpen:isOpen,closeIfOpen:closeIfOpen,install:install,uninstall:uninstall,
     isInstalled:isInstalled,listEnabled:listEnabled,catalog:function(){return _catalog||[]},defs:function(){return _defs},emit:_emit,broadcast:broadcast};
+  api.installGeneratedApp=installGeneratedApp;
+  api.generatedAppId=generatedAppId;
+  api.isGeneratedInstalled=isGeneratedInstalled;
   NS.apps=api;
   window.IBApps=api;
   window.renderAppStore=renderAppStore;

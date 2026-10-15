@@ -46,11 +46,22 @@ const CHAT_CORE = require('../../assets/js/chat-core.js');
 const catalogBootstrap = require('./catalog-bootstrap.js');
 /* P11-3H：停止面的路径常量（唯一来源，不在这里再写一遍字面量）。 */
 const serviceControl = require('../../runtime/service-control.js');
+const devServiceContract = require('../../runtime/dev-service-contract.js');
 /* P32：Tauri 2 的 bundled WebView 使用 tauri.localhost；它仍然是本机
    应用来源，不应被误判成一个 LAN/公网 Origin。 */
-const { isTauriOrigin } = require('../../runtime/host-origin.js');
+const { isTauriOrigin, blocksDevWebOrigin } = require('../../runtime/host-origin.js');
 
 const PROTOCOL_VERSION = 1;
+const WORK_RUNS_PATH = '/internal/work/runs';
+const APP_DRAFTS_PATH = WORK_RUNS_PATH + '/app-drafts';
+const AGENT_MEMORY_PATH = '/internal/agent-memory';
+const WORK_RETENTION_PATH = '/internal/work/retention';
+const WORK_DSH_PATH = '/internal/work/dsh';
+const WORK_DSH_RUNTIME_INSTALL_PATH = '/internal/work/dsh/runtime/install';
+const WORK_DSH_RUNTIME_RELEASES_PATH = '/internal/work/dsh/runtime/releases';
+const WORK_DSH_RUNTIME_ONLINE_INSTALL_PATH = '/internal/work/dsh/runtime/online-install';
+const WORK_DSH_RUNTIME_ONLINE_CANCEL_PATH = '/internal/work/dsh/runtime/online-install/cancel';
+const WORKSPACE_PROJECT_BRIDGE_PATH = '/internal/work/workspace-project-bridge';
 /* P22-23 · 首次运行凭据交付面的**契约常量**（路径 + 请求头）。
    放在模块作用域而不是工厂内部，是因为它们是契约而不是实例状态：
    module.exports 下面要把它们交出去，客户端与测试都从这里取，
@@ -62,6 +73,7 @@ const DESKTOP_CREDENTIAL_PATH = '/internal/desktop-credential';
 const COGNITIVE_POLICY_PATH = '/internal/runtime/cognitive-policy';
 const DESKTOP_CREDENTIAL_HEADER = 'x-ib-bootstrap';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;       /* 单条消息可能内联 base64 图片（IMG_MAX_BYTES=20MiB × 压缩前） */
+const MAX_AGENT_MEMORY_BACKUP_BYTES = 128 * 1024 * 1024;
 const MAX_BATCH_ITEMS = CHAT_CORE.MAX_MIGRATION_BATCH;
 const LOG_RING = 100;
 
@@ -169,12 +181,26 @@ function createHomeNodeHttp(deps) {
        （见 home-node-service.js 的装配）。本层只做状态矩阵与窄投影。
      ★ 不注入时整条分支不存在（与其它运行时面同款）。 */
   const runtimeCognitivePolicy = deps.runtimeCognitivePolicy || null;
+  /* P28-WM-P1 · only the Home Node owns durable Work Run state. This narrow
+     domain store is not an Agent Runtime, provider, or tool executor. */
+  const workRunStore = deps.workRunStore || null;
+  const appDraftStore = deps.appDraftStore || null;
+  const dshHost = deps.dshHost || null;
+  const dshRuntimeInstaller = deps.dshRuntimeInstaller || null;
+  const dshRuntimeOnlineInstaller = deps.dshRuntimeOnlineInstaller || null;
+  const workspaceProjectBridge = deps.workspaceProjectBridge || null;
+  const agentMemoryStore = deps.agentMemoryStore || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
   const token = String(deps.token || '');
   const version = String(deps.version || '0.0.0');
   const allowedOrigins = Array.isArray(deps.allowedOrigins) ? deps.allowedOrigins.map(String) : [];
+  const devMode = deps.devMode === true || String(process.env.IB_DEV_MODE || '') === '1';
+  const devIdentity = deps.devIdentity || devServiceContract.identityFromEnvironment(process.env);
+  const authorizeRequestIdentity = typeof deps.authorizeRequestIdentity === 'function'
+    ? deps.authorizeRequestIdentity
+    : req => devServiceContract.authorizeRequestIdentity(req, process.env, devIdentity.webOrigin);
   const logger = deps.logger || (() => {});
   /* ── P22-23 · 凭据来源与首次运行交付面 ──────────────────────────────
      `token` 是"这台节点接受什么凭据"；下面两个字段回答的是另外两个问题：
@@ -240,6 +266,22 @@ function createHomeNodeHttp(deps) {
     res.end(body);
   }
 
+  function sendAgentMemoryFile(res, fileResult, req) {
+    const data = Buffer.isBuffer(fileResult && fileResult.data) ? fileResult.data : Buffer.from(fileResult && fileResult.data || []);
+    const name = String(fileResult && fileResult.fileName || 'agent-memory.db').replace(/[^A-Za-z0-9._-]/g, '_');
+    const headers = {
+      'Content-Type': 'application/vnd.sqlite3',
+      'Content-Length': data.length,
+      'Content-Disposition': 'attachment; filename="' + name + '"',
+      'Cache-Control': 'no-store',
+      'X-IB-Protocol': String(PROTOCOL_VERSION),
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-IB-Protocol'
+    };
+    applyCors(headers, req);
+    res.writeHead(200, headers);
+    res.end(data);
+  }
+
   /* ── CORS：为什么必须允许 `Origin: null`（实测结论，不是疏忽）─────────────
      产品的第一类运行方式是**双击 InternalBeyond.html（file://）**（见
      communication.js:100-104 与 WEB_PAGE 注释）。在这个 origin 下浏览器发出的
@@ -259,6 +301,7 @@ function createHomeNodeHttp(deps) {
   function originAllowed(origin) {
     const value = origin == null ? '' : String(origin);
     if (!value) return false;                       /* 无 Origin：不需要 CORS 头 */
+    if (blocksDevWebOrigin(value, { IB_DEV_MODE: devMode ? '1' : '' })) return false;
     if (allowedOrigins.indexOf(value) >= 0) return true;
     if (value === 'null') return !token;             /* file:// —— 仅在无 token 时信任 */
     if (isTauriOrigin(value)) return true;           /* Tauri 2 bundled WebView */
@@ -447,6 +490,8 @@ function createHomeNodeHttp(deps) {
     const open = store.isOpen();
     return {
       service: 'internal-beyond-home-node',
+      environment: devIdentity.mode,
+      devInstanceId: devIdentity.instanceId || null,
       version: version,
       role: 'canonical-chat-authority',
       open: open,
@@ -474,7 +519,10 @@ function createHomeNodeHttp(deps) {
     sendJson(res, 200, Object.assign({
       ok: payload.serving !== false,
       protocolVersion: PROTOCOL_VERSION,
-      serverTime: clock()
+      serverTime: clock(),
+      pid: process.pid,
+      startedAt: Date.now() - Math.round(process.uptime() * 1000),
+      tauriHostSessionId: String(process.env.IB_TAURI_HOST_INSTANCE_ID || '')
     }, payload), req);
   }
 
@@ -509,6 +557,1194 @@ function createHomeNodeHttp(deps) {
       });
       req.on('error', error => reject(Object.assign(error, { code: 'read-error' })));
     });
+  }
+
+  function workRunStatusFor(code) {
+    if (code === 'RUN_NOT_FOUND' || code === 'CONSENT_NOT_FOUND' || code === 'RESULT_NOT_FOUND'
+      || code === 'RESULT_REFERENCE_UNAVAILABLE' || code === 'RESULT_NOT_AVAILABLE' || code === 'DSH_SESSION_NOT_FOUND') return 404;
+    if (code === 'RESULT_REFERENCE_DENIED') return 403;
+    if (code === 'INVALID_REQUEST' || code === 'INVALID_RUN_ID' || code === 'INVALID_QUERY' || code === 'INVALID_RESULT' || code === 'INVALID_SESSION_ID') return 400;
+    if (code === 'VERSION_CONFLICT' || code === 'IDEMPOTENCY_CONFLICT'
+      || code === 'INVALID_TRANSITION' || code === 'RUN_TERMINAL' || code === 'RESULT_REQUIRED'
+      || code === 'DSH_SESSION_ALREADY_BOUND' || code === 'DSH_SESSION_RUN_ACTIVE'
+      || code === 'DSH_SESSION_SCOPE_MISMATCH' || code === 'RUN_NOT_ACTIVE'
+      || code.indexOf('CONSENT_') === 0) return 409;
+    if (code === 'STORE_INTEGRITY_ERROR') return 500;
+    return 503;
+  }
+
+  function sendWorkRunResult(res, result, operation, req) {
+    if (result && result.ok === true) {
+      ok(res, Object.assign({ operation: operation }, result), req);
+      return;
+    }
+    const code = String(result && result.code || 'STORE_UNAVAILABLE');
+    const extra = {};
+    if (result && result.run) extra.run = result.run;
+    bad(res, workRunStatusFor(code), code.toLowerCase().replace(/_/g, '-'), extra, req);
+  }
+
+  function dshRuntimeInstallationState() {
+    const base = dshRuntimeInstaller && typeof dshRuntimeInstaller.describe === 'function'
+      ? dshRuntimeInstaller.describe() : null;
+    const online = dshRuntimeOnlineInstaller && typeof dshRuntimeOnlineInstaller.describe === 'function'
+      ? dshRuntimeOnlineInstaller.describe() : { configured: false, phase: 'unavailable', install: { phase: 'idle' } };
+    return Object.assign({}, base || { installed: false, runtimeVersion: null, install: { phase: 'idle' } }, { online: online });
+  }
+
+  function authorizeDshRuntimeControl(req, res, method) {
+    const origin = String(req.headers.origin || '');
+    const hostInstanceId = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '');
+    if (method === 'GET' && !authorizeRequestIdentity(req)) {
+      bad(res, 403, 'environment-identity-mismatch', { hint: 'the Dev service identity did not match this Home Node' }, req);
+      return false;
+    }
+    if (devIdentity.mode !== 'production' || !isTauriOrigin(origin) || !isLoopback(req)
+      || !/^[a-f0-9]{32}$/i.test(hostInstanceId)) {
+      bad(res, 403, 'dsh-runtime-install-origin-denied', null, req);
+      return false;
+    }
+    return true;
+  }
+
+  async function handleWorkRunRequest(req, res, url, method) {
+    if (!workRunStore || typeof workRunStore.createRun !== 'function') {
+      bad(res, 503, 'work-run-store-unavailable', null, req);
+      return;
+    }
+
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    async function readWorkRunBody() {
+      try { return { ok: true, body: await readBody(req, MAX_BODY_BYTES) }; }
+      catch (error) {
+        const tooLarge = error && error.code === 'too-large';
+        bad(res, tooLarge ? 413 : 400, tooLarge ? 'body-too-large' : 'invalid-json', null, req);
+        return { ok: false };
+      }
+    }
+
+    if (path === WORK_DSH_RUNTIME_RELEASES_PATH) {
+      if (method !== 'GET') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req);
+        return;
+      }
+      if (!authorizeDshRuntimeControl(req, res, method)) return;
+      if (!dshRuntimeOnlineInstaller || typeof dshRuntimeOnlineInstaller.discoverOnlineRuntimes !== 'function') {
+        bad(res, 503, 'runtime-release-discovery-unavailable', null, req);
+        return;
+      }
+      const result = await dshRuntimeOnlineInstaller.discoverOnlineRuntimes();
+      if (!result || result.ok !== true) {
+        bad(res, 503, String(result && result.error || 'runtime-release-network-failed'), { releases: [] }, req);
+        return;
+      }
+      ok(res, Object.assign({ operation: 'dsh.runtime.releases' }, result), req);
+      return;
+    }
+
+    if (path === WORK_DSH_RUNTIME_ONLINE_INSTALL_PATH) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      if (!authorizeDshRuntimeControl(req, res, method)) return;
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)
+        || Object.keys(parsed.body).length !== 1 || typeof parsed.body.runtimeVersion !== 'string') {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      if (!dshRuntimeOnlineInstaller || typeof dshRuntimeOnlineInstaller.startOnlineInstall !== 'function') {
+        bad(res, 503, 'runtime-online-installer-unavailable', null, req);
+        return;
+      }
+      const result = dshRuntimeOnlineInstaller.startOnlineInstall(parsed.body.runtimeVersion);
+      if (!result || result.ok !== true) {
+        bad(res, /already-running|busy/.test(String(result && result.error || '')) ? 409 : 400,
+          String(result && result.error || 'runtime-online-install-failed'), null, req);
+        return;
+      }
+      sendJson(res, 202, Object.assign({ ok: true, protocolVersion: PROTOCOL_VERSION,
+        serverTime: clock(), operation: 'dsh.runtime.online-install' }, result), req);
+      return;
+    }
+
+    if (path === WORK_DSH_RUNTIME_ONLINE_CANCEL_PATH) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      if (!authorizeDshRuntimeControl(req, res, method)) return;
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body) || Object.keys(parsed.body).length) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      if (!dshRuntimeOnlineInstaller || typeof dshRuntimeOnlineInstaller.cancelOnlineInstall !== 'function') {
+        bad(res, 503, 'runtime-online-installer-unavailable', null, req);
+        return;
+      }
+      const result = dshRuntimeOnlineInstaller.cancelOnlineInstall();
+      if (!result || result.ok !== true) {
+        bad(res, 409, String(result && result.error || 'runtime-online-install-not-running'), null, req);
+        return;
+      }
+      ok(res, Object.assign({ operation: 'dsh.runtime.online-install.cancel' }, result), req);
+      return;
+    }
+
+    if (path === WORK_DSH_RUNTIME_INSTALL_PATH) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      if (!authorizeDshRuntimeControl(req, res, method)) return;
+      if (!dshRuntimeInstaller || typeof dshRuntimeInstaller.installFromRequest !== 'function') {
+        bad(res, 503, 'dsh-runtime-installer-unavailable', null, req);
+        return;
+      }
+      const contentLength = Number(req.headers['content-length']);
+      if (Number.isFinite(contentLength) && contentLength > 1024 * 1024 * 1024) {
+        bad(res, 413, 'runtime-upload-size-limit-exceeded', null, req);
+        req.resume();
+        return;
+      }
+      const result = await dshRuntimeInstaller.installFromRequest(req);
+      if (!result || result.ok !== true) {
+        const code = String(result && result.error || 'dsh-runtime-install-failed');
+        const status = /size-limit/.test(code) ? 413
+          : /already-running|extension-conflict|already-installed/.test(code) ? 409
+            : /unavailable|environment-invalid/.test(code) ? 503 : 400;
+        bad(res, status, code, { rolledBack: result && result.rolledBack === true }, req);
+        return;
+      }
+      ok(res, Object.assign({ operation: 'dsh.runtime.install' }, result), req);
+      return;
+    }
+
+    if (path === WORK_DSH_PATH) {
+      if (method !== 'GET') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req);
+        return;
+      }
+      const origin = String(req.headers.origin || '');
+      const canBootstrapProductionUi = isTauriOrigin(origin) && devIdentity.mode === 'production';
+      if (canBootstrapProductionUi && dshHost && typeof dshHost.startWebUi === 'function') {
+        /* Lazy-start the pinned browser surface only for the installed Tauri Host.
+           The URL token is returned separately and never enters status/log projections. */
+        Promise.resolve(dshHost.startWebUi()).catch(() => {});
+      }
+      const state = dshHost && typeof dshHost.describe === 'function'
+        ? dshHost.describe() : { enabled: false, dshRevision: null, activeRuns: 0 };
+      const workspaceState = workspaceProjectBridge && typeof workspaceProjectBridge.describe === 'function'
+        ? workspaceProjectBridge.describe() : null;
+      const workRunState = workRunStore && typeof workRunStore.describe === 'function'
+        ? workRunStore.describe() : { available: false, reason: 'work-run-store-unavailable' };
+      const webUi = canBootstrapProductionUi && dshHost && typeof dshHost.getWebUiBootstrap === 'function'
+        ? dshHost.getWebUiBootstrap(origin) : null;
+      ok(res, { operation: 'dsh.status', host: state, webUi: webUi,
+        runtimeInstallation: dshRuntimeInstallationState(),
+        workspaceBridge: workspaceState, workRuns: workRunState }, req);
+      return;
+    }
+
+    if (path === APP_DRAFTS_PATH) {
+      if (!appDraftStore) { bad(res, 503, 'app-draft-store-unavailable', null, req); return; }
+      if (method === 'GET') {
+        const keys = Array.from(url.searchParams.keys());
+        const projectRef = String(url.searchParams.get('projectRef') || '');
+        if (keys.length !== 1 || keys[0] !== 'projectRef' || !/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef)) {
+          bad(res, 400, 'invalid-query', null, req); return;
+        }
+        const result = appDraftStore.list(projectRef);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'app-draft-list-failed', null, req); return; }
+        ok(res, { operation: 'app-draft.list', drafts: result.drafts }, req);
+        return;
+      }
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET', 'POST'] }, req); return; }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some(key => key !== 'projectRef' && key !== 'name')
+        || !/^[A-Za-z0-9_.:-]{1,180}$/.test(String(body.projectRef || ''))
+        || (body.name !== undefined && typeof body.name !== 'string')) {
+        bad(res, 400, 'invalid-request', null, req); return;
+      }
+      const result = appDraftStore.create(body);
+      if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'app-draft-create-failed', null, req); return; }
+      ok(res, { operation: 'app-draft.create', draft: result.draft }, req);
+      return;
+    }
+
+    if (path.startsWith(APP_DRAFTS_PATH + '/') && path.endsWith('/restore')) {
+      if (method !== 'POST' || !appDraftStore || typeof appDraftStore.restoreVersion !== 'function') {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'app-draft-store-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      let draftRef;
+      try { draftRef = decodeURIComponent(path.slice((APP_DRAFTS_PATH + '/').length, -'/restore'.length)); }
+      catch (_) { bad(res, 400, 'invalid-draft-ref', null, req); return; }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!draftRef || draftRef.includes('/') || !body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).sort().join(',') !== 'projectRef,version'
+        || typeof body.projectRef !== 'string' || !Number.isSafeInteger(body.version) || body.version < 0) {
+        bad(res, 400, 'invalid-request', null, req); return;
+      }
+      const result = appDraftStore.restoreVersion({ draftRef: draftRef, projectRef: body.projectRef, version: body.version });
+      if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'app-draft-restore-failed', null, req); return; }
+      ok(res, { operation: 'app-draft.version-restored', draft: result.draft }, req);
+      return;
+    }
+
+    if (path.startsWith(APP_DRAFTS_PATH + '/') && path.includes('/versions/')) {
+      if (method !== 'GET' || !appDraftStore || typeof appDraftStore.getVersion !== 'function') {
+        bad(res, method === 'GET' ? 503 : 405, method === 'GET' ? 'app-draft-store-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      const match = /^([^/]+)\/versions\/(0|[1-9][0-9]*)$/.exec(path.slice((APP_DRAFTS_PATH + '/').length));
+      let draftRef = '';
+      try { draftRef = match ? decodeURIComponent(match[1]) : ''; } catch (_) {}
+      const keys = Array.from(url.searchParams.keys());
+      const projectRef = String(url.searchParams.get('projectRef') || '');
+      const version = match ? Number(match[2]) : NaN;
+      if (!match || !draftRef || draftRef.includes('/') || keys.length !== 1 || keys[0] !== 'projectRef'
+        || !/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef) || !Number.isSafeInteger(version)) {
+        bad(res, 400, 'invalid-query', null, req); return;
+      }
+      const result = appDraftStore.getVersion({ draftRef: draftRef, projectRef: projectRef, version: version });
+      if (!result || result.ok !== true) { bad(res, 404, result && result.error || 'app-draft-version-not-found', null, req); return; }
+      ok(res, { operation: 'app-draft.version.get', version: result }, req);
+      return;
+    }
+
+    if (path.startsWith(APP_DRAFTS_PATH + '/')) {
+      if (method !== 'GET' || !appDraftStore) {
+        bad(res, method === 'GET' ? 503 : 405, method === 'GET' ? 'app-draft-store-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      let draftRef;
+      try { draftRef = decodeURIComponent(path.slice((APP_DRAFTS_PATH + '/').length)); }
+      catch (_) { bad(res, 400, 'invalid-draft-id', null, req); return; }
+      const keys = Array.from(url.searchParams.keys());
+      const projectRef = String(url.searchParams.get('projectRef') || '');
+      const runId = String(url.searchParams.get('runId') || '');
+      if (!draftRef || draftRef.includes('/') || keys.some(key => key !== 'projectRef' && key !== 'runId')
+        || !/^[A-Za-z0-9_.:-]{1,180}$/.test(projectRef)
+        || (runId && !/^wr_[A-Za-z0-9-]{36}$/.test(runId))) {
+        bad(res, 400, 'invalid-query', null, req); return;
+      }
+      const result = appDraftStore.get({ draftRef, projectRef, runId });
+      if (!result || result.ok !== true) { bad(res, 404, result && result.error || 'app-draft-not-found', null, req); return; }
+      ok(res, { operation: 'app-draft.get', draft: result.draft }, req);
+      return;
+    }
+
+    if (path.startsWith(WORK_RUNS_PATH + '/dsh-sessions/')) {
+      if (method !== 'GET' || typeof workRunStore.getDshSession !== 'function') {
+        bad(res, method === 'GET' ? 503 : 405, method === 'GET' ? 'work-run-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      let sessionId;
+      try { sessionId = decodeURIComponent(path.slice((WORK_RUNS_PATH + '/dsh-sessions/').length)); }
+      catch (_) { bad(res, 400, 'invalid-session-id', null, req); return; }
+      if (!sessionId || sessionId.includes('/')) { bad(res, 400, 'invalid-session-id', null, req); return; }
+      const sessionQueryKeys = Array.from(url.searchParams.keys());
+      if (sessionQueryKeys.some(key => key !== 'runId') || sessionQueryKeys.filter(key => key === 'runId').length > 1) {
+        bad(res, 400, 'invalid-query', null, req); return;
+      }
+      const runId = String(url.searchParams.get('runId') || '');
+      sendWorkRunResult(res, workRunStore.getDshSession(sessionId, runId), 'work-dsh-session.get', req);
+      return;
+    }
+
+    if (path === WORKSPACE_PROJECT_BRIDGE_PATH + '/poll') {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      if (!dshHost || typeof dshHost.describe !== 'function' || dshHost.describe().enabled !== true
+        || !workspaceProjectBridge || typeof workspaceProjectBridge.poll !== 'function') {
+        bad(res, 503, 'dsh-host-disabled', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !Object.prototype.hasOwnProperty.call(body, 'waitMs')
+        || !Number.isSafeInteger(body.waitMs) || body.waitMs < 0 || body.waitMs > 25000) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const controller = new AbortController();
+      res.once('close', () => { if (!res.writableEnded) controller.abort(); });
+      const result = await workspaceProjectBridge.poll({ waitMs: body.waitMs, signal: controller.signal, response: res });
+      if (controller.signal.aborted || res.destroyed) return;
+      if (!result || result.ok !== true) {
+        bad(res, 409, result && result.error || 'workspace-bridge-unavailable', null, req);
+        return;
+      }
+      ok(res, { operation: 'workspace-project.poll', job: result.job || null }, req);
+      return;
+    }
+
+    if (path === WORKSPACE_PROJECT_BRIDGE_PATH + '/resolve') {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      if (!dshHost || typeof dshHost.describe !== 'function' || dshHost.describe().enabled !== true
+        || !workspaceProjectBridge || typeof workspaceProjectBridge.resolve !== 'function') {
+        bad(res, 503, 'dsh-host-disabled', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 2 || typeof body.requestId !== 'string'
+        || !body.result || typeof body.result !== 'object' || Array.isArray(body.result)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const result = workspaceProjectBridge.resolve(body.requestId, body.result);
+      if (!result || result.ok !== true) {
+        bad(res, 409, result && result.error || 'workspace-bridge-unavailable', null, req);
+        return;
+      }
+      ok(res, { operation: 'workspace-project.resolve', resolved: true }, req);
+      return;
+    }
+
+    if (path === WORK_RETENTION_PATH) {
+      if (method === 'GET') {
+        sendWorkRunResult(res, { ok: true, policy: workRunStore.retentionPolicy() }, 'work-retention.policy', req);
+        return;
+      }
+      if (method !== 'POST' || typeof workRunStore.cleanupExpired !== 'function') {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'work-run-store-unavailable' : 'method-not-allowed',
+          method === 'POST' ? null : { allowedMethods: ['GET', 'POST'] }, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)
+        || Object.keys(parsed.body).length !== 1 || !Object.prototype.hasOwnProperty.call(parsed.body, 'limit')) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.cleanupExpired({ limit: parsed.body.limit }), 'work-retention.cleanup', req);
+      return;
+    }
+    if (path === WORK_RUNS_PATH + '/active') {
+      if (method !== 'GET') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req);
+        return;
+      }
+      const keys = Array.from(url.searchParams.keys());
+      if (keys.some(key => key !== 'limit') || keys.filter(key => key === 'limit').length > 1) {
+        bad(res, 400, 'invalid-query', null, req);
+        return;
+      }
+      if (typeof workRunStore.listActive !== 'function') {
+        bad(res, 503, 'work-run-store-unavailable', null, req);
+        return;
+      }
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw == null || limitRaw === '' ? 100 : Number(limitRaw);
+      sendWorkRunResult(res, workRunStore.listActive({ limit: limit }), 'work-run.active', req);
+      return;
+    }
+    if (path === WORK_RUNS_PATH + '/results') {
+      if (method !== 'GET') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req);
+        return;
+      }
+      const keys = Array.from(url.searchParams.keys());
+      if (keys.some(key => key !== 'limit') || keys.filter(key => key === 'limit').length > 1) {
+        bad(res, 400, 'invalid-query', null, req);
+        return;
+      }
+      if (typeof workRunStore.listResults !== 'function') {
+        bad(res, 503, 'work-run-store-unavailable', null, req);
+        return;
+      }
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw == null || limitRaw === '' ? 100 : Number(limitRaw);
+      sendWorkRunResult(res, workRunStore.listResults({ limit: limit }), 'work-result.list', req);
+      return;
+    }
+    if (path === WORK_RUNS_PATH) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      let body;
+      try { body = await readBody(req, MAX_BODY_BYTES); }
+      catch (error) {
+        const tooLarge = error && error.code === 'too-large';
+        bad(res, tooLarge ? 413 : 400, tooLarge ? 'body-too-large' : 'invalid-json', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.createRun(body), 'work-run.create', req);
+      return;
+    }
+
+    const suffix = path.slice((WORK_RUNS_PATH + '/').length);
+    const parts = suffix.split('/');
+    let runId;
+    try { runId = decodeURIComponent(parts[0] || ''); }
+    catch (_) { bad(res, 400, 'invalid-run-id', null, req); return; }
+
+    if (parts.length === 2 && parts[1] === 'executor-selection') {
+      if (method !== 'POST' || typeof workRunStore.pinExecutorSelection !== 'function') {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'work-run-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 2
+        || !Number.isSafeInteger(body.expectedVersion)
+        || !body.executorSelection || typeof body.executorSelection !== 'object' || Array.isArray(body.executorSelection)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.pinExecutorSelection({
+        runId: runId, expectedVersion: body.expectedVersion, executorSelection: body.executorSelection
+      }), 'work-run.executor-selection', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'app-draft') {
+      if (method !== 'POST' || !appDraftStore) {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'app-draft-store-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).sort().join(',') !== 'draftRef,instruction,projectRef'
+        || typeof body.draftRef !== 'string' || typeof body.instruction !== 'string'
+        || typeof body.projectRef !== 'string') {
+        bad(res, 400, 'invalid-request', null, req); return;
+      }
+      const current = typeof workRunStore.getRun === 'function' ? workRunStore.getRun(runId) : null;
+      const run = current && current.run;
+      if (!current || current.ok !== true || !run || run.workflowId !== 'app.builder'
+        || run.status !== 'queued' || run.projectRef !== body.projectRef || run.appDraftRef !== body.draftRef
+        || !run.executorSelection || run.executorSelection.presetId !== 'app-builder') {
+        bad(res, 409, 'app-draft-run-scope-mismatch', null, req); return;
+      }
+      const result = appDraftStore.queueRun({ draftRef: body.draftRef, projectRef: body.projectRef,
+        runId: runId, instruction: body.instruction });
+      if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'app-draft-run-bind-failed', null, req); return; }
+      ok(res, { operation: 'app-draft.run-queued', draft: result.draft }, req);
+      return;
+    }
+
+    if (parts.length === 3 && parts[1] === 'app-draft' && parts[2] === 'finish') {
+      if (method !== 'POST' || !appDraftStore) {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'app-draft-store-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).sort().join(',') !== 'draftRef,projectRef,status'
+        || typeof body.draftRef !== 'string' || typeof body.projectRef !== 'string'
+        || !['completed', 'failed', 'cancelled'].includes(body.status)) {
+        bad(res, 400, 'invalid-request', null, req); return;
+      }
+      const current = typeof workRunStore.getRun === 'function' ? workRunStore.getRun(runId) : null;
+      if (!current || current.ok !== true || !current.run || current.run.workflowId !== 'app.builder'
+        || current.run.appDraftRef !== body.draftRef || current.run.projectRef !== body.projectRef
+        || current.run.status !== body.status) {
+        bad(res, 409, 'app-draft-finish-scope-mismatch', null, req); return;
+      }
+      const result = appDraftStore.finishRun({ draftRef: body.draftRef, projectRef: body.projectRef,
+        runId: runId, status: body.status });
+      if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'app-draft-finish-failed', null, req); return; }
+      ok(res, { operation: 'app-draft.run-finished', draft: result.draft }, req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'dsh-session') {
+      if (method !== 'POST' || typeof workRunStore.bindDshSession !== 'function') {
+        bad(res, method === 'POST' ? 503 : 405, method === 'POST' ? 'work-run-unavailable' : 'method-not-allowed', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 3
+        || typeof body.sessionId !== 'string' || typeof body.consentId !== 'string'
+        || !Number.isSafeInteger(body.expectedVersion)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.bindDshSession({
+        runId: runId, sessionId: body.sessionId, consentId: body.consentId, expectedVersion: body.expectedVersion
+      }), 'work-dsh-session.bind', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'dsh' && method === 'POST') {
+      if (!dshHost || typeof dshHost.run !== 'function' || typeof dshHost.describe !== 'function'
+        || dshHost.describe().enabled !== true) {
+        bad(res, 503, 'dsh-host-disabled', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const keys = Object.keys(body);
+      if (keys.some(key => !['consentId', 'providerRef', 'prompt', 'timeoutMs', 'sessionId', 'plannedFileIds', 'deferResult'].includes(key))
+        || !Object.prototype.hasOwnProperty.call(body, 'consentId')
+        || !Object.prototype.hasOwnProperty.call(body, 'providerRef')
+        || !Object.prototype.hasOwnProperty.call(body, 'sessionId')
+        || !Object.prototype.hasOwnProperty.call(body, 'prompt')
+        || typeof body.consentId !== 'string' || typeof body.providerRef !== 'string'
+        || typeof body.sessionId !== 'string'
+        || typeof body.prompt !== 'string' || body.prompt.length > 32000
+        || (body.timeoutMs !== undefined && !Number.isSafeInteger(body.timeoutMs))
+        || (body.plannedFileIds !== undefined && (!Array.isArray(body.plannedFileIds) || body.plannedFileIds.length > 12
+          || body.plannedFileIds.some(fileId => typeof fileId !== 'string')
+          || new Set(body.plannedFileIds).size !== body.plannedFileIds.length))
+        || (body.deferResult !== undefined && typeof body.deferResult !== 'boolean')) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const result = await dshHost.run({
+        runId: runId,
+        consentId: body.consentId,
+        sessionId: body.sessionId,
+        providerRef: body.providerRef,
+        prompt: body.prompt,
+        plannedFileIds: body.plannedFileIds,
+        deferResult: body.deferResult === true,
+        timeoutMs: body.timeoutMs
+      });
+      if (!result || result.ok !== true) {
+        const code = String(result && result.error || 'dsh-execution-failed');
+        bad(res, code === 'dsh-host-disabled' ? 503 : 409, code.toLowerCase().replace(/_/g, '-'), {
+          reason: result && result.reason || 'failed'
+        }, req);
+        return;
+      }
+      ok(res, { operation: 'dsh.run', run: result.run, result: result.result, candidate: result.candidate }, req);
+      return;
+    }
+
+    if (parts.length === 3 && parts[1] === 'result' && parts[2] === 'reference' && method === 'POST') {
+      if (typeof workRunStore.getAuthorizedResultReference !== 'function') {
+        bad(res, 503, 'work-run-store-unavailable', null, req);
+        return;
+      }
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).sort().join(',') !== 'resultId,resultRunId'
+        || typeof body.resultId !== 'string' || typeof body.resultRunId !== 'string') {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.getAuthorizedResultReference({
+        currentRunId: runId, resultRunId: body.resultRunId, resultId: body.resultId
+      }), 'work-result.reference', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'result' && method === 'GET') {
+      sendWorkRunResult(res, workRunStore.getResult(runId), 'work-result.get', req);
+      return;
+    }
+
+    if (parts.length === 3 && parts[1] === 'result' && parts[2] === 'delete' && method === 'POST') {
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.deleteResult(Object.assign({ runId: runId }, body)), 'work-result.delete', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'complete' && method === 'POST') {
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const completed = workRunStore.completeRun(Object.assign({ runId: runId }, body));
+      if (completed && completed.ok === true && dshHost && typeof dshHost.finalizeProjectChanges === 'function') {
+        try { await dshHost.finalizeProjectChanges(runId, true); } catch (_) { /* result remains Home Node authority */ }
+      }
+      sendWorkRunResult(res, completed, 'work-run.complete', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'consents' && method === 'POST') {
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.grantConsent(Object.assign({ runId: runId }, body)), 'work-consent.grant', req);
+      return;
+    }
+
+    if (parts.length === 4 && parts[1] === 'consents' && ['check', 'revoke'].indexOf(parts[3]) >= 0) {
+      let consentId;
+      try { consentId = decodeURIComponent(parts[2] || ''); }
+      catch (_) { bad(res, 400, 'invalid-request', null, req); return; }
+      if (parts[3] === 'check' && method === 'POST') {
+        const parsed = await readWorkRunBody();
+        if (!parsed.ok) return;
+        const body = parsed.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          bad(res, 400, 'invalid-request', null, req);
+          return;
+        }
+        sendWorkRunResult(res, workRunStore.checkConsent(Object.assign({ runId: runId, consentId: consentId }, body)), 'work-consent.check', req);
+        return;
+      }
+      if (parts[3] === 'revoke' && method === 'POST') {
+        const parsed = await readWorkRunBody();
+        if (!parsed.ok) return;
+        const body = parsed.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          bad(res, 400, 'invalid-request', null, req);
+          return;
+        }
+        sendWorkRunResult(res, workRunStore.revokeConsent(Object.assign({ runId: runId, consentId: consentId }, body)), 'work-consent.revoke', req);
+        return;
+      }
+      bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+      return;
+    }
+
+    if (parts.length === 3 && parts[1] === 'consents' && method === 'GET') {
+      let consentId;
+      try { consentId = decodeURIComponent(parts[2] || ''); }
+      catch (_) { bad(res, 400, 'invalid-request', null, req); return; }
+      sendWorkRunResult(res, workRunStore.getConsent(runId, consentId), 'work-consent.get', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'memory-provenance' && method === 'GET') {
+      sendWorkRunResult(res, workRunStore.getMemoryProvenance(runId), 'work-run.memory-provenance', req);
+      return;
+    }
+
+    if (parts.length === 1 && method === 'GET') {
+      sendWorkRunResult(res, workRunStore.getRun(runId), 'work-run.get', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'events' && method === 'POST') {
+      const parsed = await readWorkRunBody();
+      if (!parsed.ok) return;
+      const body = parsed.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendWorkRunResult(res, workRunStore.recordActionTrace(runId, body), 'work-run.action-trace', req);
+      return;
+    }
+
+    if (parts.length === 2 && parts[1] === 'events' && method === 'GET') {
+      const afterRaw = url.searchParams.get('afterSequence');
+      const limitRaw = url.searchParams.get('limit');
+      const afterSequence = afterRaw == null || afterRaw === '' ? 0 : Number(afterRaw);
+      const limit = limitRaw == null || limitRaw === '' ? 50 : Number(limitRaw);
+      const result = workRunStore.listEvents(runId, {
+        afterSequence: afterSequence,
+        limit: limit
+      });
+      if (result && result.ok === true && dshHost && typeof dshHost.getEvents === 'function') {
+        result.executionEvents = dshHost.getEvents(runId);
+      }
+      sendWorkRunResult(res, result, 'work-run.events', req);
+      return;
+    }
+
+    if (parts.length === 2 && (parts[1] === 'transition' || parts[1] === 'cancel')) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      let body;
+      try { body = await readBody(req, MAX_BODY_BYTES); }
+      catch (error) {
+        const tooLarge = error && error.code === 'too-large';
+        bad(res, tooLarge ? 413 : 400, tooLarge ? 'body-too-large' : 'invalid-json', null, req);
+        return;
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const expectedKeys = parts[1] === 'cancel'
+        ? ['requestId', 'expectedVersion']
+        : ['requestId', 'expectedVersion', 'status', 'reasonCode'];
+      if (Object.keys(body).length !== expectedKeys.length
+        || Object.keys(body).some(key => expectedKeys.indexOf(key) < 0)) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const request = parts[1] === 'cancel'
+        ? { runId: runId, requestId: body.requestId, expectedVersion: body.expectedVersion }
+        : {
+            runId: runId,
+            requestId: body.requestId,
+            expectedVersion: body.expectedVersion,
+            status: body.status,
+            reasonCode: body.reasonCode
+          };
+      const result = parts[1] === 'cancel'
+        ? workRunStore.cancel(request)
+        : workRunStore.transition(request);
+      if (parts[1] === 'cancel' && result && result.ok === true && dshHost && typeof dshHost.cancel === 'function') {
+        try { await dshHost.cancel(runId, 'home-node-api'); } catch (_) { /* Work Run remains the cancellation authority */ }
+      }
+      if (parts[1] === 'transition' && result && result.ok === true && result.run
+        && ['failed', 'cancelled'].includes(result.run.status)
+        && dshHost && typeof dshHost.finalizeProjectChanges === 'function') {
+        try { await dshHost.finalizeProjectChanges(runId, false); } catch (_) { /* recovery remains fail-closed */ }
+      }
+      sendWorkRunResult(res, result, parts[1] === 'cancel' ? 'work-run.cancel' : 'work-run.transition', req);
+      return;
+    }
+
+    if (parts.length > 2) {
+      bad(res, 404, 'not-found', null, req);
+      return;
+    }
+    bad(res, 405, 'method-not-allowed', {
+      allowedMethods: parts.length === 1 ? ['GET'] : (parts[1] === 'events' ? ['GET'] : ['POST'])
+    }, req);
+  }
+
+  function agentMemoryStatusFor(code) {
+    if (['MEMORY_NOT_FOUND', 'BACKUP_NOT_FOUND'].indexOf(code) >= 0) return 404;
+    if (['INVALID_REQUEST', 'INVALID_QUERY', 'INVALID_RECORD', 'INVALID_MEMORY_ID', 'INVALID_BACKUP_ID', 'INVALID_BACKUP', 'CONFIRMATION_REQUIRED'].indexOf(code) >= 0) return 400;
+    if (['VERSION_CONFLICT', 'MEMORY_NOT_ACTIVE', 'BACKUP_SCHEMA_FUTURE', 'BACKUP_SCHEMA_UNSUPPORTED',
+      'CURRENT_SCHEMA_FUTURE', 'BACKUP_LIMIT'].indexOf(code) >= 0) return 409;
+    if (['BACKUP_INVALID', 'BACKUP_DOMAIN_MISMATCH', 'BACKUP_RECORD_INVALID', 'BACKUP_INTEGRITY_FAILED',
+      'BACKUP_SCHEMA_VERSION_INVALID', 'BACKUP_SCHEMA_COLUMNS_INVALID', 'BACKUP_SCHEMA_REVISION_MISSING',
+      'BACKUP_SCHEMA_REVISION_INVALID', 'BACKUP_MIGRATION_FAILED'].indexOf(code) >= 0) return 422;
+    if (['RESTORE_FAILED', 'RESTORE_ROLLBACK_FAILED', 'RESTORE_PREPARATION_FAILED', 'BACKUP_FAILED',
+      'BACKUP_DELETE_FAILED', 'BACKUP_CLEANUP_FAILED', 'BACKUP_READ_FAILED', 'RESTORE_UPLOAD_FAILED'].indexOf(code) >= 0) return 500;
+    if (code === 'STORE_INTEGRITY_ERROR') return 500;
+    return 503;
+  }
+
+  function sendAgentMemoryResult(res, result, operation, req) {
+    if (result && result.ok === true) {
+      ok(res, Object.assign({ operation: operation }, result), req);
+      return;
+    }
+    const code = String(result && result.code || 'STORE_UNAVAILABLE');
+    const extra = {};
+    if (result && result.record) extra.record = result.record;
+    if (result && result.previous) extra.previous = result.previous;
+    if (result && result.storeRevision != null) extra.storeRevision = result.storeRevision;
+    if (result && result.rollbackBackupId) extra.rollbackBackupId = result.rollbackBackupId;
+    if (result && result.rolledBack != null) extra.rolledBack = result.rolledBack;
+    bad(res, agentMemoryStatusFor(code), code.toLowerCase().replace(/_/g, '-'), extra, req);
+  }
+
+  async function handleAgentMemoryRequest(req, res, url, method) {
+    if (!agentMemoryStore || typeof agentMemoryStore.createRecord !== 'function') {
+      bad(res, 503, 'agent-memory-store-unavailable', null, req);
+      return;
+    }
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    async function readAgentMemoryBody() {
+      try { return { ok: true, body: await readBody(req, MAX_BODY_BYTES) }; }
+      catch (error) {
+        const tooLarge = error && error.code === 'too-large';
+        bad(res, tooLarge ? 413 : 400, tooLarge ? 'body-too-large' : 'invalid-json', null, req);
+        return { ok: false };
+      }
+    }
+    async function readAgentMemoryBinaryBody() {
+      try {
+        const buffer = await new Promise((resolve, reject) => {
+          let size = 0;
+          const chunks = [];
+          req.on('data', chunk => {
+            size += chunk.length;
+            if (size > MAX_AGENT_MEMORY_BACKUP_BYTES) {
+              reject(Object.assign(new Error('backup too large'), { code: 'too-large' }));
+              req.destroy();
+              return;
+            }
+            chunks.push(chunk);
+          });
+          req.on('end', () => resolve(Buffer.concat(chunks)));
+          req.on('error', error => reject(error));
+        });
+        return { ok: true, body: buffer };
+      } catch (error) {
+        const tooLarge = error && error.code === 'too-large';
+        bad(res, tooLarge ? 413 : 400, tooLarge ? 'backup-too-large' : 'invalid-backup-stream', null, req);
+        return { ok: false };
+      }
+    }
+    if (path === AGENT_MEMORY_PATH + '/state') {
+      if (method !== 'GET') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req); return; }
+      sendAgentMemoryResult(res, {
+        ok: true,
+        state: typeof agentMemoryStore.describe === 'function' ? agentMemoryStore.describe() : { available: false },
+        retention: typeof agentMemoryStore.retentionPolicy === 'function' ? agentMemoryStore.retentionPolicy() : null
+      }, 'agent-memory.state', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/retention') {
+      if (method !== 'GET') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req); return; }
+      sendAgentMemoryResult(res, { ok: true, policy: agentMemoryStore.retentionPolicy() }, 'agent-memory.retention', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/work-results/candidates/commit') {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      if (!workRunStore || typeof workRunStore.getResult !== 'function'
+        || typeof agentMemoryStore.createWorkResultObservation !== 'function') {
+        bad(res, 503, 'work-result-memory-commit-unavailable', null, req);
+        return;
+      }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      const candidate = parsed.body;
+      const allowed = ['runId', 'resultId', 'selectionRef', 'expectedStoreRevision', 'confirmed'];
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+        || Object.keys(candidate).some(key => allowed.indexOf(key) < 0)
+        || allowed.some(key => !Object.prototype.hasOwnProperty.call(candidate, key))) {
+        bad(res, 400, 'invalid-work-result-candidate', null, req);
+        return;
+      }
+      if (candidate.confirmed !== true) {
+        bad(res, 400, 'explicit-memory-candidate-confirmation-required', null, req);
+        return;
+      }
+      if (!Number.isSafeInteger(candidate.expectedStoreRevision) || candidate.expectedStoreRevision < 0) {
+        bad(res, 400, 'invalid-store-revision', null, req);
+        return;
+      }
+      const selected = workRunStore.getResult(String(candidate.runId || ''));
+      if (!selected || selected.ok !== true || !selected.run || !selected.result
+        || selected.run.status !== 'completed' || selected.result.status !== 'available'
+        || selected.result.expiresAt <= clock()) {
+        bad(res, 404, 'work-result-not-available', null, req);
+        return;
+      }
+      if (selected.result.resultId !== candidate.resultId || selected.result.runId !== selected.run.runId) {
+        bad(res, 409, 'work-result-reference-conflict', null, req);
+        return;
+      }
+      const selectionRef = String(candidate.selectionRef || '');
+      let statement = '';
+      if (selectionRef === 'summary') {
+        statement = String(selected.result.report && selected.result.report.summary || '');
+      } else {
+        const match = /^finding:(\d{1,1})$/.exec(selectionRef);
+        const findings = selected.result.report && Array.isArray(selected.result.report.findings)
+          ? selected.result.report.findings : [];
+        const index = match ? Number(match[1]) : -1;
+        if (index < 0 || index >= findings.length) {
+          bad(res, 400, 'invalid-work-result-selection', null, req);
+          return;
+        }
+        const finding = findings[index];
+        statement = finding.severity + ' · ' + finding.title + ': ' + finding.detail;
+      }
+      if (!statement.trim() || !selected.run.projectRef) {
+        bad(res, 400, 'invalid-work-result-selection', null, req);
+        return;
+      }
+      const result = agentMemoryStore.createWorkResultObservation({
+        expectedStoreRevision: candidate.expectedStoreRevision,
+        confirmed: true,
+        projectRef: selected.run.projectRef,
+        resultId: selected.result.resultId,
+        resultSchemaVersion: selected.result.schemaVersion,
+        selectionRef: selectionRef,
+        statement: statement
+      });
+      sendAgentMemoryResult(res, result, 'agent-memory.work-result-candidate.commit', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/work-results/procedure-candidates/commit') {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      if (!workRunStore || typeof workRunStore.getResult !== 'function'
+        || typeof agentMemoryStore.createWorkResultProcedure !== 'function') {
+        bad(res, 503, 'work-result-procedure-commit-unavailable', null, req);
+        return;
+      }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      const candidate = parsed.body;
+      const allowed = ['runId', 'resultId', 'resultSchemaVersion', 'expectedStoreRevision', 'confirmed', 'payload'];
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+        || Object.keys(candidate).some(key => allowed.indexOf(key) < 0)
+        || allowed.some(key => !Object.prototype.hasOwnProperty.call(candidate, key))) {
+        bad(res, 400, 'invalid-work-result-procedure-candidate', null, req);
+        return;
+      }
+      if (candidate.confirmed !== true) {
+        bad(res, 400, 'explicit-procedure-candidate-confirmation-required', null, req);
+        return;
+      }
+      if (!Number.isSafeInteger(candidate.expectedStoreRevision) || candidate.expectedStoreRevision < 0) {
+        bad(res, 400, 'invalid-store-revision', null, req);
+        return;
+      }
+      const selected = workRunStore.getResult(String(candidate.runId || ''));
+      if (!selected || selected.ok !== true || !selected.run || !selected.result
+        || selected.run.status !== 'completed' || selected.result.status !== 'available'
+        || selected.result.expiresAt <= clock()) {
+        bad(res, 404, 'work-result-not-available', null, req);
+        return;
+      }
+      if (selected.result.resultId !== candidate.resultId || selected.result.runId !== selected.run.runId
+        || selected.result.schemaVersion !== candidate.resultSchemaVersion) {
+        bad(res, 409, 'work-result-reference-conflict', null, req);
+        return;
+      }
+      const result = agentMemoryStore.createWorkResultProcedure({
+        expectedStoreRevision: candidate.expectedStoreRevision,
+        confirmed: true,
+        projectRef: selected.run.projectRef,
+        runId: selected.run.runId,
+        resultId: selected.result.resultId,
+        resultSchemaVersion: selected.result.schemaVersion,
+        payload: candidate.payload
+      });
+      sendAgentMemoryResult(res, result, 'agent-memory.work-result-procedure-candidate.commit', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/maintenance/expire-observations') {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)
+        || Object.keys(parsed.body).some(key => key !== 'limit')) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(parsed.body, 'limit')) options.limit = parsed.body.limit;
+      sendAgentMemoryResult(res, agentMemoryStore.cleanupExpiredObservations(options), 'agent-memory.expire-observations', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/records') {
+      if (method === 'GET') {
+        const allowed = new Set(['type', 'projectRef', 'status', 'limit', 'offset']);
+        const keys = Array.from(url.searchParams.keys());
+        if (keys.some(key => !allowed.has(key)) || new Set(keys).size !== keys.length) {
+          bad(res, 400, 'invalid-query', null, req);
+          return;
+        }
+        const query = {};
+        for (const key of keys) query[key] = url.searchParams.get(key);
+        if (query.limit != null) query.limit = Number(query.limit);
+        if (query.offset != null) query.offset = Number(query.offset);
+        sendAgentMemoryResult(res, agentMemoryStore.queryRecords(query), 'agent-memory.query', req);
+        return;
+      }
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET', 'POST'] }, req);
+        return;
+      }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body) || parsed.body.confirmed !== true) {
+        bad(res, 400, 'explicit-memory-write-confirmation-required', null, req);
+        return;
+      }
+      const input = Object.assign({}, parsed.body);
+      delete input.confirmed;
+      sendAgentMemoryResult(res, agentMemoryStore.createRecord(input), 'agent-memory.create', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/backups') {
+      if (method === 'GET') {
+        const keys = Array.from(url.searchParams.keys());
+        if (keys.some(key => key !== 'limit') || new Set(keys).size !== keys.length) {
+          bad(res, 400, 'invalid-query', null, req);
+          return;
+        }
+        const limit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : undefined;
+        sendAgentMemoryResult(res, agentMemoryStore.listBackups({ limit: limit }), 'agent-memory.backup.list', req);
+        return;
+      }
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET', 'POST'] }, req); return; }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body) || Object.keys(parsed.body).length) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      sendAgentMemoryResult(res, await agentMemoryStore.createBackup(), 'agent-memory.backup.create', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/backups/cleanup') {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)
+        || Object.keys(parsed.body).some(key => key !== 'limit')) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(parsed.body, 'limit')) options.limit = parsed.body.limit;
+      sendAgentMemoryResult(res, agentMemoryStore.cleanupBackups(options), 'agent-memory.backup.cleanup', req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/restore') {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      const keys = Array.from(url.searchParams.keys());
+      if (keys.length !== 2 || new Set(keys).size !== 2
+        || !keys.includes('expectedStoreRevision') || !keys.includes('confirmed')
+        || url.searchParams.get('confirmed') !== 'true') {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const contentType = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (contentType !== 'application/vnd.sqlite3' && contentType !== 'application/octet-stream') {
+        bad(res, 415, 'backup-content-type-required', null, req);
+        return;
+      }
+      const expectedText = url.searchParams.get('expectedStoreRevision');
+      const expectedStoreRevision = expectedText === 'null' ? null : Number(expectedText);
+      const parsed = await readAgentMemoryBinaryBody();
+      if (!parsed.ok) return;
+      sendAgentMemoryResult(res, await agentMemoryStore.restoreUpload(parsed.body, {
+        expectedStoreRevision: expectedStoreRevision,
+        confirmed: true
+      }), 'agent-memory.restore-upload', req);
+      return;
+    }
+    if (path.indexOf(AGENT_MEMORY_PATH + '/backups/') === 0) {
+      const suffix = path.slice((AGENT_MEMORY_PATH + '/backups/').length);
+      const parts = suffix.split('/');
+      let backupId;
+      try { backupId = decodeURIComponent(parts[0] || ''); }
+      catch (_) { bad(res, 400, 'invalid-backup-id', null, req); return; }
+      if (parts.length === 2 && parts[1] === 'export') {
+        if (method !== 'GET') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req); return; }
+        const file = agentMemoryStore.exportBackup(backupId);
+        if (!file || file.ok !== true) {
+          sendAgentMemoryResult(res, file, 'agent-memory.backup.export', req);
+          return;
+        }
+        sendAgentMemoryFile(res, { fileName: file.backup.fileName, data: file.data }, req);
+        return;
+      }
+      if (parts.length === 2 && parts[1] === 'restore') {
+        if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+        const parsed = await readAgentMemoryBody();
+        if (!parsed.ok) return;
+        sendAgentMemoryResult(res, await agentMemoryStore.restoreBackup(backupId, parsed.body), 'agent-memory.backup.restore', req);
+        return;
+      }
+      if (parts.length !== 1) { bad(res, 404, 'unknown-agent-memory-path', null, req); return; }
+      if (method === 'DELETE') {
+        sendAgentMemoryResult(res, agentMemoryStore.deleteBackup(backupId), 'agent-memory.backup.delete', req);
+        return;
+      }
+      if (method === 'GET') {
+        const listed = agentMemoryStore.listBackups({ limit: 100 });
+        if (!listed || listed.ok !== true) {
+          sendAgentMemoryResult(res, listed, 'agent-memory.backup.get', req);
+          return;
+        }
+        const backup = listed.backups.find(item => item.backupId === backupId);
+        if (!backup) { bad(res, 404, 'backup-not-found', null, req); return; }
+        ok(res, { operation: 'agent-memory.backup.get', backup: backup }, req);
+        return;
+      }
+      bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET', 'DELETE'] }, req);
+      return;
+    }
+    if (path === AGENT_MEMORY_PATH + '/maintenance/purge') {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)
+        || Object.keys(parsed.body).some(key => key !== 'limit')) {
+        bad(res, 400, 'invalid-request', null, req);
+        return;
+      }
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(parsed.body, 'limit')) options.limit = parsed.body.limit;
+      sendAgentMemoryResult(res, agentMemoryStore.purgeTombstones(options), 'agent-memory.purge', req);
+      return;
+    }
+    const suffix = path.slice((AGENT_MEMORY_PATH + '/').length);
+    const parts = suffix.split('/');
+    if (parts[0] !== 'records' || parts.length < 2 || parts.length > 3) {
+      bad(res, 404, 'unknown-agent-memory-path', null, req);
+      return;
+    }
+    let memoryId;
+    try { memoryId = decodeURIComponent(parts[1] || ''); }
+    catch (_) { bad(res, 400, 'invalid-memory-id', null, req); return; }
+    if (parts.length === 2) {
+      if (method === 'GET') {
+        sendAgentMemoryResult(res, agentMemoryStore.getRecord(memoryId), 'agent-memory.get', req);
+        return;
+      }
+      bad(res, 405, 'method-not-allowed', { allowedMethods: ['GET'] }, req);
+      return;
+    }
+    if (parts.length === 3 && ['update', 'supersede', 'retract'].indexOf(parts[2]) >= 0) {
+      if (method !== 'POST') {
+        bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      const parsed = await readAgentMemoryBody();
+      if (!parsed.ok) return;
+      const operation = parts[2];
+      if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body) || parsed.body.confirmed !== true) {
+        bad(res, 400, 'explicit-memory-write-confirmation-required', null, req);
+        return;
+      }
+      const input = Object.assign({}, parsed.body);
+      delete input.confirmed;
+      const result = operation === 'update' ? agentMemoryStore.updateRecord(memoryId, input)
+        : operation === 'supersede' ? agentMemoryStore.supersedeRecord(memoryId, input)
+          : agentMemoryStore.retractRecord(memoryId, input);
+      sendAgentMemoryResult(res, result, 'agent-memory.' + operation, req);
+      return;
+    }
+    bad(res, 404, 'unknown-agent-memory-path', null, req);
   }
 
   /* ── 凭据铸造面（P11-3A）────────────────────────────────────────────
@@ -1276,6 +2512,17 @@ function createHomeNodeHttp(deps) {
   async function route(req, res, url, method, remote) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method || '').toUpperCase())
+      && !authorizeRequestIdentity(req)) {
+      bad(res, 403, 'environment-identity-mismatch', { hint: 'the Dev service identity did not match this Home Node' }, req);
+      return;
+    }
+
+    if (blocksDevWebOrigin(req.headers && req.headers.origin, { IB_DEV_MODE: devMode ? '1' : '' })) {
+      bad(res, 403, 'dev-origin-denied', { hint: 'the Dev Launcher may only use its isolated Home Node' }, req);
+      return;
+    }
+
     /* ── P11-3H · 合作停止面（本地停止请求，不是世界数据路径）─────────────
        必须在**所有**凭据/来源规则之前处理，理由很具体：Home Node 可以被显式绑到
        LAN（IB_HOME_NODE_HOST），而未配置桌面 token 时远端**一切**桌面路径都是
@@ -1456,6 +2703,20 @@ function createHomeNodeHttp(deps) {
     if (!isEconomyCommandPath(path) && !authorized(req, url)) {
       record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
       bad(res, 401, 'unauthenticated', null, req);
+      return;
+    }
+
+    if (path === WORK_RETENTION_PATH || path === WORK_RUNS_PATH || path.indexOf(WORK_RUNS_PATH + '/') === 0
+      || path === WORK_DSH_PATH || path === WORK_DSH_RUNTIME_INSTALL_PATH
+      || path === WORK_DSH_RUNTIME_RELEASES_PATH || path === WORK_DSH_RUNTIME_ONLINE_INSTALL_PATH
+      || path === WORK_DSH_RUNTIME_ONLINE_CANCEL_PATH
+      || path.indexOf(WORKSPACE_PROJECT_BRIDGE_PATH + '/') === 0) {
+      await handleWorkRunRequest(req, res, url, method);
+      return;
+    }
+
+    if (path === AGENT_MEMORY_PATH || path.indexOf(AGENT_MEMORY_PATH + '/') === 0) {
+      await handleAgentMemoryRequest(req, res, url, method);
       return;
     }
 
@@ -3052,8 +4313,20 @@ function createHomeNodeHttp(deps) {
        （capacitor://localhost / null / loopback），与桌面内部 API 的白名单不同。
        不先分流的话，移动端客户端的预检会拿到桌面策略的响应（不回显 Origin），
        浏览器就会拦掉后续请求，而服务端日志里看不出任何异常。 */
-    if (method === 'OPTIONS' && gateway && typeof gateway.handles === 'function' && gateway.handles(url.pathname.replace(/\/+$/, '') || '/')) {
-      return gateway.dispatch(url.pathname.replace(/\/+$/, '') || '/', req, res, url);
+    const gatewayPath = url.pathname.replace(/\/+$/, '') || '/';
+    const gatewayHandlesPath = gateway && typeof gateway.handles === 'function'
+      && gateway.handles(gatewayPath);
+    /* Desktop admin paths use the Home Node CORS policy in Dev mode. The
+       Gateway's preflight allowlist is intentionally the mobile protocol
+       contract and does not include the per-instance Dev identity headers.
+       Sending an admin preflight through that list makes the WebView fail
+       before /memory/* reaches its authenticated route. The actual request
+       still passes authorizeRequestIdentity() below; production and /mobile/*
+       preflights retain their existing Gateway policy. */
+    const devDesktopGatewayPath = devMode && gateway && Array.isArray(gateway.ADMIN_PATHS)
+      && gateway.ADMIN_PATHS.indexOf(gatewayPath) >= 0;
+    if (method === 'OPTIONS' && gatewayHandlesPath && !devDesktopGatewayPath) {
+      return gateway.dispatch(gatewayPath, req, res, url);
     }
 
     /* 跨域预检：只对允许的 Origin 放行，且只声明本服务真正实现的方法。 */
@@ -3071,7 +4344,11 @@ function createHomeNodeHttp(deps) {
       if (originAllowed(origin)) {
         headers['Access-Control-Allow-Origin'] = origin;
         headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
-        headers['Access-Control-Allow-Headers'] = 'Content-Type, X-IB-Home-Token, X-IB-Protocol, Authorization';
+        const allowedRequestHeaders = ['Content-Type', 'X-IB-Home-Token', 'X-IB-Protocol', 'Authorization'];
+        /* The Dev identity is a temporary, per-launch capability. Do not add
+           its headers to the formal Home Node CORS surface. */
+        if (devMode) allowedRequestHeaders.push('X-IB-Dev-Session', 'X-IB-Dev-Instance');
+        headers['Access-Control-Allow-Headers'] = allowedRequestHeaders.join(', ');
         /* ── P22-23 · 交付面的预检必须允许它自己的头 ────────────────────
            这一行是**实测**补上的，不是防御性写法：凭据交付面要求
            `X-IB-Bootstrap: 1`（它让这条请求必然走预检，从而把盲写那条路
@@ -3169,6 +4446,15 @@ module.exports.PROTOCOL_VERSION = PROTOCOL_VERSION;
 module.exports.DESKTOP_CREDENTIAL_PATH = DESKTOP_CREDENTIAL_PATH;
 module.exports.DESKTOP_CREDENTIAL_HEADER = DESKTOP_CREDENTIAL_HEADER;
 module.exports.MAX_BODY_BYTES = MAX_BODY_BYTES;
+module.exports.WORK_RUNS_PATH = WORK_RUNS_PATH;
+module.exports.WORK_DSH_PATH = WORK_DSH_PATH;
+module.exports.WORK_DSH_RUNTIME_INSTALL_PATH = WORK_DSH_RUNTIME_INSTALL_PATH;
+module.exports.WORK_DSH_RUNTIME_RELEASES_PATH = WORK_DSH_RUNTIME_RELEASES_PATH;
+module.exports.WORK_DSH_RUNTIME_ONLINE_INSTALL_PATH = WORK_DSH_RUNTIME_ONLINE_INSTALL_PATH;
+module.exports.WORK_DSH_RUNTIME_ONLINE_CANCEL_PATH = WORK_DSH_RUNTIME_ONLINE_CANCEL_PATH;
+module.exports.WORKSPACE_PROJECT_BRIDGE_PATH = WORKSPACE_PROJECT_BRIDGE_PATH;
+module.exports.AGENT_MEMORY_PATH = AGENT_MEMORY_PATH;
+module.exports.WORK_RETENTION_PATH = WORK_RETENTION_PATH;
 
 /* ── The ONE implementation of "why can't this canonical store serve"? ────
  *

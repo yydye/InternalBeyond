@@ -37,6 +37,11 @@ const supervisorModule = require('./component-supervisor.js');
    cooperative request → 有界等待 → 身份重验证后的 fallback kill → 有界等待。 */
 const lifecycle = require('./component-lifecycle.js');
 const { isTauriOrigin } = require('./host-origin.js');
+const devServiceContract = require('./dev-service-contract.js');
+const RUNNER_STARTED_AT = Date.now();
+const TAURI_HOST_SESSION_ID = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '').slice(0, 80);
+const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+const SERVICE_PORTS = devServiceContract.portsFromEnvironment(process.env);
 
 /* 恢复策略（P11-3C）。有界由四道独立的闸门保证，任何一道都足以阻止无限重启：
      maxAttempts     滑动窗口内允许的重启次数（有限值，supervisor 会强制夹紧）
@@ -83,9 +88,11 @@ const ROOT = path.resolve(__dirname, '..');
 const SERVICE_DIR = path.join(ROOT, 'services');
 const WINDOWS_DIR = path.join(ROOT, 'scripts', 'windows');
 const LOCAL_DIR = process.platform === 'win32' && process.env.LOCALAPPDATA
-  ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+  ? (process.env.IB_DEV_MODE === '1' && process.env.IB_DEV_SANDBOX_ROOT
+    ? path.resolve(process.env.IB_DEV_SANDBOX_ROOT)
+    : path.join(process.env.LOCALAPPDATA, 'InternalBeyond'))
   : path.join(os.homedir(), '.internal-beyond');
-const LOG_DIR = path.join(LOCAL_DIR, 'logs');
+const LOG_DIR = process.env.IB_LOG_DIR || path.join(LOCAL_DIR, 'logs');
 const args = new Set(process.argv.slice(2));
 const includeVision = args.has('--vision');
 const jsonOnly = args.has('--json');
@@ -115,7 +122,7 @@ const stopping = new Set();
  * (no console window), with an in-flight guard. Reuses the existing service
  * definitions — it never introduces a second startup configuration. */
 const RESTART_HOST = '127.0.0.1';
-const RESTART_PORT = optionPort('IB_RESTART_PORT', 23116);
+const RESTART_PORT = SERVICE_PORTS.restart;
 const RESTART_SERVER_NAME = 'InternalBeyond Restart';
 /* P11-3X-B: ports this run refused to start into, keyed by component id. Reported
    on the component row so "offline" can carry the reason it is offline. Reset by a
@@ -123,12 +130,6 @@ const RESTART_SERVER_NAME = 'InternalBeyond Restart';
 const portConflicts = {};
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
-
-function optionPort(name, fallback) {
-  const raw = process.env[name];
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
-}
 
 /* ── Service definitions, derived from the component registry ──
  *
@@ -490,7 +491,7 @@ function probeControlPlane(port) {
 function killPid(pid) {
   return new Promise(resolve => {
     if (process.platform === 'win32') {
-      execFile('taskkill.exe', ['/F', '/T', '/PID', String(Number(pid))], { windowsHide: true, timeout: 6000 }, () => resolve());
+      execFile('taskkill.exe', ['/F', '/PID', String(Number(pid))], { windowsHide: true, timeout: 6000 }, () => resolve());
     } else {
       try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { }
       resolve();
@@ -573,6 +574,7 @@ async function stopService(service, opts) {
          predicate (runtime/local-services-runner.js `commandMatchesScript`), not
          a second heuristic. */
       provenOwn: true,
+      requestHeaders: devServiceContract.identityHeaders(DEV_IDENTITY),
       ownsCommandLine: (cmdline, root) => commandMatchesScript(cmdline, service.commandArgs[0]),
       root: ROOT
     }));
@@ -907,8 +909,12 @@ function cancelRecoveryTimers() {
   });
 }
 
-/* ── Restart control server (localhost-only; Origin guard) ── */function restartOriginAllowed(req) {
+/* ── Restart control server (localhost-only; Origin and environment identity) ── */function restartOriginAllowed(req) {
   const origin = String(req.headers.origin || '').trim();
+  if (DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic') {
+    return !origin || origin === DEV_IDENTITY.webOrigin;
+  }
+  if (devServiceContract.isKnownDevOrigin(origin)) return false;
   if (!origin) return true; /* loopback / non-browser local call */
   if (origin === 'null') return true; /* file:// */
   try {
@@ -934,7 +940,7 @@ function sendJsonRes(res, status, obj, allowedOrigin) {
   };
   if (allowedOrigin) headers['Access-Control-Allow-Origin'] = allowedOrigin;
   if (allowedOrigin) headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS';
-  if (allowedOrigin) headers['Access-Control-Allow-Headers'] = 'Content-Type';
+  if (allowedOrigin) headers['Access-Control-Allow-Headers'] = 'Content-Type, X-IB-Dev-Session, X-IB-Dev-Instance';
   res.writeHead(status, headers);
   res.end(JSON.stringify(obj));
 }
@@ -1003,6 +1009,12 @@ function startRestartServer() {
       sendJsonRes(res, 200, {
         ok: true,
         service: RESTART_SERVER_NAME,
+        pid: process.pid,
+        startedAt: RUNNER_STARTED_AT,
+        tauriHostSessionId: TAURI_HOST_SESSION_ID,
+        environment: DEV_IDENTITY.mode,
+        devInstanceId: DEV_IDENTITY.instanceId || null,
+        ports: SERVICE_PORTS,
         state: shutdownState.requested ? 'shutting-down' : restartState.state,
         error: restartState.lastError || ''
       }, origin);
@@ -1067,7 +1079,19 @@ function startRestartServer() {
       }, origin);
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/shutdown') {      if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
+    if (req.method === 'POST' && (url.pathname === '/shutdown' || url.pathname === '/__tauri/shutdown')) {
+      if (!devServiceContract.authorizeRequestIdentity(req, process.env, DEV_IDENTITY.webOrigin)) {
+        sendJsonRes(res, 403, { ok: false, error: 'environment-identity-mismatch' }, origin);
+        return;
+      }
+      if (url.pathname === '/__tauri/shutdown') {
+        const presented = String(req.headers['x-ib-tauri-host-session'] || '');
+        if (!TAURI_HOST_SESSION_ID || presented !== TAURI_HOST_SESSION_ID) {
+          sendJsonRes(res, 403, { ok: false, error: 'host-session-mismatch' }, origin);
+          return;
+        }
+      }
+      if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (shutdownState.requested) { sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin); return; }
       if (restartRunning()) { sendJsonRes(res, 409, { ok: false, state: 'restarting', error: 'restart-in-progress' }, origin); return; }
       shutdownState.requested = true;
@@ -1077,6 +1101,10 @@ function startRestartServer() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/restart') {
+      if (!devServiceContract.authorizeRequestIdentity(req, process.env, DEV_IDENTITY.webOrigin)) {
+        sendJsonRes(res, 403, { ok: false, error: 'environment-identity-mismatch' }, origin);
+        return;
+      }
       if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (restartRunning()) { sendJsonRes(res, 409, { ok: false, state: 'restarting', error: 'restart-in-progress' }, origin); return; }
       /* The control plane answers BEFORE the initial start finishes (so /shutdown

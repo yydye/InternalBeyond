@@ -1,0 +1,19 @@
+{
+  "name": "@internalbeyond/dsh-startup-screen",
+  "version": "1.1.0-ib.1",
+  "private": true,
+  "description": "InternalBeyond adapter for the MIT-licensed DSH startup screen with Home Node permission mode.",
+  "type": "module",
+  "main": "./host.mjs",
+  "exports": {
+    ".": "./host.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web" }
+  },
+  "license": "MIT",
+  "engines": { "node": ">=20" }
+}

@@ -207,14 +207,15 @@ async function runStop(name, steps) {
 function createStopDispatch(opts) {
   const o = opts || {};
   const service = String(o.service || 'internal-beyond-service');
+  const stopPath = String(o.path || STOP_PATH);
   const exposeBody = o.exposeBody !== false;
   let state = 'running';
   let acceptedAt = 0;
 
   const dispatchStop = function (req, res, fail) {
     const pathname = String((req && req.url) || '/').split('?')[0];
-    if (pathname !== STOP_PATH) return undefined;
-    const refusal = refuseStop(req);
+    if (pathname !== stopPath) return undefined;
+    const refusal = refuseStop(req) || (typeof o.authorize === 'function' ? o.authorize(req) : null);
     if (refusal) {
       /* The caller answers the refusal, so it keeps its own error contract. The
          code is returned as well, for a caller that wants to map it itself

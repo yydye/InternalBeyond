@@ -261,10 +261,11 @@ async function wsCall(port, token, toolName, args, handshakeToken) {
         let off = 2, len = len0;
         if (len0 === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
         if (buf.length < off + len) return;
-        const payload = buf.slice(off, off + len).toString('utf8');
+        const payloadBuf = buf.slice(off, off + len);
+        const payload = payloadBuf.toString('utf8');
         buf = buf.slice(off + len);
         const op = b0 & 0x0f;
-        if (op === 0x8) { finish({ type: 'close', code: payload.length >= 2 ? payload.readUInt16BE(0) : 1000 }); socket.destroy(); return; }
+        if (op === 0x8) { finish({ type: 'close', code: payloadBuf.length >= 2 ? payloadBuf.readUInt16BE(0) : 1000 }); socket.destroy(); return; }
         if (op !== 0x1) continue;
         const m = JSON.parse(payload);
         if (m.type === 'hello_ack') {
@@ -318,7 +319,7 @@ async function main() {
   console.log('== Internal Beyond Bridge 冒烟测试 ==');
   const dataDir = tmpDir('ib-bridge-test-');
   const port = freePort();
-  const bridge = await startBridge(dataDir, port, null);
+  const bridge = await startBridge(dataDir, port, 'bridge-test-token');
   const mock = await startMockProvider();
   const base = 'http://127.0.0.1:' + port;
 
@@ -327,6 +328,14 @@ async function main() {
     const health = await (await fetch(base + '/health')).json();
     ok('health.ok', health.ok === true);
     ok('health.tools>=18', Array.isArray(health.tools) && health.tools.length >= 18);
+    ok('tools.catalog.hides_unconfigured_capabilities',
+      !health.tools.includes('webhook') && !health.tools.includes('bark_push') && !health.tools.includes('ntfy_push'));
+    const toolCatalog = await (await fetch(base + '/api/tools')).json();
+    const catalogByName = Object.fromEntries((toolCatalog.tools || []).map(t => [t.name, t]));
+    ok('tools.catalog.has_dispatch_schema', !!(catalogByName.whispers_delete && catalogByName.whispers_delete.inputSchema
+      && (catalogByName.whispers_delete.inputSchema.required || []).includes('id')));
+    ok('tools.catalog.forces_payment_confirmation', !!(catalogByName.pay_request_confirm && catalogByName.pay_request_confirm.alwaysConfirm === true
+      && catalogByName.pay_set_config && catalogByName.pay_set_config.alwaysConfirm === true));
     const status = await (await fetch(base + '/status')).json();
     ok('status.fields', status.ok === true && typeof status.resident === 'number' && typeof status.tts === 'boolean');
 
@@ -348,6 +357,10 @@ async function main() {
     ok('whispers.post', w.ok === true && !!w.whisper && w.whisper.id);
     const wl = await (await fetch(base + '/api/whispers')).json();
     ok('whispers.list', wl.ok === true && wl.whispers.some(x => x.id === w.whisper.id));
+    const emptyDelete = await wsCall(port, 'bridge-test-token', 'whispers_delete', {});
+    const afterEmptyDelete = await (await fetch(base + '/api/whispers')).json();
+    ok('ws.whispers_delete.empty_id_fails_closed', emptyDelete.type === 'result' && emptyDelete.ok === false
+      && afterEmptyDelete.whispers.some(x => x.id === w.whisper.id));
     const wd = await (await fetch(base + '/api/whispers/' + encodeURIComponent(w.whisper.id), { method: 'DELETE' })).json();
     ok('whispers.delete', wd.ok === true);
 
@@ -494,8 +507,14 @@ async function main() {
       /kugou\.com\/song/.test(musicOpen.webUrl) && /^kugou:\/\//.test(musicOpen.deepLink));
 
     /* 11. WebSocket 握手 / 工具调用 / Origin 校验 */
-    const ws = await wsCall(port, '', 'echo', { a: 1 });
+    const ws = await wsCall(port, 'bridge-test-token', 'echo', { a: 1 });
     ok('ws.tool.echo', ws.type === 'result' && ws.ok === true && ws.text === 'pong');
+    const staleAlias = await wsCall(port, 'bridge-test-token', 'whispers_list', { limit: 1 });
+    ok('ws.tool.stale_alias_fails_closed', staleAlias.type === 'result' && staleAlias.ok === false
+      && /未知工具/.test(staleAlias.error || ''));
+    const unavailableCapability = await wsCall(port, 'bridge-test-token', 'bark_push', { text: 'disabled capability' });
+    ok('ws.tool.disabled_capability_fails_closed', unavailableCapability.type === 'result'
+      && unavailableCapability.ok === false && /未启用或未配置/.test(unavailableCapability.error || ''));
     const wsOrigin = await wsHandshake(port, '/', { Origin: 'http://evil.example' });
     ok('ws.origin.rejected', wsOrigin.type === 'http' && wsOrigin.status === 403, JSON.stringify(wsOrigin));
     const wsLocalOrigin = await wsHandshake(port, '/', { Origin: 'http://127.0.0.1:1234' });
@@ -515,6 +534,27 @@ async function main() {
       bridge2.kill();
       await sleep(200);
       try { fs.rmSync(dataDir2, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+    }
+
+    /* A loopback-only Bridge can retain its push connection without granting
+       anonymous WebSocket tool execution. Verify the sensitive confirmation
+       tool is rejected before it can mint a payment token. */
+    const dataDirAnon = tmpDir('ib-bridge-anon-ws-');
+    const portAnon = freePort();
+    const bridgeAnon = await startBridge(dataDirAnon, portAnon, null);
+    try {
+      const anonymousEcho = await wsCall(portAnon, '', 'echo', {});
+      ok('ws.emptyToken.toolExecutionDenied', anonymousEcho.type === 'result' && anonymousEcho.ok === false
+        && /访问令牌/.test(anonymousEcho.error || ''));
+      const anonymousConfirm = await wsCall(portAnon, '', 'pay_request_confirm', { intent: { id: 'intent-anonymous' } });
+      ok('ws.emptyToken.paymentConfirmationCannotBeMinted', anonymousConfirm.type === 'result'
+        && anonymousConfirm.ok === false && /访问令牌/.test(anonymousConfirm.error || '') && !anonymousConfirm.data);
+      const fakeToken = await wsCall(portAnon, 'not-configured', 'echo', {});
+      ok('ws.unconfiguredTokenCannotAuthenticate', fakeToken.type === 'close' && fakeToken.code === 4401);
+    } finally {
+      bridgeAnon.kill();
+      await sleep(200);
+      try { fs.rmSync(dataDirAnon, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
     }
 
     /* 12b. LAN listener always obtains a token and protects REST/file APIs. */

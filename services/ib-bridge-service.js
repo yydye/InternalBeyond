@@ -22,21 +22,42 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const devServiceContract = require('../runtime/dev-service-contract.js');
 
 /* ------------------------------------------------------------------ */
 /* 常量与数据目录                                                      */
 /* ------------------------------------------------------------------ */
 
 const HOST = process.env.IB_BRIDGE_HOST || '127.0.0.1';
-const PORT = Math.max(1, Math.min(65535, Number(process.env.IB_BRIDGE_PORT) || 23115));
-const DATA_DIR = process.env.IB_BRIDGE_DATA_DIR ||
+const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
+const SERVICE_PORTS = devServiceContract.portsFromEnvironment(process.env);
+const PORT = SERVICE_PORTS.bridge;
+const DATA_DIR = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic'
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'bridge')
+  : (process.env.IB_BRIDGE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'bridge')
-    : path.join(os.homedir(), '.internal-beyond', 'bridge'));
-const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
-  (process.platform === 'win32' && process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
-    : path.join(os.homedir(), '.internal-beyond'));
+    : path.join(os.homedir(), '.internal-beyond', 'bridge')));
+if (String(process.env.IB_DEV_MODE || '') === '1') {
+  const sandboxRoot = path.resolve(String(process.env.IB_DEV_SANDBOX_ROOT || ''));
+  const actualDataDir = path.resolve(DATA_DIR);
+  const expectedDataDir = path.resolve(sandboxRoot, 'bridge');
+  const relative = path.relative(sandboxRoot, actualDataDir);
+  if (!sandboxRoot || actualDataDir.toLowerCase() !== expectedDataDir.toLowerCase()
+    || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error('dev-data-directory-outside-sandbox');
+  }
+  for (const candidate of [sandboxRoot, actualDataDir]) {
+    try { if (fs.lstatSync(candidate).isSymbolicLink()) throw new Error('dev-sandbox-reparse-point-blocked'); }
+    catch (error) { if (error && error.code !== 'ENOENT') throw error; }
+  }
+}
+const CREDENTIAL_DATA_DIR = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic'
+  ? path.join(DEV_IDENTITY.sandboxRoot, 'credential-vault')
+  : (process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
+    (process.platform === 'win32' && process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+      : path.join(os.homedir(), '.internal-beyond')));
 const STICKER_DIR = path.join(DATA_DIR, 'stickers');
 
 const MAX_BODY = 8 * 1024 * 1024;
@@ -279,10 +300,12 @@ const createTtsVoices = require('../bridge/tts-voices');
 const ttsVoices = createTtsVoices({ dataDir: DATA_DIR, writeJson, loadJson });
 
 const createTts = require('../bridge/tts');
-/* Voicebox：独立本地 Voice Runtime。IB 只调用其 REST API，不启动/安装/管理它。
-   适配器先建，作为依赖注入 createTts（provider 注册需要它的 engine 清单）。 */
+/* Voicebox：合成与 Profile 仍只通过现有 REST adapter；可选程序生命周期由
+   现有 Bridge 进程承载，不改变 Voice Runtime 调用链。 */
 const createVoicebox = require('../bridge/voicebox');
 const voicebox = createVoicebox({ config });
+const createVoiceboxRuntimeControl = require('../bridge/voicebox-runtime-control');
+const voiceboxRuntimeControl = createVoiceboxRuntimeControl({ config, persistConfig, voicebox });
 const tts = createTts({ config, uid, ttsDir: DATA_DIR, ttsVoices, voicebox });
 const edgeTtsGen = tts.edgeTtsGen;
 const ttsGenerate = tts.ttsGenerate;
@@ -671,9 +694,13 @@ function sessionSave(key, data) {
 }
 
 async function executeTool(name, args) {
+  const toolName = String(name || '');
+  const registered = ALL_TOOLS.some(t => t.name === toolName);
+  if (!registered) return { ok: false, error: '未知工具：' + toolName };
+  if (!isToolAvailable(toolName, config)) return { ok: false, error: '工具当前未启用或未配置：' + toolName };
   const a = args && typeof args === 'object' ? args : {};
   try {
-    switch (String(name || '')) {
+    switch (toolName) {
       case 'echo':
         return { ok: true, text: 'pong', data: { echo: a } };
 
@@ -682,7 +709,6 @@ async function executeTool(name, args) {
         return { ok: true, text: '可用表情：' + list.map(s => s.name).join('、') + '。消息中用 [sticker:' + (list[0] ? list[0].name : 'smile') + '] 这样的标记发送。', data: list };
       }
 
-      case 'whispers_list':
       case 'whispers_read': {
         const limit = Math.max(1, Math.min(100, Number(a.limit) || 20));
         const list = whispers.slice(-limit).reverse();
@@ -703,6 +729,7 @@ async function executeTool(name, args) {
 
       case 'whispers_delete': {
         const id = String(a.id || '');
+        if (!id) return { ok: false, error: '缺少心语 id' };
         const r = await withListLock('whispers', () => {
           const before = whispers.length;
           whispers = whispers.filter(w => w.id !== id);
@@ -714,6 +741,8 @@ async function executeTool(name, args) {
 
       case 'whispers_update': {
         const id = String(a.id || '');
+        if (!id) return { ok: false, error: '缺少心语 id' };
+        if (a.text === undefined && a.author === undefined) return { ok: false, error: '请提供 text 或 author' };
         const r = await withListLock('whispers', () => {
           const w = whispers.find(x => x.id === id);
           if (!w) throw new Error('未找到该心语');
@@ -750,7 +779,9 @@ async function executeTool(name, args) {
       }
 
       case 'music_search': {
-        const r = await searchMusic(a.q || a.keyword, a.limit);
+        const query = String(a.q || a.keyword || '').trim();
+        if (!query) return { ok: false, error: '缺少搜索关键词 q（或兼容别名 keyword）' };
+        const r = await searchMusic(query, a.limit);
         if (!r.ok) return { ok: false, error: r.error };
         if (!r.songs.length) return { ok: true, text: '没有搜到相关歌曲。', data: { songs: [] } };
         const lines = r.songs.map((s, i) => (i + 1) + '. ' + s.name + ' - ' + s.artist);
@@ -765,9 +796,10 @@ async function executeTool(name, args) {
 
       case 'webhook': {
         const name = String(a.name || '');
+        if (!name) return { ok: false, error: '缺少 Webhook name' };
         const hooks = config.webhooks || {};
         const hook = hooks[name];
-        if (!hook || !hook.url) return { ok: false, error: '未配置名为「' + name + '」的 Webhook' };
+        if (!isWebhookAvailable(hook)) return { ok: false, error: '未配置或配置无效的 Webhook：' + name };
         const payload = a.data === undefined ? {} : a.data;
         const r = await fetchJson(hook.url, {
           method: String(hook.method || 'POST').toUpperCase(),
@@ -778,12 +810,14 @@ async function executeTool(name, args) {
       }
 
       case 'bark_push': {
+        if (!String(a.text || '').trim()) return { ok: false, error: '缺少推送内容 text' };
         const r = await barkPush(a.title, a.text, a.url);
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, text: '已推送到手机/手表。', data: r };
       }
 
       case 'push_send': {
+        if (!String(a.text || '').trim()) return { ok: false, error: '缺少推送内容 text' };
         broadcast({ type: 'push', title: String(a.title || 'Internal Beyond').slice(0, 120), text: String(a.text || '').slice(0, 2000), from: String(a.from || 'Sui').slice(0, 40) });
         const bp = a.bark !== false && a.text ? await barkPush(a.title, a.text, a.url) : { ok: false };
         const np = a.ntfy !== false && a.text ? await ntfyPush(a.title, a.text, a.url) : { ok: false };
@@ -793,12 +827,14 @@ async function executeTool(name, args) {
       }
 
       case 'ntfy_push': {
+        if (!String(a.text || '').trim()) return { ok: false, error: '缺少推送内容 text' };
         const r = await ntfyPush(a.title, a.text, a.url);
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, text: '已推送到 Android/OPPO 手机。', data: r };
       }
 
       case 'tts_speak': {
+        if (!String(a.text || '').trim()) return { ok: false, error: '缺少语音内容 text' };
         /* normalize 接受旧平铺参数（text/voice/provider/rate/pitch）与可选新字段（model/style/language 等） */
         const r = await ttsSynthesize(ttsNormalize(a));
         if (!r.ok) return { ok: false, error: r.error };
@@ -806,6 +842,7 @@ async function executeTool(name, args) {
       }
 
       case 'letter_write': {
+        if (!String(a.to || '').trim()) return { ok: false, error: '缺少收件人 to' };
         const content = String(a.content || '').trim();
         if (!content) return { ok: false, error: '缺少信件内容' };
         const l = await withListLock('letters', () => {
@@ -849,6 +886,9 @@ async function executeTool(name, args) {
       }
 
       case 'submit_payment': {
+        if (!String(a.canonicalId || '').trim() || !String(a.nonce || '').trim()) {
+          return { ok: false, error: '缺少 canonicalId 或 nonce' };
+        }
         /* 服务端权威支付入口：只信 canonical PaymentIntent（canonicalId+nonce）。
            绝不信任浏览器传来的 ALLOW / claimedAction / 重报的金额/orderId/domain/checkoutUrl。 */
         const g = await Promise.resolve(payGate.submitCanonical(a.canonicalId, {
@@ -868,6 +908,9 @@ async function executeTool(name, args) {
 
       case 'pay_request_confirm': {
         /* 人工确认卡路径：为一个 intent 签发 Bridge 侧确认令牌（模型无法自行签发） */
+        if (!a.intent || typeof a.intent !== 'object' || !String(a.intent.id || '').trim()) {
+          return { ok: false, error: '缺少待确认的 canonical intent id' };
+        }
         const r = payGate.requestConfirm(a.intent);
         return { ok: true, text: '已生成确认令牌，需用户在确认卡点击后才可提交支付。', data: r };
       }
@@ -908,34 +951,74 @@ function toolSchema(extra) {
   return Object.assign({ type: 'object', properties: {} }, extra || {});
 }
 
-const TOOLS = [
+const ALL_TOOLS = [
   { name: 'echo', description: '连通性测试工具。', inputSchema: toolSchema() },
   { name: 'sticker_list', description: '列出当前可用的表情包名称，供 [sticker:名称] 使用。', inputSchema: toolSchema() },
   { name: 'whispers_read', description: '读取心语墙上最近的心情便笺。参数 limit（可选，默认20）。', inputSchema: toolSchema({ properties: { limit: { type: 'number' } } }) },
-  { name: 'whispers_write', description: '在心语墙上写一条心情/碎碎念。参数 text 必填，author 可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, author: { type: 'string' } } }) },
-  { name: 'whispers_delete', description: '删除一条心语。参数 id 必填。', inputSchema: toolSchema({ properties: { id: { type: 'string' } } }) },
-  { name: 'whispers_update', description: '修改一条心语。参数 id 必填，text/author 至少给一个。', inputSchema: toolSchema({ properties: { id: { type: 'string' }, text: { type: 'string' }, author: { type: 'string' } } }) },
+  { name: 'whispers_write', description: '在心语墙上写一条心情/碎碎念。参数 text 必填，author 可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, author: { type: 'string' } }, required: ['text'] }) },
+  { name: 'whispers_delete', description: '删除一条心语。参数 id 必填。', inputSchema: toolSchema({ properties: { id: { type: 'string' } }, required: ['id'] }) },
+  { name: 'whispers_update', description: '修改一条心语。参数 id 必填，text/author 至少给一个。', inputSchema: toolSchema({ properties: { id: { type: 'string' }, text: { type: 'string' }, author: { type: 'string' } }, required: ['id'], anyOf: [{ required: ['text'] }, { required: ['author'] }] }) },
   { name: 'health_read', description: '读取健康看板数据（来自 iOS 快捷指令推送的 Apple Health 摘要）。参数 days（可选，默认30）。', inputSchema: toolSchema({ properties: { days: { type: 'number' } } }) },
   { name: 'geo_read', description: '读取最近一次位置（来自 iOS 快捷指令或页面定位），withWeather=true 时附带天气。', inputSchema: toolSchema({ properties: { withWeather: { type: 'boolean' } } }) },
   { name: 'weather', description: '查询某城市实时天气与未来几天预报。参数 city 可选（缺省用最近位置）。', inputSchema: toolSchema({ properties: { city: { type: 'string' } } }) },
-  { name: 'music_search', description: '搜索音乐（默认酷狗，可配置网易云）。参数 q 必填，limit 可选。返回歌曲列表，播放用 [music:ID|歌名] 标记。', inputSchema: toolSchema({ properties: { q: { type: 'string' }, limit: { type: 'number' } } }) },
-  { name: 'music_url', description: '获取某首歌的播放地址（酷狗 hash 或网易云数字 ID）。参数 id 必填。', inputSchema: toolSchema({ properties: { id: { type: 'string' } } }) },
-  { name: 'webhook', description: '调用用户在配置里登记的 Webhook。参数 name 必填，data 为传给对方的 JSON。', inputSchema: toolSchema({ properties: { name: { type: 'string' }, data: {} } }) },
-  { name: 'bark_push', description: '推送一条消息到用户的手机/手表（需配置 Bark）。参数 title/text/url。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } } }) },
-  { name: 'ntfy_push', description: '推送一条消息到 Android/OPPO 手机（需配置 ntfy）。参数 title/text/url。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } } }) },
-  { name: 'tts_speak', description: '把一段文字合成为语音（AI 语音气泡）。参数 text 必填；voice/provider/model/style/language 均可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, voice: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, style: { type: 'string' }, language: { type: 'string' } } }) },
-  { name: 'push_send', description: '向当前打开的 Internal Beyond 页面推送一条消息（可选同时 Bark / ntfy）。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, from: { type: 'string' }, bark: { type: 'boolean' }, ntfy: { type: 'boolean' } } }) },
-  { name: 'letter_write', description: '写一封服务器持久化的信。参数 to/from/content/reply_to。', inputSchema: toolSchema({ properties: { to: { type: 'string' }, from: { type: 'string' }, content: { type: 'string' }, reply_to: { type: 'string' } } }) },
+  { name: 'music_search', description: '搜索音乐（默认酷狗，可配置网易云）。参数 q 或兼容别名 keyword 至少一个，limit 可选。返回歌曲列表，播放用 [music:ID|歌名] 标记。', inputSchema: toolSchema({ properties: { q: { type: 'string' }, keyword: { type: 'string', deprecated: true }, limit: { type: 'number' } }, anyOf: [{ required: ['q'] }, { required: ['keyword'] }] }) },
+  { name: 'music_url', description: '获取某首歌的播放地址（酷狗 hash 或网易云数字 ID）。参数 id 必填。', inputSchema: toolSchema({ properties: { id: { type: 'string' } }, required: ['id'] }) },
+  { name: 'webhook', description: '调用用户在配置里登记的 Webhook。参数 name 必填，data 为传给对方的 JSON。', inputSchema: toolSchema({ properties: { name: { type: 'string' }, data: {} }, required: ['name'] }) },
+  { name: 'bark_push', description: '推送一条消息到用户的手机/手表（需配置 Bark）。参数 text 必填，title/url 可选。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } }, required: ['text'] }) },
+  { name: 'ntfy_push', description: '推送一条消息到 Android/OPPO 手机（需配置 ntfy）。参数 text 必填，title/url 可选。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } }, required: ['text'] }) },
+  { name: 'tts_speak', description: '把一段文字合成为语音（AI 语音气泡）。参数 text 必填；voice/provider/model/style/language/rate/pitch 均可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, voice: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, style: { type: 'string' }, language: { type: 'string' }, rate: { type: 'string' }, pitch: { type: 'string' } }, required: ['text'] }) },
+  { name: 'push_send', description: '向当前打开的 Internal Beyond 页面推送一条消息（可选同时 Bark / ntfy）。参数 text 必填。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, from: { type: 'string' }, bark: { type: 'boolean' }, ntfy: { type: 'boolean' } }, required: ['text'] }) },
+  { name: 'letter_write', description: '写一封服务器持久化的信。参数 to/content 必填；from/reply_to 可选。', inputSchema: toolSchema({ properties: { to: { type: 'string' }, from: { type: 'string' }, content: { type: 'string' }, reply_to: { type: 'string' } }, required: ['to', 'content'] }) },
   { name: 'letter_list', description: '读取服务器信箱里的信。参数 box（in/out/角色名）可选。', inputSchema: toolSchema({ properties: { box: { type: 'string' }, limit: { type: 'number' } } }) },
-  { name: 'session_get', description: '读取某个窗口/话题的服务端持久化会话状态。参数 key 必填。', inputSchema: toolSchema({ properties: { key: { type: 'string' } } }) },
-  { name: 'session_save', description: '保存某个窗口/话题的服务端持久化会话状态（断线/换设备不丢）。参数 key/data。', inputSchema: toolSchema({ properties: { key: { type: 'string' }, data: {} } }) },
+  { name: 'session_get', description: '读取某个窗口/话题的服务端持久化会话状态。参数 key 必填。', inputSchema: toolSchema({ properties: { key: { type: 'string' } }, required: ['key'] }) },
+  { name: 'session_save', description: '仅保存 Bridge 自身的窗口/话题 session/runtime 状态。不得用于用户资料、生日、长期偏好或 canonical Memory；显式记忆请求由 Chat canonical Memory action 写入 Home Node。参数 key 必填，data 可选。', inputSchema: toolSchema({ properties: { key: { type: 'string' }, data: {} }, required: ['key'] }) },
   { name: 'context_stats', description: '查看当前聊天上下文估算用量（token 与百分比）。参数 friend 可选。', inputSchema: toolSchema({ properties: { friend: { type: 'string' } } }) },
-  { name: 'pay_register_checkout', description: '在 checkout 捕获时登记 canonical PaymentIntent（amount/orderId/domain/checkoutUrl）。返回 canonicalId+nonce，供 submit_payment 使用；不保存支付凭证。', inputSchema: toolSchema({ properties: { fields: {} } }) },
-  { name: 'submit_payment', description: '提交支付宝 AI 付支付（服务端权威授权）。参数 canonicalId 必填、nonce 必填；可选 client 仅用于校验一致（不一致会 DENY）。绝不信任客户端重报的金额/orderId/domain/checkoutUrl。', inputSchema: toolSchema({ properties: { canonicalId: { type: 'string' }, nonce: { type: 'string' }, confirmToken: { type: 'string' }, claimedAction: { type: 'string' }, client: {} } }) },
-  { name: 'pay_request_confirm', description: '为一笔需人工确认的支付签发确认令牌（仅在此后才可 Enter Provider）。参数 intent 必填。', inputSchema: toolSchema({ properties: { intent: {} } }) },
+  { name: 'pay_register_checkout', description: '在 checkout 捕获时登记 canonical PaymentIntent（amount/orderId/domain/checkoutUrl）。返回 canonicalId+nonce，供 submit_payment 使用；不保存支付凭证。参数 fields 必填。', inputSchema: toolSchema({ properties: { fields: { type: 'object' } }, required: ['fields'] }) },
+  { name: 'submit_payment', description: '提交支付宝 AI 付支付（服务端权威授权）。参数 canonicalId、nonce 必填；可选 client（兼容旧别名 intent）仅用于校验一致（不一致会 DENY）。绝不信任客户端重报的金额/orderId/domain/checkoutUrl。', inputSchema: toolSchema({ properties: { canonicalId: { type: 'string' }, nonce: { type: 'string' }, confirmToken: { type: 'string' }, claimedAction: { type: 'string' }, client: {}, intent: { deprecated: true } }, required: ['canonicalId', 'nonce'] }) },
+  { name: 'pay_request_confirm', description: '为一笔需人工确认的支付签发确认令牌（执行前必须由用户确认）。参数 intent 必填且需包含 canonical intent id。', alwaysConfirm: true, inputSchema: toolSchema({ properties: { intent: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } }, required: ['intent'] }) },
   { name: 'pay_get_config', description: '读取支付授权策略配置与当前预算（只读）。无参数。', inputSchema: toolSchema() },
-  { name: 'pay_set_config', description: '更新支付授权策略（mode/perOrderLimit/dailyLimit/allowedDomains）。参数可选。', inputSchema: toolSchema({ properties: { mode: { type: 'string' }, perOrderLimit: { type: 'number' }, dailyLimit: { type: 'number' }, allowedDomains: { type: 'array' } } }) }
+  { name: 'pay_set_config', description: '更新支付授权策略（mode/perOrderLimit/dailyLimit/allowedDomains/currency/ttlMs）；调用前必须由用户确认。参数可选。', alwaysConfirm: true, inputSchema: toolSchema({ properties: { mode: { type: 'string' }, perOrderLimit: { type: 'number' }, dailyLimit: { type: 'number' }, allowedDomains: { type: 'array', items: { type: 'string' } }, currency: { type: 'string' }, ttlMs: { type: 'number' } } }) }
 ];
+
+function isWebhookAvailable(hook) {
+  if (!hook || !/^https?:\/\//i.test(String(hook.url || '').trim())) return false;
+  const headers = String(hook.headers || '').trim();
+  if (headers) {
+    try { JSON.parse(headers.replace(/\{\{\s*[\w.-]+\s*\}\}/g, '0')); }
+    catch (_) { return false; }
+  }
+  return true;
+}
+
+function configuredWebhookNames(cfg) {
+  return Object.keys((cfg && cfg.webhooks) || {}).filter(function (key) {
+    return isWebhookAvailable(cfg.webhooks[key]);
+  });
+}
+
+function isToolAvailable(name, cfg) {
+  cfg = cfg || {};
+  if (name === 'webhook') return configuredWebhookNames(cfg).length > 0;
+  if (name === 'bark_push') return !!(cfg.bark && cfg.bark.enabled && /^https?:\/\//i.test(String(cfg.bark.url || '').trim()));
+  if (name === 'ntfy_push') return !!(cfg.ntfy && cfg.ntfy.enabled && String(cfg.ntfy.topic || '').trim());
+  return true;
+}
+
+function availableTools(cfg) {
+  cfg = cfg || {};
+  return ALL_TOOLS.filter(function (tool) { return isToolAvailable(tool.name, cfg); }).map(function (tool) {
+    if (tool.name !== 'webhook') return tool;
+    const names = configuredWebhookNames(cfg);
+    const schema = tool.inputSchema || { type: 'object', properties: {} };
+    return Object.assign({}, tool, { inputSchema: Object.assign({}, schema, {
+      properties: Object.assign({}, schema.properties || {}, {
+        name: Object.assign({}, (schema.properties || {}).name || { type: 'string' }, { enum: names })
+      })
+    }) });
+  });
+}
+
+const TOOLS = availableTools(config);
 
 /* ------------------------------------------------------------------ */
 /* WebSocket 服务（RFC6455 最小实现，零依赖）                          */
@@ -946,7 +1029,7 @@ const TOOLS = [
 /* ------------------------------------------------------------------ */
 
 const createWs = require('../bridge/ws');
-const { isTauriOrigin } = require('../runtime/host-origin.js');
+const { isTauriOrigin, blocksDevWebOrigin } = require('../runtime/host-origin.js');
 const pushHistory = pushes;
 const wsLayer = createWs({
   config,
@@ -979,6 +1062,7 @@ const WSConnection = wsLayer.WSConnection;
 const createRoutes = require('../bridge/routes');
 const httpLayer = createRoutes({
   config, LAN_EXPOSED, configInvalid, SERVER_NAME, VERSION, HOST, PORT, BIND_HOST,
+  environment: DEV_IDENTITY.mode, devInstanceId: DEV_IDENTITY.instanceId,
   DATA_DIR, STICKER_DIR, maxBody: MAX_BODY,
   wsSockets, TOOLS, listStickers,
   getWhispers: () => whispers, setWhispers: v => { whispers = v; },
@@ -988,7 +1072,7 @@ const httpLayer = createRoutes({
   sessions, resident, contextStats, pushHistory,
   withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
   getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox, asr,
+  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox, voiceboxRuntimeControl, asr,
   sessionGet, sessionSave, contextAppend, contextSummary,
   residentList, residentUpsert, residentSummary, residentChat, residentProactive,
   broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
@@ -1068,6 +1152,33 @@ function ensureProactive() {
 /* ------------------------------------------------------------------ */
 
 const server = http.createServer((req, res) => {
+  const requestUrl = (() => { try { return new URL(req.url || '/', 'http://127.0.0.1'); } catch (_) { return null; } })();
+  const origin = String(req.headers && req.headers.origin || '').trim();
+  if ((DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic') && origin && origin !== DEV_IDENTITY.webOrigin) {
+    sendJsonRes(res, 403, { ok: false, error: 'environment-origin-mismatch' });
+    return;
+  }
+  if (req.method === 'OPTIONS' && (DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic')) {
+    if (origin === DEV_IDENTITY.webOrigin) {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': origin, 'Vary': 'Origin',
+        'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-IB-Token,X-IB-Dev-Session,X-IB-Dev-Instance',
+        'Access-Control-Max-Age': '600'
+      });
+    } else res.writeHead(204);
+    res.end();
+    return;
+  }
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())
+    && !devServiceContract.authorizeRequestIdentity(req, process.env, DEV_IDENTITY.webOrigin)) {
+    sendJsonRes(res, 403, { ok: false, error: 'environment-identity-mismatch' });
+    return;
+  }
+  if (blocksDevWebOrigin(req.headers && req.headers.origin)) {
+    sendJsonRes(res, 403, { ok: false, error: 'dev-origin-denied' });
+    return;
+  }
   /* P11-3H · 合作停止面：必须在**本组件自己的 dispatch 里**、在路由解析之前判定。
      修复过程中实测过另一种写法（在 server 上再挂一个 'request' listener）：
      Node 会同步地把 'request' 依次交给每个 listener，后注册的那个一定在前一个
@@ -1076,6 +1187,12 @@ const server = http.createServer((req, res) => {
     sendJsonRes(res, status, { ok: false, error: error }, acaOrigin(req));
   });
   if (stopDecision) return;
+  if (requestUrl && requestUrl.pathname === '/health' && (DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic')) {
+    handleHttp(req, res).catch(e => {
+      try { sendJsonRes(res, 500, { ok: false, error: String(e && e.message || e) }); } catch (e2) { /* 忽略 */ }
+    });
+    return;
+  }
   handleHttp(req, res).catch(e => {
     try { sendJsonRes(res, 500, { ok: false, error: String(e && e.message || e) }); } catch (e2) { /* 忽略 */ }
   });
@@ -1094,6 +1211,30 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const origin = String(req.headers.origin || '').trim();
+  let requestUrl;
+  try { requestUrl = new URL(req.url || '/', 'http://127.0.0.1'); }
+  catch (_) { socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
+  if (DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic') {
+    if (origin !== DEV_IDENTITY.webOrigin || !devServiceContract.authorizeRequestIdentity({
+      headers: Object.assign({}, req.headers, {
+        'x-ib-dev-session': requestUrl.searchParams.get('ib_dev_session') || '',
+        'x-ib-dev-instance': requestUrl.searchParams.get('ib_dev_instance') || ''
+      })
+    }, process.env, DEV_IDENTITY.webOrigin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  } else if (requestUrl.searchParams.has('ib_dev_session') || requestUrl.searchParams.has('ib_dev_instance')) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  if (blocksDevWebOrigin(origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   if (origin && origin !== 'null') {
     let originOk = false;
     try {
@@ -1114,7 +1255,7 @@ server.on('upgrade', (req, socket, head) => {
   /* In LAN mode require a token before upgrading. Browser WebSocket clients
      cannot set Authorization, so the DIY client passes it as a URL parameter
      for this one handshake; the hello-frame check remains a second boundary. */
-  const upgradeToken = suppliedToken(req, parseQuery(new URL(req.url || '/', 'http://localhost')));
+  const upgradeToken = suppliedToken(req, parseQuery(requestUrl));
   if (LAN_EXPOSED && !constantTimeTokenMatch(upgradeToken, config.token)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
@@ -1207,6 +1348,8 @@ async function bridgeTeardown(reason) {
 }
 const bridgeStopDispatch = serviceControl.createStopDispatch({
   service: 'IB Bridge',
+  authorize: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin)
+    ? null : { status: 403, error: 'environment-identity-mismatch' },
   stop: () => bridgeTeardown('http'),
   /* The dispatch owns the ending: teardown, then bounded close, then exit. */
   server: server,

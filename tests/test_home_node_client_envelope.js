@@ -124,7 +124,13 @@ async function withFetch(handler, fn) {
      ══════════════════════════════════════════════════════════════════ */
   section('A. /memory/list');
 
-  const IB = loadClient({ ib_home_node_http: 'http://127.0.0.1:23118' });
+  /* The suite is about response envelopes, not the separate first-run credential
+     bootstrap. A synthetic local token keeps the request recorder focused on the
+     memory endpoints and never represents a user credential. */
+  const IB = loadClient({
+    ib_home_node_http: 'http://127.0.0.1:23118',
+    ib_home_node_token: 'synthetic-envelope-test-token'
+  });
   const remote = IB.createMemoryRemote({});
   const seeded = [mem('mem_1'), mem('mem_2'), mem('mem_3'), mem('mem_4'), mem('mem_5')];
 

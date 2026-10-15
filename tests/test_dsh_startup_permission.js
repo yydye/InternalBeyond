@@ -1,0 +1,56 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.resolve(__dirname, '..');
+const plugin = path.join(root, 'runtime', 'dsh-startup-screen');
+const pkg = JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'), 'utf8'));
+const host = fs.readFileSync(path.join(plugin, 'lib', 'index.js'), 'utf8');
+const packageEntry = fs.readFileSync(path.join(plugin, 'host.mjs'), 'utf8');
+const splash = fs.readFileSync(path.join(plugin, 'lib', 'splash.js'), 'utf8');
+const permission = fs.readFileSync(path.join(plugin, 'lib', 'permission.js'), 'utf8');
+const client = fs.readFileSync(path.join(plugin, 'lib', 'client.js'), 'utf8');
+const dshClient = fs.readFileSync(path.join(root, 'runtime', 'dsh-native-ui-p0', 'client.js'), 'utf8');
+const launcher = fs.readFileSync(path.join(root, 'runtime', 'dsh-native-ui-p0.js'), 'utf8');
+const hostUi = fs.readFileSync(path.join(root, 'assets', 'js', 'work-mode-native-ui.js'), 'utf8');
+const upstream = fs.readFileSync(path.join(plugin, 'UPSTREAM.md'), 'utf8');
+
+assert.equal(pkg.license, 'MIT');
+assert.equal(pkg.dsh.client.platform, 'web');
+assert.equal(pkg.main, './host.mjs');
+assert.ok(packageEntry.includes("from './lib/index.js'"));
+assert.ok(fs.readFileSync(path.join(plugin, 'LICENSE'), 'utf8').includes('MIT License'));
+assert.ok(upstream.includes('4a2cfe642867fac013fdef90095981544a819a2a'));
+assert.ok(upstream.includes('not copied or distributed'));
+assert.ok(!fs.existsSync(path.join(plugin, 'lib', 'assets')), 'unlicensed upstream audio assets must not ship');
+assert.ok(host.includes("sfx: 'synth'"));
+assert.ok(host.includes("voiceSource: 'tts'"));
+assert.ok(host.includes("out.sfx = 'synth'"));
+assert.ok(host.includes("out.voiceSource = 'tts'"));
+assert.ok(!host.includes("ROUTE_BASE + '/asset'"), 'the Host must not expose upstream audio assets');
+assert.ok(client.includes("id: '@internalbeyond/dsh-startup-screen'"), 'the Cordis client module id must match the package name');
+assert.ok(host.includes("ROUTE_BASE + '/permission.js'"));
+assert.ok(host.includes("path: ROUTE_BASE + '/splash.js'"));
+assert.ok(host.includes("path: ROUTE_BASE + '/permission.js'"));
+assert.ok(splash.includes("sfx: 'synth'"));
+assert.ok(splash.includes("voiceSource: 'tts'"));
+assert.ok(splash.includes('ANIMATION DOES NOT GRANT PERMISSION'));
+assert.ok(splash.includes('NO CONSENT CREATED OR VERIFIED'));
+assert.ok(!splash.includes('READ COMPLETE · VERIFIED'));
+assert.ok(!splash.includes('权限已授予'));
+assert.ok(permission.includes('dsh-startup:permission-decision'));
+assert.ok(permission.includes('Home Node 核验中'));
+assert.ok(permission.includes('decisionHandlers.get(active.requestId)'));
+assert.ok(permission.includes('dsh-startup:permission-decision'));
+assert.ok(!/localStorage|sessionStorage|fetch\s*\(/.test(permission), 'Permission mode must not store or grant Consent itself');
+assert.ok(dshClient.includes("type: 'ib-dsh-p1-consent'"));
+assert.ok(dshClient.includes('api.setDecisionHandler(context.requestId, onPermissionDecision)'));
+assert.ok(dshClient.includes('ib-dsh-p1-run-state'));
+assert.ok(launcher.includes("'dsh-startup-screen', 'host.mjs'"));
+assert.ok(hostUi.includes('function grantP1Consent(sessionId, data)'));
+assert.ok(hostUi.includes('workModeUi.grant(data.expiresInMs, true)'));
+assert.ok(hostUi.includes('workRunRemote.bindDshSession'));
+
+console.log('DSH startup Permission integration contract: all checks passed');
