@@ -31,6 +31,8 @@ const SRC_SOCIAL = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-social.js'
 const CHAT_CORE = require(path.join(ROOT, 'assets/js/chat-core.js'));
 const RC_CORE = require(path.join(ROOT, 'assets/js/reply-chain-core.js'));
 const PBCORE = require(path.join(ROOT, 'assets/js/prompt-boundary-core.js'));
+const DELIVERY_RUNTIME = require(path.join(ROOT, 'assets/js/delivery-runtime.js'));
+let ROLE_DM_DELIVERY = DELIVERY_RUNTIME.createDeliveryRuntime({ pacing: { baseMs: 3, perCharMs: 0 } });
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -116,6 +118,7 @@ global.window = {
   get archivedConfigs() { return archivedConfigs; },
   _ibApiReady: () => true,
   _ibApiHasCredential: () => true,
+  _ibDeliveryRuntime: () => ROLE_DM_DELIVERY,
   promptBoundarySanitizer: null,
   IB: IB
 };
@@ -172,6 +175,7 @@ function reset() {
   failFor = null; replyFor = null; emptyFor = null; truncateFor = null;
   SLEEP = { sleepStart: '', sleepEnd: '' };
   global._chatSendingFor.clear();
+  ROLE_DM_DELIVERY = DELIVERY_RUNTIME.createDeliveryRuntime({ pacing: { baseMs: 3, perCharMs: 0 } });
   archivedConfigs.length = 0;
   RS._resetAll();
   RS._dropCrossRunState();

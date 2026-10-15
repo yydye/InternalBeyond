@@ -33,6 +33,10 @@ const SRC_SOCIAL = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-social.js'
 const CHAT_CORE = require(path.join(ROOT, 'assets/js/chat-core.js'));
 const RC_CORE = require(path.join(ROOT, 'assets/js/reply-chain-core.js'));
 const PBCORE = require(path.join(ROOT, 'assets/js/prompt-boundary-core.js'));
+const BREVITY = require(path.join(ROOT, 'assets/js/brevity-policy.js'));
+const MESSAGE_QUOTE = require(path.join(ROOT, 'assets/js/message-quote-core.js'));
+const DELIVERY_RUNTIME = require(path.join(ROOT, 'assets/js/delivery-runtime.js'));
+let ROLE_DM_DELIVERY = DELIVERY_RUNTIME.createDeliveryRuntime({ pacing: { baseMs: 3, perCharMs: 0 } });
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -107,6 +111,8 @@ global.callApiChat = async function (cfg, messages, opts) {
 
 global.window = {
   apiConfigs,
+  IBMessageQuoteCore: MESSAGE_QUOTE,
+  _ibDeliveryRuntime: () => ROLE_DM_DELIVERY,
   get archivedConfigs() { return archivedConfigs; },
   _ibApiReady: () => true,
   _ibApiHasCredential: () => true,
@@ -144,6 +150,7 @@ global._chatSendingFor = new Set();
 const TRACES = [];
 global.window.IB = {
   expose: () => {},
+  brevity: BREVITY,
   __mbTrace: {
     begin: (consumer, id) => { TRACES.push({ consumer: consumer, character: id }); },
     note: (id, key, value) => {
@@ -186,6 +193,7 @@ const reset = () => {
   for (const k of Object.keys(DB)) delete DB[k];
   for (const k of Object.keys(LS)) delete LS[k];
   CALLS.length = 0; TRACES.length = 0;
+  ROLE_DM_DELIVERY.reset();
   failFor = null; replyFor = null; truncateFor = null; emptyFor = null;
   if (RS && typeof RS._resetAll === 'function') RS._resetAll();
 };
@@ -757,11 +765,11 @@ reset();
   B.publicProfile = { publicIntro: '很长'.repeat(4000), traits: ['特征'.repeat(50)] };
   const hugeSide = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
   const iPeer = hugeSide.system.indexOf('【对方】');
-  const peerBlock = iPeer >= 0 ? hugeSide.system.slice(iPeer) : '';
+  var peerBlock = iPeer >= 0 ? hugeSide.system.slice(iPeer) : '';
+  var peerBlockEnd = peerBlock.indexOf('\n\n');
+  if (peerBlockEnd >= 0) peerBlock = peerBlock.slice(0, peerBlockEnd);
   check('Z10. 公开资料整块受上限约束（超长输入不改变 system 量级）',
-    peerBlock.indexOf('【你怎么看 TA】') > 0
-      ? true
-      : peerBlock.length <= C.PEER_PROFILE_CHAR_CAP,
+    peerBlock.length <= C.PEER_PROFILE_CHAR_CAP,
     peerBlock.length);
   check('Z11. 超长公开资料仍不含对方 persona',
     !hugeSide.system.includes(PERSONA_B));
@@ -1065,14 +1073,13 @@ reset();
   check('AB41. 备忘只是既有 thread 记录上的**可选字段**：本阶段没有为它升版 / 建表',
     (function () {
       const core = fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8');
-      const v = Number((/DB_VER\s*=\s*(\d+)/.exec(core) || [])[1]);
-      /* Phase 4B-1.2 让 DB_VER 前进到 24（+ disclosureFacts，属另一个阶段），
-         因此这里不再写死 23。本阶段要断言的实质是：备忘**不需要自己的 store**
-         —— AB40 已证明它落在 canonical threads 索引里，AB42 证明没有
-         role_dm 专属 store。这里补上"版本只增不减"与"core.js 里不存在任何
-         为备忘而生的表名"。 */
-      return Number.isInteger(v) && v >= 23
-        && core.indexOf('roleDmMemorandum') < 0 && core.indexOf('role_dm_') < 0;
+      const schema = fs.readFileSync(path.join(ROOT, 'assets/js/webcore-db-schema.js'), 'utf8');
+      const v = Number((/var DB_VERSION\s*=\s*(\d+)/.exec(schema) || [])[1]);
+      const stores = (/(?:var|const) STORE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(schema) || [])[1] || '';
+      /* 当前工作树把 IndexedDB schema 搬到了 webcore-db-schema.js。读 canonical
+         schema owner，而不是旧 core.js 常量；这里只验证既有版本/表清单没有 Role DM 表。 */
+      return core.indexOf('DB_SCHEMA=window.IBWebCoreDbSchema') >= 0 && Number.isInteger(v) && v >= 23
+        && !/['"](?:roleDm|role_dm|roleDM)[^'"]*['"]/.test(stores);
     })());
   check('AB42. 没有新增任何 object store（备忘在既有 thread 记录上）',
     !/createObjectStore\('role_dm/.test(fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8')));
@@ -1733,10 +1740,10 @@ reset();
   /* ── AH17 结构保证：M3 的观测块**只能看，不能改** ── */
   const rtSrc = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
   const sqCode = (() => {
-    const i = rtSrc.indexOf('analyzeSoftRepetition(turnRes.text');
+    const i = rtSrc.indexOf('analyzeSoftRepetition(acceptedUnits[0].text');
     if (i < 0) return '';
     const s = rtSrc.lastIndexOf('/* ── M3 软复读观测', i);
-    const e = rtSrc.indexOf('var msg = c.buildRoleDmMessage(', i);
+    const e = rtSrc.indexOf('var quotaRecordedForGeneration = false;', i);
     if (e < 0) return '';
     return rtSrc.slice(s >= 0 ? s : i, e).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   })();
@@ -1852,11 +1859,11 @@ reset();
     C.diceSimilarity('好的', '好的。') === 1 && RC_CORE.diceSimilarity('哈哈', '哈哈。') === 1 &&
     RC_CORE.textKey('A B。') === 'ab' && C.isDuplicateTurn('好的。', ['好的。']).duplicate === true);
 
-  /* 结构保证：守卫顺序与 role-dm.js 的存在性未变（S1 只改口径，不改 authority 顺序）。 */
+  /* 结构保证：Role DM 的 contextual exception 仍在低信息守卫、硬重复守卫之前。 */
   const rtSrcS1 = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
-  check('S1o. 守卫顺序未变：low-info 仍排在 duplicate 之前（"好的。" 归 low-info 守卫）',
-    rtSrcS1.indexOf('if (lowInfo)') > 0 &&
-    rtSrcS1.indexOf('if (lowInfo)') < rtSrcS1.indexOf('if (dup.duplicate)'));
+  check('S1o. contextual low-info 仍排在 duplicate 之前（"好的。" 归 low-info 守卫）',
+    rtSrcS1.indexOf('if (lowInfo && (!contextualShort || repeatedShort))') > 0 &&
+    rtSrcS1.indexOf('if (lowInfo && (!contextualShort || repeatedShort))') < rtSrcS1.indexOf('if (dup.duplicate)'));
   check('S1p. role-dm.js 里没有第二套低信息实现（S1 落在两个 core 文件里）',
     rtSrcS1.indexOf('LOW_INFO') < 0 && rtSrcS1.indexOf('textKey(') < 0);
 
@@ -2132,6 +2139,794 @@ reset();
   global.IBRoleDmCore = _savedCore;
   check('MUT-C. 还原后原函数行为不变（变异体没有污染后续断言）',
     global.IBRoleDmCore === C && C.buildFamiliarityGuidance(0.5) !== '');
+}
+
+/* ══════ P1 + P2 · shared natural style, contextual short replies, and bounded turn intent ══════ */
+{
+  const contextual = C.lowInfoContextuallyMeaningful;
+  check('P1. 只在直接问题、请求、情绪披露或玩笑语境中保留短反应',
+    contextual('嗯', '你愿意今天一起去看星星吗？') === true &&
+    contextual('好', '麻烦你帮我看一下这份记录。') === true &&
+    contextual('嗯', '我今天有点难过。') === true &&
+    contextual('哈哈', '你刚才那个比喻真的很逗。') === true &&
+    contextual('嗯', '今天我打算去看星星。') === false &&
+    contextual('哈哈', '仪器读数是 12。') === false &&
+    contextual('……', '你愿意吗？') === false);
+  check('P1. 重复的一字短回应可被精确识别，较长正文仍由原重复阈值负责',
+    C.isRepeatedLowInfoTurn('嗯', ['嗯。']) === true &&
+    C.isRepeatedLowInfoTurn('嗯', ['嗯，我明白。']) === false);
+
+  const streak = C.trailingSpeakerStreak([
+    { metadata: { senderId: 'a' } },
+    { metadata: { senderId: 'b' } },
+    { metadata: { senderId: 'b' } }
+  ]);
+  check('P2. 只读取最近连续发言者，计数封顶为两条',
+    streak.speakerId === 'b' && streak.count === 2 &&
+    C.trailingSpeakerStreak([{ metadata: { senderId: 'a' } }]).count === 1);
+
+  const parsedSpeak = C.parseRoleDmIntent('第一段。\n\n第二段仍在同一条消息里。\n<role_dm_intent>speak</role_dm_intent>');
+  const tolerantSpeak = C.parseRoleDmIntent('自然接一句。<role_dm_intent> SPEAK </role_dm_intent>  ');
+  const simpleContinue = C.parseRoleDmIntent('[role_dm:continue_self]\n我再补一句。');
+  const simpleYield = C.parseRoleDmIntent('[role_dm:yield]');
+  const parsedContinue = C.parseRoleDmIntent('我再补一句。\n<role_dm_intent>continue_self</role_dm_intent>');
+  const parsedYield = C.parseRoleDmIntent('<role_dm_intent>yield</role_dm_intent>');
+  const parsedEnd = C.parseRoleDmIntent('<role_dm_intent>end</role_dm_intent>');
+  const malformed = C.parseRoleDmIntent('先说一句。\n<role_dm_intent>interject</role_dm_intent>');
+  const duplicateIntent = C.parseRoleDmIntent('先说一句。\n<role_dm_intent>speak</role_dm_intent>\n<role_dm_intent>end</role_dm_intent>');
+  const attributedIntent = C.parseRoleDmIntent('先说一句。\n<role_dm_intent source="answer">speak</role_dm_intent>');
+  const unknownSimple = C.parseRoleDmIntent('[role_dm:interject]\n先说一句。');
+  const duplicateSimple = C.parseRoleDmIntent('[role_dm:speak]\n先说一句。\n[role_dm:end]');
+  check('P2. 意图解析严格闭集；缺失/未知/重复标记返回旧式发言回退',
+    parsedSpeak.valid && parsedSpeak.intent === 'speak' && parsedSpeak.text === '第一段。\n\n第二段仍在同一条消息里。' &&
+    tolerantSpeak.valid && tolerantSpeak.intent === 'speak' && tolerantSpeak.text === '自然接一句。' &&
+    simpleContinue.valid && simpleContinue.intent === 'continue_self' && simpleContinue.text === '我再补一句。' &&
+    simpleYield.valid && simpleYield.intent === 'yield' && simpleYield.text === '' &&
+    parsedContinue.valid && parsedContinue.intent === 'continue_self' && parsedContinue.text === '我再补一句。' &&
+    parsedYield.valid && parsedYield.intent === 'yield' && parsedYield.text === '' &&
+    parsedEnd.valid && parsedEnd.intent === 'end' && parsedEnd.text === '' &&
+    malformed.intent === null && malformed.text === '先说一句。' &&
+    duplicateIntent.intent === null && duplicateIntent.text.indexOf('<role_dm_intent>') < 0 &&
+    attributedIntent.intent === null && attributedIntent.text === '先说一句。' &&
+    unknownSimple.intent === null && unknownSimple.text === '先说一句。' &&
+    duplicateSimple.intent === null && duplicateSimple.text === '先说一句。');
+
+  const chatConcise = BREVITY.apply('角色原设。', { mode: 'text', concise: true });
+  const chatDetailed = BREVITY.apply('角色原设。', { mode: 'text', detailed: true });
+  const dmNatural = BREVITY.applyRoleDm('角色原设。', {});
+  const dmConcise = BREVITY.applyRoleDm('角色原设。', { concise: true });
+  const dmDetailed = BREVITY.applyRoleDm('角色原设。', { detailed: true });
+  const chatTexture = BREVITY.apply('聊天角色原设。', { mode: 'text', emotionalTexture: true });
+  const chatDetailedTexture = BREVITY.apply('聊天角色原设。', { mode: 'text', detailed: true, emotionalTexture: true });
+  const chatLegacyStyle = BREVITY.apply('聊天角色原设。', { mode: 'text' });
+  check('P1. Role DM 把普通为什么/why 当作短问答；显式展开才豁免简短策略，Chat classifier 保持不变',
+    BREVITY.isRoleDmDetailedRequest('你为什么这么晚才睡？') === false &&
+    BREVITY.isRoleDmDetailedRequest('Why did you pick that place?') === false &&
+    BREVITY.isRoleDmDetailedRequest('能详细讲讲你为什么这么判断吗？') === true &&
+    BREVITY.isRoleDmDetailedRequest('Please explain why you chose it.') === true &&
+    BREVITY.isDetailedRequest('为什么这么晚？') === true);
+  check('P1. IB.brevity 保持 Chat 的简洁/详细优先级，并给 Role DM 独立风格块',
+    chatConcise.indexOf('【简洁回复') >= 0 && chatConcise.indexOf('【角色私聊表达】') < 0 &&
+    chatDetailed === '角色原设。' && dmNatural.indexOf('【角色私聊表达】') >= 0 &&
+    dmConcise.indexOf('【简洁回复') >= 0 && dmConcise.indexOf('【角色私聊表达】') >= 0 &&
+    dmDetailed.indexOf('【角色私聊表达】') < 0 &&
+    dmDetailed.indexOf('【角色之间的情绪自然变化】') >= 0);
+  check('P3. Chat 与 Role DM 共用纯表达策略但使用不同策略块；详细回复仍允许情绪变化',
+    chatTexture.indexOf('【聊天中的情绪自然变化】') >= 0 &&
+    chatTexture.indexOf('【角色之间的情绪自然变化】') < 0 &&
+    chatDetailedTexture.indexOf('【聊天中的情绪自然变化】') >= 0 &&
+    chatDetailedTexture.indexOf('【表达风格】') < 0 &&
+    chatLegacyStyle.indexOf('【聊天中的情绪自然变化】') < 0 &&
+    dmDetailed.indexOf('【角色之间的情绪自然变化】') >= 0 &&
+    BREVITY.chatEmotionalTextureGuidance().indexOf('不是每轮都要选一种') >= 0 &&
+    BREVITY.roleDmEmotionalTextureGuidance().indexOf('不是情绪任务') >= 0 &&
+    !/随机切换情绪|必须争吵|必须安慰|无依据冲突/.test(BREVITY.chatEmotionalTextureGuidance() + BREVITY.roleDmEmotionalTextureGuidance()));
+
+  reset();
+  const briefSide = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], lastPeerText: '你愿意今天一起去看星星吗？'
+  });
+  const detailedSide = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], lastPeerText: '请详细解释一下你为什么这么判断。'
+  });
+  const whySide = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], lastPeerText: '你为什么这么晚才睡？'
+  });
+  check('P1. 真实 Role DM prompt 使用 shared policy 和闭集意图；详细请求不注入短回合块',
+    briefSide.system.indexOf('【角色私聊表达】') >= 0 &&
+    briefSide.system.indexOf('普通闲聊默认发一条短消息') >= 0 &&
+    briefSide.system.indexOf('多条消息必须用单独一行 [[ib:message]] 分隔') >= 0 &&
+    briefSide.system.indexOf('【普通闲聊的优先格式】') >= 0 &&
+    briefSide.system.indexOf('不要照着历史消息的长度或段落数来模仿') >= 0 &&
+    briefSide.system.indexOf('输出的第一行必须且只写一个短控制标记') >= 0 &&
+    briefSide.system.indexOf('[role_dm:continue_self]') >= 0 &&
+    briefSide.system.indexOf('[role_dm:yield]') >= 0 &&
+    briefSide.system.indexOf('同一次生成里的 1–3 条消息仍只算一个模型回合') >= 0 &&
+    briefSide.messages[briefSide.messages.length - 1].content.indexOf('【本轮输出格式】第一行只写一个控制标记') >= 0 &&
+    briefSide.messages[briefSide.messages.length - 1].content.indexOf('[role_dm:speak]') >= 0 &&
+    briefSide.messages[0].content.indexOf('[[ib:message]]') >= 0 &&
+    whySide.system.indexOf('【角色私聊表达】') >= 0 &&
+    detailedSide.system.indexOf('【角色私聊表达】') < 0 &&
+    detailedSide.system.indexOf('【普通闲聊的优先格式】') < 0 && CALLS.length === 0);
+
+  reset();
+  const seedP3Relation = (familiarity) => {
+    const items = {};
+    const row = C.buildRelationRecord('friend_aaa', 'friend_bbb', { now: 1 });
+    row.familiarity = familiarity;
+    row.dmCount = familiarity > C.FAMILIARITY_BASELINE ? 3 : 0;
+    items[C.relationKey('friend_aaa', 'friend_bbb')] = row;
+    localStorage.setItem(RD._keys.relations, JSON.stringify({ v: 1, items, updatedAt: 1 }));
+    return row;
+  };
+  const p3Scenarios = [
+    { name: 'stranger', familiarity: C.FAMILIARITY_BASELINE, line: '你好，第一次和你合作，我有点不确定怎么开口。' },
+    { name: 'joke', familiarity: 0.85, line: '你又忘记带伞了，看来这次要听我一句。' },
+    { name: 'disappointment', familiarity: 0.85, line: '你说会来，最后没来，我挺失望的。' },
+    { name: 'disagreement', familiarity: 0.5, line: '这个判断我不同意，你把两件事混在一起了。' },
+    { name: 'reconciliation', familiarity: 0.85, line: '刚才我说得有点冲，抱歉。' }
+  ];
+  const p3Built = [];
+  for (const scene of p3Scenarios) {
+    seedP3Relation(scene.familiarity);
+    p3Built.push(await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [{ content: scene.line, senderName: '初音未来', metadata: { senderId: 'friend_bbb' } }],
+      lastPeerText: scene.line
+    }));
+  }
+  const strangerP3 = p3Built[0], familiarP3 = p3Built[1];
+  const p3RelationAfter = RD.relationGet('friend_aaa', 'friend_bbb');
+  const p3RoleA = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [{ content: p3Scenarios[2].line, senderName: '初音未来', metadata: { senderId: 'friend_bbb' } }],
+    lastPeerText: p3Scenarios[2].line
+  });
+  seedP3Relation(0.85);
+  const p3RoleB = await RD._composeSide('friend_bbb', 'friend_aaa', null, {
+    history: [{ content: p3Scenarios[2].line, senderName: '昔涟', metadata: { senderId: 'friend_aaa' } }],
+    lastPeerText: p3Scenarios[2].line
+  });
+  check('P3. 陌生与熟人继续复用既有关系投影；两种关系下都只获得有上下文依据的表达许可',
+    strangerP3.system.indexOf('【角色之间的情绪自然变化】') >= 0 &&
+    strangerP3.system.indexOf('【相处方式】') < 0 &&
+    familiarP3.system.indexOf('【角色之间的情绪自然变化】') >= 0 &&
+    familiarP3.system.indexOf('【相处方式】') >= 0 &&
+    BREVITY.roleDmEmotionalTextureGuidance().indexOf('不虚构共同经历') >= 0 &&
+    p3RelationAfter && p3RelationAfter.familiarity === 0.85 && CALLS.length === 0);
+  check('P3. 玩笑、失望、争执、和解场景保留原始近期上下文，不把情绪写成持久状态或固定台词',
+    p3Built.slice(1).every(function (built, i) {
+      return built.system.indexOf('【角色之间的情绪自然变化】') >= 0 &&
+        built.messages[built.messages.length - 1].content.indexOf(p3Scenarios[i + 1].line) >= 0;
+    }) &&
+    ['【情绪状态】', 'emotionState', 'moodState', '必须安慰', '必须争吵'].every(function (s) {
+      return BREVITY.roleDmEmotionalTextureGuidance().indexOf(s) < 0;
+    }));
+  check('P3. 同一情绪许可不会抹平人设：反向角色仍只看到自己的 persona',
+    p3RoleA.system.indexOf('你是昔涟') >= 0 && p3RoleA.system.indexOf('你是初音未来') < 0 &&
+    p3RoleB.system.indexOf('你是初音未来') >= 0 && p3RoleB.system.indexOf('你是昔涟') < 0 &&
+    p3RoleA.system.indexOf('【角色之间的情绪自然变化】') >= 0 && p3RoleB.system.indexOf('【角色之间的情绪自然变化】') >= 0);
+
+  const seedPeerMessage = async (content) => {
+    const fid = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+    await RD.resolveThread('friend_aaa', 'friend_bbb');
+    await global.dbPut('chatMessages', C.buildRoleDmMessage({
+      friendId: fid, senderId: 'friend_bbb', recipientId: 'friend_aaa',
+      senderName: '初音未来', content: content, timestamp: Date.now() - 10000,
+      trigger: 'manual', turnIndex: 0, runId: 'seed'
+    }));
+    await RD.rebuildThreadIndex();
+    return fid;
+  };
+  const control = (body, intent) => (body ? body + '\n' : '') + '<role_dm_intent>' + intent + '</role_dm_intent>';
+
+  reset();
+  const quoteSourceText = '我本来不想提这件事。那天你留下来听我说完。';
+  const quoteFid = await seedPeerMessage(quoteSourceText);
+  const quoteThread = await RD.resolveThread('friend_aaa', 'friend_bbb');
+  const quoteSide = await RD._composeSide('friend_aaa', 'friend_bbb', quoteThread.thread, {
+    history: await RD._loadMessages(quoteFid), lastPeerText: quoteSourceText
+  });
+  check('P3.1. Quote guidance reaches the actual provider system frame, not only the diagnostic string',
+    quoteSide.system.indexOf('【可选的引用回复】') >= 0 && quoteSide.messages[0].role === 'system'
+      && quoteSide.messages[0].content === quoteSide.system && quoteSide.messages[0].content.indexOf('"messageId"') >= 0);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? '[role_dm:speak]\n我记得。[[quote:Q1.2]]'
+    : control('我也记得。', 'speak');
+  const quoteRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 1, force: true });
+  const quoteRows = msgsOf(quoteFid);
+  const quoteReply = quoteRows.find(m => m.metadata && m.metadata.senderId === 'friend_aaa');
+  const quoteSource = quoteRows.find(m => m.metadata && m.metadata.senderId === 'friend_bbb');
+  check('P3.1. Role DM makes no extra model call and persists a verified ID/snippet/sender reference',
+    quoteRun.ok === true && quoteRun.turns === 2 && CALLS.length === quoteRun.turns && quoteReply && quoteSource
+      && quoteReply.metadata.replyQuote.sourceMessageId === quoteSource.id
+      && quoteReply.metadata.replyQuote.snippet === '那天你留下来听我说完。'
+      && quoteReply.metadata.replyQuote.sourceSenderKey === 'role:friend_bbb'
+      && quoteReply.content === '我记得。'
+      && !/<ib_reply_quote|role_dm_intent/.test(quoteReply.content),
+    { result: quoteRun, calls: CALLS.length, quote: quoteReply && quoteReply.metadata.replyQuote, source: quoteSource && quoteSource.id });
+  check('P3.1. Dev diagnostics separate candidates, no-selection, parse acceptance, and committed application',
+    quoteRun.calibration.quotes.candidateSets === quoteRun.turns && quoteRun.calibration.quotes.candidateCount >= 2
+      && quoteRun.calibration.quotes.accepted === 1 && quoteRun.calibration.quotes.noDirective === 1
+      && quoteRun.calibration.quotes.rejected === 0 && quoteRun.calibration.quotes.applied === 1
+      && quoteRun.calibration.quotes.quoteOptionCount >= quoteRun.calibration.quotes.candidateCount
+      && quoteRun.calibration.prompts.quoteGuidance === quoteRun.turns
+      && !/sourceMessageId|snippet|prompt|content/.test(JSON.stringify(quoteRun.calibration.quotes)));
+
+  reset();
+  const invalidQuoteFid = await seedPeerMessage(quoteSourceText);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? '[role_dm:speak]\n普通回应。[[quote:Q1.99]]'
+    : control('好。', 'speak');
+  const invalidQuoteRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 1, force: true });
+  const invalidQuoteReply = msgsOf(invalidQuoteFid).find(m => m.metadata && m.metadata.senderId === 'friend_aaa');
+  check('P3.1. Invalid Role DM quote safely becomes an ordinary message without pointer',
+    !!invalidQuoteReply && invalidQuoteReply.content === '普通回应。' && !invalidQuoteReply.metadata.replyQuote
+      && !/<ib_reply_quote|role_dm_intent/.test(invalidQuoteReply.content));
+  check('P3.1. Rejected-source reason is a closed enum with no quoted text',
+    invalidQuoteReply && JSON.stringify(invalidQuoteReply.metadata.replyQuote || null) === 'null'
+      && invalidQuoteRun.calibration.quotes.rejected === 1
+      && invalidQuoteRun.calibration.quotes.rejectedByReason['unknown-source'] === 1);
+
+  reset();
+  const shortFid = await seedPeerMessage('你愿意今天一起去看星星吗？');
+  replyFor = cfg => cfg.id === 'friend_aaa' ? '嗯' : '我也想去看看。';
+  const shortRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const shortRows = msgsOf(shortFid);
+  check('P1. 有明确上下文的“嗯”通过 Role DM guard 并按原路径持久化',
+    shortRun.turns === 2 && shortRows.length === 3 && shortRows[1].content === '嗯' &&
+    shortRows.every(m => !/<role_dm_intent>/.test(m.content)));
+
+  reset();
+  const paragraphText = '我刚才想起一件事。\n\n下次见面时我再告诉你。';
+  replyFor = cfg => cfg.id === 'friend_aaa' ? control(paragraphText, 'speak') : control('好，我等你说。', 'speak');
+  const paragraphRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const paragraphRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  check('P1. 同一条正文里的换段保持一个消息气泡；运行时不按句号或换行拆消息',
+    paragraphRun.turns === 2 && paragraphRows.length === 2 && paragraphRows[0].content === paragraphText &&
+    paragraphRun.calibration.messages.count === 2 && paragraphRun.calibration.messages.multiParagraph === 1 &&
+    paragraphRun.calibration.messages.avgParagraphs === 1.5 &&
+    !paragraphRows.some(m => Object.prototype.hasOwnProperty.call(m, 'calibration') ||
+      Object.prototype.hasOwnProperty.call(m.metadata || {}, 'calibration')));
+
+  reset();
+  const repeatFid = await seedPeerMessage('你愿意今天一起去看星星吗？');
+  replyFor = () => '嗯';
+  const repeatRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  const repeatRows = msgsOf(repeatFid).slice(1);
+  check('P1. 同一 run 的短确认不重复灌入历史，空转仍由现有 stall 熔断',
+    repeatRun.stopReason === 'low-info-stall' && repeatRun.turns === 1 &&
+    CALLS.length === 3 && repeatRows.length === 1 && repeatRows[0].content === '嗯');
+
+  reset();
+  const continuationTexts = [
+    '我把温度读数抄错了。',
+    '刚才是湿度，不是温度。',
+    '我先去核对第一份记录。',
+    '我再确认一下第二份记录。'
+  ];
+  replyFor = () => control(continuationTexts[CALLS.length - 1], 'continue_self');
+  const continuation = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  const continuationRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  const continuationSenders = continuationRows.map(m => m.metadata.senderId);
+  check('P2. continue_self 可有限连续发言，同一角色硬上限为两条且不多调用',
+    continuation.turns === 4 && CALLS.length === 4 &&
+    continuationSenders.join(',') === 'friend_aaa,friend_aaa,friend_bbb,friend_bbb' &&
+    continuation.calibration.intents.total === 4 && continuation.calibration.intents.parsed === 4 &&
+    continuation.calibration.intents.fallback === 0 && continuation.calibration.intents.byIntent.continue_self === 4 &&
+    continuation.calibration.prompts.roleDmBrevity === 4 &&
+    continuation.calibration.prompts.ordinaryShortFormat === 4 && continuation.calibration.prompts.intentContract === 4 &&
+    continuation.calibration.prompts.finalUserIntentContract === 4 &&
+    continuation.calibration.messages.sameSpeakerTransitions === 2 &&
+    continuation.calibration.messages.transitions === 3 &&
+    continuation.calibration.messages.sameSpeakerRate === 2 / 3 &&
+    !continuationRows.some(m => /<role_dm_intent>/.test(m.content)),
+    { turns: continuation.turns, calls: CALLS.length, senders: continuationSenders, stopReason: continuation.stopReason, calibration: continuation.calibration });
+
+  RD.setPrefs({ autonomous: true });
+  const beforeBlockedRun = CALLS.length;
+  const blockedRepeat = await RD.startAutonomous('friend_aaa', 'friend_bbb', {
+    turns: 2, initiatorId: 'friend_bbb', skipAutonomousGate: true, force: true
+  });
+  RD.setPrefs({ autonomous: false });
+  check('P2. 两条连续发言上限跨 run 生效，不让同一发起方生成第三条',
+    blockedRepeat.stopReason === C.REASON.consecutiveCap && blockedRepeat.turns === 0 &&
+    CALLS.length === beforeBlockedRun && continuationRows.length === 4,
+    { stopReason: blockedRepeat.stopReason, turns: blockedRepeat.turns, callsBefore: beforeBlockedRun, callsAfter: CALLS.length });
+
+  reset();
+  replyFor = cfg => cfg.id === 'friend_aaa' ? control('', 'yield') : control('我听见了。', 'speak');
+  const yieldRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const yieldRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  check('P2. 无消息 yield 让对方接话，并消耗一次 run 尝试预算',
+    CALLS.length === 2 && yieldRun.turns === 1 && yieldRows.length === 1 &&
+    yieldRows[0].metadata.senderId === 'friend_bbb' && yieldRun.stopReason === C.REASON.maxTurns &&
+    yieldRun.calibration.intents.total === 2 && yieldRun.calibration.intents.parsed === 2 &&
+    yieldRun.calibration.intents.byIntent.yield === 1 && yieldRun.calibration.intents.byIntent.speak === 1);
+
+  reset();
+  replyFor = () => control('', 'yield');
+  const silentRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 6, force: true });
+  check('P2. 连续无消息 yield 受空转熔断约束且不写空消息',
+    CALLS.length === C.STALL_LIMIT && silentRun.turns === 0 &&
+    silentRun.stopReason === C.REASON.silentStall &&
+    silentRun.calibration.intents.total === C.STALL_LIMIT && silentRun.calibration.intents.parsed === C.STALL_LIMIT &&
+    msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb')).length === 0);
+
+  reset();
+  replyFor = () => control('', 'end');
+  const emptyEnd = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  check('P2. 空正文 end 是自然结束而非 empty-output，且只消耗当前尝试',
+    CALLS.length === 1 && emptyEnd.turns === 0 && emptyEnd.stopReason === C.REASON.naturalEnd &&
+    emptyEnd.reason === C.REASON.naturalEnd && emptyEnd.calibration.intents.byIntent.end === 1 &&
+    emptyEnd.calibration.naturalEnd === true && msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb')).length === 0);
+
+  reset();
+  replyFor = () => control('我先去核对记录，晚点再聊。', 'end');
+  const finalEnd = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  const finalRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  check('P2. 带收尾正文的 end 只持久化一条最终消息后自然结束',
+    CALLS.length === 1 && finalEnd.turns === 1 && finalEnd.stopReason === C.REASON.naturalEnd &&
+    finalRows.length === 1 && finalRows[0].content === '我先去核对记录，晚点再聊。' &&
+    finalEnd.calibration.intents.parsed === 1 && finalEnd.calibration.naturalEnd === true);
+
+  reset();
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? '我先说一句。\n<role_dm_intent>interject</role_dm_intent>'
+    : control('我也这么想。', 'speak');
+  const badIntentRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const badIntentRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  check('P2. 畸形意图剥离标记并回退旧式交替，不多重试',
+    CALLS.length === 2 && badIntentRun.turns === 2 &&
+    badIntentRows.map(m => m.metadata.senderId).join(',') === 'friend_aaa,friend_bbb' &&
+    badIntentRows.every(m => m.content.indexOf('role_dm_intent') < 0) &&
+    badIntentRun.calibration.intents.total === 2 && badIntentRun.calibration.intents.parsed === 1 &&
+    badIntentRun.calibration.intents.fallback === 1 && badIntentRun.calibration.intents.parseRate === 0.5 &&
+    badIntentRun.calibration.intents.fallbackReasons.malformed === 1);
+
+  reset();
+  const abortController = new AbortController();
+  let abortCalls = 0;
+  replyFor = () => {
+    abortCalls++;
+    if (abortCalls === 2) abortController.abort();
+    return control(abortCalls === 1 ? '这一条已经说完。' : '停止后返回的迟到结果。', 'speak');
+  };
+  const stoppedRun = await RD.start('friend_aaa', 'friend_bbb', {
+    turns: 4, force: true, signal: abortController.signal
+  });
+  const stoppedRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  check('P2. Stop 在 provider 返回前触发时丢弃迟到候选，保留此前已提交消息',
+    stoppedRun.stopReason === C.REASON.aborted && stoppedRun.turns === 1 &&
+    stoppedRows.length === 1 && stoppedRows[0].content === '这一条已经说完。' &&
+    stoppedRows.every(m => m.content.indexOf('停止后返回的迟到结果') < 0));
+
+  reset();
+  const liveLongMessage = '昨晚录歌到很晚，副歌终于唱顺了。Live 现场的返送有点糟，我回来耳朵还嗡嗡响。Demo 我留了两个版本，等你有空再听。你最近怎么样？';
+  const p32Fid = await seedPeerMessage(liveLongMessage);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('录歌这段总算磨顺了，恭喜你。\n[[quote:Q1.1]]\n[[ib:message]]\nLive 返送那样确实挺折腾，耳鸣后来好些没？\n[[quote:Q1.2]]\n[[ib:message]]\nDemo 留两版挺好，最近你也还好吗？\n[[quote:Q1.3]]', 'speak')
+    : control('我好多了，等你有空一起听 Demo。', 'end');
+  const p32Run = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const p32Rows = msgsOf(p32Fid);
+  const p32Source = p32Rows[0];
+  const p32Replies = p32Rows.slice(1);
+  const p32Reloaded = await RD.threadDetail(p32Fid);
+  const p32FirstTurnId = ROLE_DM_DELIVERY.trace().filter(ev => ev.conversationId === 'role-dm:' + p32Fid && ev.state === 'delivered')[0].turnId;
+  const p32FirstTurnDeliveries = ROLE_DM_DELIVERY.trace().filter(ev => ev.turnId === p32FirstTurnId && ev.state === 'delivered');
+  check('P3.2. one generation creates three independently quoted bubbles plus one peer reply with no extra provider calls',
+    CALLS.length === 2 && p32Run.modelTurns === 2 && p32Run.turns === 4 && p32Replies.length === 4
+      && p32Replies.slice(0, 3).map(m => m.content).join('|') === '录歌这段总算磨顺了，恭喜你。|Live 返送那样确实挺折腾，耳鸣后来好些没？|Demo 留两版挺好，最近你也还好吗？'
+      && p32Replies[0].metadata.senderId === 'friend_aaa' && p32Replies[1].metadata.senderId === 'friend_aaa'
+      && p32Replies[2].metadata.senderId === 'friend_aaa' && p32Replies[3].metadata.senderId === 'friend_bbb'
+      && p32Replies[0].metadata.replyQuote.snippet === '昨晚录歌到很晚，副歌终于唱顺了。'
+      && p32Replies[1].metadata.replyQuote.snippet === 'Live 现场的返送有点糟，我回来耳朵还嗡嗡响。'
+      && p32Replies[2].metadata.replyQuote.snippet === 'Demo 我留了两个版本，等你有空再听。'
+      && p32Replies.slice(0, 3).every(m => m.metadata.replyQuote.sourceMessageId === p32Source.id
+        && m.metadata.replyQuote.sourceSenderKey === 'role:friend_bbb'),
+    { calls: CALLS.length, turns: p32Run.turns, modelTurns: p32Run.modelTurns, messages: p32Replies.length });
+  check('P3.2. explicit prompt protocol reaches the provider and calibration reports only aggregate delivery facts',
+    CALLS[0].messages[0].content.indexOf('[[ib:message]]') >= 0
+      && p32Run.calibration.prompts.messageProtocol === p32Run.modelTurns
+      && p32Run.calibration.delivery.generatedTurns === 2
+      && p32Run.calibration.delivery.multiMessageTurns === 1
+      && p32Run.calibration.delivery.messagesGenerated === 4
+      && p32Run.calibration.delivery.messagesDelivered === 4
+      && p32Run.calibration.delivery.formatFallbacks === 0
+      && p32Run.calibration.quotes.applied === 3
+      && !/昨晚录歌|Q1\.1|sourceMessageId|snippet|credential/.test(JSON.stringify({ delivery: p32Run.calibration.delivery, quotes: p32Run.calibration.quotes })),
+    { prompts: p32Run.calibration.prompts, delivery: p32Run.calibration.delivery, quotes: p32Run.calibration.quotes });
+  const p32Prompt = String(CALLS[0].messages[0].content || '');
+  check('P3.3. Role DM natural rhythm guidance is optional and preserves the existing bubble protocol',
+    p32Prompt.indexOf('【可选的自然聊天节奏】') >= 0
+      && p32Prompt.indexOf('“嗯”') >= 0 && p32Prompt.indexOf('“好”') >= 0 && p32Prompt.indexOf('“哈哈”') >= 0
+      && p32Prompt.indexOf('不必每轮拆分') >= 0
+      && p32Prompt.indexOf('不要为了显得自然或凑气泡数') >= 0
+      && p32Prompt.indexOf('多条消息必须用单独一行 [[ib:message]] 分隔') >= 0,
+    { hasOptionalRhythm: p32Prompt.indexOf('【可选的自然聊天节奏】') >= 0,
+      hasExistingSeparator: p32Prompt.indexOf('[[ib:message]]') >= 0 });
+  check('P3.2. existing Delivery Runtime sends strictly in order with a real inter-message interval',
+    p32FirstTurnDeliveries.map(ev => ev.sequenceIndex).join(',') === '0,1,2'
+      && p32FirstTurnDeliveries[1].at > p32FirstTurnDeliveries[0].at
+      && p32FirstTurnDeliveries[2].at > p32FirstTurnDeliveries[1].at);
+  check('P3.2. history reload preserves message order and all three verified quote pointers',
+    p32Reloaded.messages.slice(1).map(m => m.id).join(',') === p32Replies.map(m => m.id).join(',')
+      && p32Reloaded.messages.slice(1, 4).every(m => m.replyQuote && m.replyQuote.sourceMessageId === p32Source.id));
+
+  reset();
+  const boundedMemoryFid = await seedPeerMessage(liveLongMessage);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('录歌已经收好了。[[ib:message]]Live 现场有点吵。[[ib:message]]Demo 下次给你听。<role_dm_memo importance="10">录歌、Live 和 Demo 的讨论值得保留。</role_dm_memo>', 'speak')
+    : control('最近还不错，谢谢你问。', 'speak');
+  const boundedMemoryRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('P3.2. three bubbles do not consume extra turn budget or make one generation meet Memory minimum turns',
+    CALLS.length === 2 && boundedMemoryRun.modelTurns === 2 && boundedMemoryRun.turns === 4
+      && boundedMemoryRun.calibration.delivery.multiMessageTurns === 1
+      && Object.keys(DB.memories || {}).length === 0
+      && boundedMemoryRun.memory.details.some(d => d.roleId === 'friend_aaa' && d.skipped === 'too-short')
+      && msgsOf(boundedMemoryFid).slice(1).every(m => m.content.indexOf('role_dm_memo') < 0));
+
+  reset();
+  let continuationGen = { friend_aaa: 0, friend_bbb: 0 };
+  const continuationBodies = {
+    friend_aaa: [
+      ['录音棚门口那盏灯亮到凌晨，我把最后一句唱了七遍才收工。', '今晚的排练提前结束了，我终于有空去吃点热的。'],
+      ['我把海边那段旋律删了又重录，最后决定保留第一版。', '下班路上突然想起你上次说的电影，我准备周末补完。']
+    ],
+    friend_bbb: [
+      ['Demo 的两个版本我都导出来了，明天白天再对一下音轨。', ' Live 现场的耳返我会换一副，刚才那种延迟太明显了。'],
+      ['今天排练的时候鼓点突然快了一拍，大家都笑场了。', '我刚买了新的耳机，低音听起来比之前清楚很多。']
+    ]
+  };
+  replyFor = cfg => {
+    const generation = ++continuationGen[cfg.id];
+    return control(continuationBodies[cfg.id][generation - 1].join('[[ib:message]]'), 'continue_self');
+  };
+  const multiContinue = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  const multiContinueRows = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb'));
+  const multiContinueLedger = JSON.parse(localStorage.getItem(RD._keys.ledger) || '{}');
+  check('P3.2. multi-message batches count as one generation; P2 still caps each same-speaker generation streak at two',
+    CALLS.length === 4 && multiContinue.modelTurns === 4 && multiContinue.turns === 8
+      && CALLS.map(c => c.id).join(',') === 'friend_aaa,friend_aaa,friend_bbb,friend_bbb'
+      && continuationGen.friend_aaa === 2 && continuationGen.friend_bbb === 2
+      && multiContinueRows.map(m => m.metadata.senderId).join(',') === 'friend_aaa,friend_aaa,friend_aaa,friend_aaa,friend_bbb,friend_bbb,friend_bbb,friend_bbb'
+      && multiContinue.calibration.delivery.multiMessageTurns === 4
+      && multiContinueLedger.friend_aaa.length === 2 && multiContinueLedger.friend_bbb.length === 2,
+    { calls: CALLS.map(c => c.id), modelTurns: multiContinue.modelTurns, turns: multiContinue.turns,
+      generated: multiContinue.calibration.delivery, senders: multiContinueRows.map(m => m.metadata.senderId),
+      quotaEntries: { a: (multiContinueLedger.friend_aaa || []).length, b: (multiContinueLedger.friend_bbb || []).length }, gen: continuationGen });
+
+  reset();
+  const duplicateFid = await seedPeerMessage(liveLongMessage);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('這條內容只保留一次。[[ib:message]]這條內容只保留一次。', 'speak')
+    : control('我接着说另一件事。', 'end');
+  const duplicateBatch = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const duplicateBatchRows = msgsOf(duplicateFid).slice(1);
+  check('P3.2. duplicate filtering runs per message inside a batch and keeps only the first identical bubble',
+    duplicateBatch.modelTurns === 2 && duplicateBatch.turns === 2 && duplicateBatchRows.length === 2
+      && duplicateBatchRows[0].content === '這條內容只保留一次。'
+      && duplicateBatch.calibration.delivery.messagesGenerated === 3
+      && duplicateBatch.calibration.delivery.messagesDelivered === 2
+      && duplicateBatch.calibration.delivery.duplicateFiltered === 1,
+    { calls: CALLS.map(c => c.id), turns: duplicateBatch.turns, modelTurns: duplicateBatch.modelTurns,
+      rows: duplicateBatchRows.map(m => m.content), delivery: duplicateBatch.calibration.delivery,
+      checks: [duplicateBatch.modelTurns === 2, duplicateBatch.turns === 2, duplicateBatchRows.length === 2,
+        duplicateBatchRows[0] && duplicateBatchRows[0].content === '這條內容只保留一次。',
+        duplicateBatch.calibration.delivery.messagesGenerated === 3,
+        duplicateBatch.calibration.delivery.messagesDelivered === 2,
+        duplicateBatch.calibration.delivery.duplicateFiltered === 1] });
+
+  reset();
+  const malformedFid = await seedPeerMessage(liveLongMessage);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('第一条。[[ib:message]]第二条。[[ib:message]]第三条。[[ib:message]]第四条。[[quote:Q1.1]]', 'speak')
+    : control('我听到了。', 'end');
+  const malformedBatch = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const malformedRows = msgsOf(malformedFid).slice(1);
+  check('P3.2. over-limit protocol safely falls back to one plain bubble without an ambiguous quote',
+    malformedBatch.calibration.delivery.formatFallbacks === 1
+      && malformedBatch.calibration.delivery.formatFallbackReasons['too-many-messages'] === 1
+      && malformedRows.length === 2 && malformedRows[0].content.indexOf('[[ib:message]]') < 0
+      && malformedRows[0].content.indexOf('[[quote:') < 0 && !malformedRows[0].metadata.replyQuote);
+
+  reset();
+  const stopFid = await seedPeerMessage(liveLongMessage);
+  ROLE_DM_DELIVERY.reset();
+  ROLE_DM_DELIVERY = DELIVERY_RUNTIME.createDeliveryRuntime({ pacing: { baseMs: 1000, perCharMs: 0 } });
+  const deliveryAbort = new AbortController();
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('我先把录歌的部分说完。[[ib:message]]再补一句 Live 现场。[[ib:message]]最后说说 Demo。', 'speak')
+    : control('本不应再生成的回应。', 'end');
+  const stopDuringDelivery = RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true, signal: deliveryAbort.signal });
+  for (let i = 0; i < 100 && msgsOf(stopFid).length < 2; i++) await new Promise(resolve => setTimeout(resolve, 1));
+  deliveryAbort.abort();
+  const deliveryStopped = await stopDuringDelivery;
+  const stopRows = msgsOf(stopFid).slice(1);
+  check('P3.2. Stop cancels queued remainder and preserves only the already committed first bubble',
+    deliveryStopped.stopReason === C.REASON.aborted && CALLS.length === 1
+      && stopRows.length === 1 && stopRows[0].content === '我先把录歌的部分说完。'
+      && deliveryStopped.calibration.delivery.messagesDelivered === 1
+      && deliveryStopped.calibration.delivery.stoppedSequences === 1);
+
+  reset();
+  const initiativeDefault = RD.replyInitiativePrefs('friend_aaa');
+  check('P4. Initiative config defaults off with low frequency and the three optional behavior types',
+    initiativeDefault.enabled === false && initiativeDefault.frequency === 'low'
+      && initiativeDefault.types.supplement === true && initiativeDefault.types.contextLink === true
+      && initiativeDefault.types.careNudge === true);
+  const initiativeSaved = RD.setReplyInitiativePrefs('friend_aaa', {
+    enabled: true, frequency: 'invalid', types: { contextLink: true, careNudge: false }
+  });
+  check('P4. Config persists per role, normalizes invalid frequency, and merges individual type choices',
+    initiativeSaved.enabled === true && initiativeSaved.frequency === 'low'
+      && initiativeSaved.types.supplement === true && initiativeSaved.types.contextLink === true
+      && initiativeSaved.types.careNudge === false
+      && !!JSON.parse(localStorage.getItem(RD._keys.replyInitiative) || '{}').characters.friend_aaa);
+  let initiativeSeed = '';
+  for (let i = 0; i < 100 && !initiativeSeed; i++) {
+    const candidate = 'initiative-run-' + i;
+    if (RD._replyInitiativeOpportunity('friend_aaa', candidate, 'low')) initiativeSeed = candidate;
+  }
+  const initiativeGrantState = {};
+  const manualInitiative = RD._replyInitiativeForTurn('friend_aaa', 'manual', initiativeSeed, initiativeSaved, initiativeGrantState);
+  const duplicateInitiative = RD._replyInitiativeForTurn('friend_aaa', 'manual', initiativeSeed, initiativeSaved, initiativeGrantState);
+  const autonomousInitiative = RD._replyInitiativeForTurn('friend_aaa', 'autonomous', initiativeSeed, initiativeSaved, {});
+  check('P4. Low-frequency opportunity is deterministic, capped to one per role/run, and manual-only',
+    !!initiativeSeed && !!manualInitiative && duplicateInitiative === null && autonomousInitiative === null);
+  const initiativePrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], topic: '', trigger: 'manual', replyInitiative: manualInitiative
+  });
+  const initiativeSystem = String(initiativePrompt && initiativePrompt.messages[0] && initiativePrompt.messages[0].content || '');
+  check('P4. Prompt offers only configured behavior, grounds it in this DM context, and remains optional',
+    initiativeSystem.indexOf('【回复内轻量主动表达】') >= 0
+      && initiativeSystem.indexOf('回复中补充') >= 0 && initiativeSystem.indexOf('关联上下文') >= 0
+      && initiativeSystem.indexOf('轻量关心或提醒') < 0
+      && initiativeSystem.indexOf('当前上下文没有明确依据') >= 0
+      && initiativeSystem.indexOf('不声称记得未提供的经历') >= 0
+      && Object.keys(DB.chatMessages || {}).length === 0,
+    { heading: initiativeSystem.indexOf('【回复内轻量主动表达】') >= 0,
+      supplement: initiativeSystem.indexOf('回复中补充') >= 0,
+      contextLink: initiativeSystem.indexOf('关联上下文') >= 0,
+      careDisabled: initiativeSystem.indexOf('轻量关心或提醒') < 0,
+      optional: initiativeSystem.indexOf('当前上下文没有明确依据') >= 0,
+      grounded: initiativeSystem.indexOf('不声称记得未提供的经历') >= 0,
+      noMessageWrites: Object.keys(DB.chatMessages || {}).length === 0 });
+
+  reset();
+  const recentDmHistory = [
+    { id: 'ctx_b1', role: 'assistant', senderName: '昔涟', content: '我打算周六带新镜头去海边试拍。', timestamp: 1000,
+      metadata: { senderId: 'friend_bbb', recipientId: 'friend_aaa', conversationType: 'role_dm' } },
+    { id: 'ctx_a1', role: 'assistant', senderName: '星', content: '海边风大，给相机多带一块电池吧。', timestamp: 2000,
+      metadata: { senderId: 'friend_aaa', recipientId: 'friend_bbb', conversationType: 'role_dm' } },
+    { id: 'ctx_b2', role: 'assistant', senderName: '昔涟', content: '嗯，我会带上。大概下午到。', timestamp: 3000,
+      metadata: { senderId: 'friend_bbb', recipientId: 'friend_aaa', conversationType: 'role_dm' } }
+  ];
+  const contextPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: recentDmHistory, trigger: 'manual', lastPeerText: recentDmHistory[2].content
+  });
+  const contextSystem = String(contextPrompt && contextPrompt.messages[0] && contextPrompt.messages[0].content || '');
+  const contextTurns = (contextPrompt && contextPrompt.messages || []).slice(1).map(m => String(m.content || '')).join('\n');
+  check('P5. Current-thread state covers topics, answered details, natural references, and latest state without forced recap',
+    contextSystem.indexOf('【Conversation State v1 · 当前 thread】') >= 0
+      && contextSystem.indexOf('识别正在讨论的主题') >= 0 && contextSystem.indexOf('不重复询问或机械追问') >= 0
+      && contextSystem.indexOf('轻提一处近期内容') >= 0
+      && contextSystem.indexOf('不复述、回顾或机械总结') >= 0
+      && contextSystem.indexOf('较新的明确修正覆盖较早说法') >= 0
+      && contextSystem.indexOf('轻微反驳、补充、改口或插入一句短促的打断式补充') >= 0
+      && contextSystem.indexOf('每次回复至多一种，不要每轮加入或演成戏剧冲突') >= 0
+      && contextSystem.indexOf('不从其他 thread、Chat 或跨会话内容补足') >= 0);
+  check('P5. Provider history keeps current-thread turns in order and continuity adds no model or message writes',
+    contextTurns.indexOf('我打算周六带新镜头去海边试拍。') >= 0
+      && contextTurns.indexOf('海边风大，给相机多带一块电池吧。') > contextTurns.indexOf('我打算周六带新镜头去海边试拍。')
+      && contextTurns.indexOf('嗯，我会带上。大概下午到。') > contextTurns.indexOf('海边风大，给相机多带一块电池吧。')
+      && CALLS.length === 0 && Object.keys(DB.chatMessages || {}).length === 0
+      && Object.keys(DB.memories || {}).length === 0);
+  const emptySessionPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], trigger: 'manual'
+  });
+  const emptySessionText = (emptySessionPrompt && emptySessionPrompt.messages || []).map(m => String(m.content || '')).join('\n');
+  check('P5. A new thread with empty history does not inherit prior session details',
+    emptySessionText.indexOf('周六带新镜头') < 0 && emptySessionText.indexOf('下午到') < 0
+      && emptySessionText.indexOf('当前 thread 没有历史消息') >= 0);
+  const explicitTopicPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], topic: '海边摄影计划', trigger: 'manual'
+  });
+  const explicitTopicSystem = String(explicitTopicPrompt && explicitTopicPrompt.messages[0] && explicitTopicPrompt.messages[0].content || '');
+  check('P5. Empty-thread state accepts this run topic without reviving previous thread details',
+    explicitTopicSystem.indexOf('本轮明确给出的话题入口是「海边摄影计划」') >= 0
+      && explicitTopicSystem.indexOf('周六带新镜头') < 0 && explicitTopicSystem.indexOf('下午到') < 0);
+  const autonomousContextPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: recentDmHistory, trigger: 'autonomous'
+  });
+  const autonomousContextSystem = String(autonomousContextPrompt && autonomousContextPrompt.messages[0] && autonomousContextPrompt.messages[0].content || '');
+  check('P5. Existing autonomous Role DM prompt path is unchanged by manual-session continuity guidance',
+    autonomousContextSystem.indexOf('【Conversation State v1 · 当前 thread】') < 0);
+  const combinedPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: recentDmHistory, trigger: 'manual',
+    replyInitiative: { enabled: true, frequency: 'low', types: { supplement: true, contextLink: true, careNudge: false } }
+  });
+  const combinedSystem = String(combinedPrompt && combinedPrompt.messages[0] && combinedPrompt.messages[0].content || '');
+  check('P5. Initiative, natural delivery, and the existing multi-bubble protocol coexist with session context',
+    combinedSystem.indexOf('【Conversation State v1 · 当前 thread】') >= 0
+      && combinedSystem.indexOf('【回复内轻量主动表达】') >= 0
+      && combinedSystem.indexOf('【可选的自然聊天节奏】') >= 0
+      && combinedSystem.indexOf('[[ib:message]]') >= 0
+      && CALLS.length === 0 && Object.keys(DB.chatMessages || {}).length === 0);
+
+  const correctionBasisHistory = [
+    { id: 'correction_b1', role: 'assistant', senderName: '昔涟', content: '我们周日早上出发。', timestamp: 1000,
+      metadata: { senderId: 'friend_bbb', recipientId: 'friend_aaa', conversationType: 'role_dm' } },
+    { id: 'correction_a1', role: 'assistant', senderName: '星', content: '那我们周六见。', timestamp: 2000,
+      metadata: { senderId: 'friend_aaa', recipientId: 'friend_bbb', conversationType: 'role_dm' } },
+    { id: 'correction_b2', role: 'assistant', senderName: '昔涟', content: '不是周六，是周日早上。', timestamp: 3000,
+      metadata: { senderId: 'friend_bbb', recipientId: 'friend_aaa', conversationType: 'role_dm' } }
+  ];
+  const correctionPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: correctionBasisHistory, trigger: 'manual', lastPeerText: correctionBasisHistory[2].content
+  });
+  const correctionSystem = String(correctionPrompt && correctionPrompt.messages[0] && correctionPrompt.messages[0].content || '');
+  const correctionHistoryText = (correctionPrompt && correctionPrompt.messages || []).slice(1).map(m => String(m.content || '')).join('\n');
+  check('P6. Correction / Hesitation guidance is rare, optional, evidence-grounded and keeps existing message order',
+    correctionSystem.indexOf('【Correction / Hesitation v1 · 低频修正】') >= 0
+      && correctionSystem.indexOf('完全可选且低频，绝大多数回复直接自然说完') >= 0
+      && correctionSystem.indexOf('当前 thread 的明确原文') >= 0
+      && correctionSystem.indexOf('不编造先前错误、反悔或新事实') >= 0
+      && correctionSystem.indexOf('一次回复最多出现一处修正') >= 0
+      && correctionSystem.indexOf('先说原表达再紧接更正') >= 0
+      && correctionSystem.indexOf('[[ib:message]]') >= 0
+      && correctionHistoryText.indexOf('我们周日早上出发。') < correctionHistoryText.indexOf('那我们周六见。')
+      && correctionHistoryText.indexOf('那我们周六见。') < correctionHistoryText.indexOf('不是周六，是周日早上。')
+      && CALLS.length === 0 && Object.keys(DB.chatMessages || {}).length === 0
+      && Object.keys(DB.memories || {}).length === 0);
+  const noContextCorrectionPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', null, {
+    history: [], trigger: 'manual'
+  });
+  const noContextCorrectionText = (noContextCorrectionPrompt && noContextCorrectionPrompt.messages || []).map(m => String(m.content || '')).join('\n');
+  check('P6. Empty thread does not invent an earlier error or carry correction state across sessions',
+    noContextCorrectionText.indexOf('当前 thread 没有历史消息') >= 0
+      && noContextCorrectionText.indexOf('空 thread 不假设有旧说法') >= 0
+      && noContextCorrectionText.indexOf('我们周日早上出发。') < 0
+      && noContextCorrectionText.indexOf('不是周六，是周日早上。') < 0
+      && CALLS.length === 0 && Object.keys(DB.chatMessages || {}).length === 0);
+
+  reset();
+  const correctionFid = await seedPeerMessage('我们周日早上出发。');
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('那我们周六早上见。', 'speak')
+    : control('日期是周日早上，不是周六。', 'end');
+  const correctionSetup = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const setupRows = msgsOf(correctionFid);
+  replyFor = cfg => cfg.id === 'friend_aaa'
+    ? control('啊，我把日期记成周六了——不，是周日早上。[[ib:message]]那我们按周日早上出发。', 'speak')
+    : control('对，周日早上。', 'end');
+  const correctionRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  replyFor = null;
+  const correctionRows = msgsOf(correctionFid).slice(setupRows.length);
+  check('P6. A context-backed correction uses normal bubbles in natural order without new protocol fields or Memory writes',
+    correctionSetup.ok === true && correctionRun.ok === true && correctionRows.length === 3
+      && correctionRows.map(m => m.metadata.senderId).join(',') === 'friend_aaa,friend_aaa,friend_bbb'
+      && correctionRows[0].content === '啊，我把日期记成周六了——不，是周日早上。'
+      && correctionRows[1].content === '那我们按周日早上出发。'
+      && correctionRows[2].content === '对，周日早上。'
+      && correctionRun.calibration.delivery.messagesDelivered === 3
+      && correctionRows.every(m => !('correction' in m) && !('hesitation' in m)
+        && !('correction' in (m.metadata || {})) && !('hesitation' in (m.metadata || {})))
+      && Object.keys(DB.memories || {}).length === 0,
+    { setupOk: correctionSetup.ok, runOk: correctionRun.ok, messages: correctionRows.map(m => m.content),
+      senders: correctionRows.map(m => m.metadata.senderId), delivery: correctionRun.calibration.delivery,
+      memories: Object.keys(DB.memories || {}).length });
+
+  const sceneDetailBefore = await RD.threadDetail(correctionFid);
+  const sceneMessageBefore = msgsOf(correctionFid).map(m => ({ id: m.id, content: m.content }));
+  const sceneUpdate = RD.updateSceneMetadata(correctionFid, {
+    title: '周日排练', tags: ['排练', '周末', '排练', ''].concat(Array.from({ length: 9 }, (_, i) => '标签' + i)),
+    playback: { voiceMode: 'text', textPacing: 'fast' }
+  });
+  const sceneDetailAfter = await RD.threadDetail(correctionFid);
+  const threadIndexAfterScene = JSON.parse(localStorage.getItem(RD._keys.threads) || '{}');
+  const storedSceneThread = threadIndexAfterScene.items && threadIndexAfterScene.items[correctionFid];
+  const sceneMessageAfter = msgsOf(correctionFid).map(m => ({ id: m.id, content: m.content }));
+  check('P7. Scene metadata stays on the existing thread index and derives participant/time without duplicating messages',
+    !Object.prototype.hasOwnProperty.call(sceneDetailBefore.thread, 'scene')
+      && sceneDetailBefore.scene.title === sceneDetailBefore.participants.map(p => p.name).join(' × ')
+      && sceneDetailBefore.scene.createdAt === sceneDetailBefore.thread.createdAt
+      && sceneDetailBefore.scene.participants.map(p => p.id).join(',') === sceneDetailBefore.thread.participantIds.join(',')
+      && sceneUpdate.ok === true && sceneDetailAfter.scene.title === '周日排练'
+      && sceneDetailAfter.scene.tags.length === 8 && sceneDetailAfter.scene.tags[0] === '排练'
+      && sceneDetailAfter.scene.playback.voiceMode === 'text' && sceneDetailAfter.scene.playback.textPacing === 'fast'
+      && sceneDetailAfter.scene.createdAt === sceneDetailBefore.thread.createdAt
+      && !!storedSceneThread && storedSceneThread.scene.title === '周日排练'
+      && JSON.stringify(sceneMessageAfter) === JSON.stringify(sceneMessageBefore)
+      && msgsOf(correctionFid).every(m => !('scene' in m) && !('scene' in (m.metadata || {})))
+      && !Object.keys(DB).some(key => /scene/i.test(key)),
+    { scene: sceneDetailAfter.scene, messageCount: sceneMessageAfter.length, stores: Object.keys(DB) });
+  const sceneExport = RD.exportSceneData(correctionFid);
+  const sceneFile = sceneExport && sceneExport.data;
+  const sceneFileText = JSON.stringify(sceneFile || {});
+  check('P8. Scene export contains only versioned Scene metadata, role references, and Replay settings',
+    sceneExport.ok === true && sceneFile.format === 'internalbeyond.role-dm-scene' && sceneFile.version === 1
+      && sceneFile.participants.map(p => p.roleId).join(',') === sceneDetailAfter.thread.participantIds.join(',')
+      && sceneFile.scene.title === sceneDetailAfter.scene.title
+      && JSON.stringify(sceneFile.scene.tags) === JSON.stringify(sceneDetailAfter.scene.tags)
+      && sceneFile.scene.createdAt === sceneDetailAfter.scene.createdAt
+      && sceneFile.scene.playback.voiceMode === 'text' && sceneFile.scene.playback.textPacing === 'fast'
+      && !Object.prototype.hasOwnProperty.call(sceneFile, 'threadId')
+      && !/api.?key|credential|token|chatMessages|threadMemorandum|memories|messages/i.test(sceneFileText)
+      && sceneMessageBefore.every(m => !sceneFileText.includes(m.content)),
+    { exportOk: sceneExport.ok, keys: sceneFile && Object.keys(sceneFile), containsMessage: sceneMessageBefore.some(m => sceneFileText.includes(m.content)) });
+  const sceneImportConflict = await RD.importSceneData(sceneFile);
+  const detailAfterConflict = await RD.threadDetail(correctionFid);
+  check('P8. Import refuses an existing thread and leaves its messages and Scene untouched',
+    sceneImportConflict.ok === false && sceneImportConflict.reason === 'thread-exists'
+      && JSON.stringify(detailAfterConflict.scene) === JSON.stringify(sceneDetailAfter.scene)
+      && JSON.stringify(detailAfterConflict.messages.map(m => ({ id: m.id, content: m.content }))) === JSON.stringify(sceneDetailAfter.messages.map(m => ({ id: m.id, content: m.content }))));
+  const badSceneVersion = await RD.importSceneData(Object.assign({}, sceneFile, { version: 2 }));
+  const messageBearingScene = await RD.importSceneData(Object.assign({}, sceneFile, { messages: [{ content: 'must not import' }] }));
+  check('P8. Import validates format version and rejects any embedded message content',
+    badSceneVersion.ok === false && badSceneVersion.reason === 'unsupported-scene-version'
+      && messageBearingScene.ok === false && messageBearingScene.reason === 'message-data-not-allowed');
+  const badScenePlayback = RD.updateSceneMetadata(correctionFid, { playback: { voiceMode: 'unknown', textPacing: 'slow' } });
+  check('P7. Scene playback options fail safely to the existing automatic/natural defaults',
+    badScenePlayback.ok === true && badScenePlayback.scene.playback.voiceMode === 'auto'
+      && badScenePlayback.scene.playback.textPacing === 'natural');
+  const sceneClear = await RD.clearThread(correctionFid);
+  const clearedSceneDetail = await RD.threadDetail(correctionFid);
+  check('P7. Clearing a thread resets its Scene metadata and playback settings with the history',
+    sceneClear.ok === true && clearedSceneDetail.messages.length === 0
+      && clearedSceneDetail.scene.title !== '周日排练' && clearedSceneDetail.scene.tags.length === 0
+      && clearedSceneDetail.scene.playback.voiceMode === 'auto'
+      && clearedSceneDetail.scene.playback.textPacing === 'natural'
+      && Object.keys(DB.memories || {}).length === 0);
+  const sceneDelete = await RD.deleteThread(correctionFid);
+  const indexAfterSceneDelete = JSON.parse(localStorage.getItem(RD._keys.threads) || '{}');
+  check('P7. Deleting a thread removes its embedded Scene with the thread record',
+    sceneDelete.ok === true && !(indexAfterSceneDelete.items && indexAfterSceneDelete.items[correctionFid])
+      && (await RD.threadDetail(correctionFid)) === null);
+  const sceneImport = await RD.importSceneData(sceneFile);
+  const importedSceneDetail = sceneImport.ok ? await RD.threadDetail(sceneImport.threadId) : null;
+  check('P8. Import recreates Scene metadata and Replay configuration on a new empty thread only',
+    sceneImport.ok === true && sceneImport.created === true && importedSceneDetail && importedSceneDetail.messages.length === 0
+      && importedSceneDetail.scene.title === sceneDetailAfter.scene.title
+      && JSON.stringify(importedSceneDetail.scene.tags) === JSON.stringify(sceneDetailAfter.scene.tags)
+      && importedSceneDetail.scene.createdAt === sceneDetailAfter.scene.createdAt
+      && importedSceneDetail.scene.playback.voiceMode === sceneDetailAfter.scene.playback.voiceMode
+      && importedSceneDetail.scene.playback.textPacing === sceneDetailAfter.scene.playback.textPacing
+      && Object.keys(DB.memories || {}).length === 0
+      && !msgsOf(sceneImport.threadId).length);
+  const overwriteAttempt = await RD.importSceneData(Object.assign({}, sceneFile, { scene: Object.assign({}, sceneFile.scene, { title: '覆盖现有场景' }) }));
+  const importedAfterConflict = await RD.threadDetail(sceneImport.threadId);
+  check('P8. Re-import cannot overwrite an already imported thread',
+    overwriteAttempt.ok === false && overwriteAttempt.reason === 'thread-exists'
+      && importedAfterConflict.scene.title === sceneDetailAfter.scene.title && importedAfterConflict.messages.length === 0);
+  await RD.deleteThread(sceneImport.threadId);
+  const missingRoleFile = JSON.parse(JSON.stringify(sceneFile));
+  missingRoleFile.participants[1].roleId = 'friend_missing';
+  missingRoleFile.scene.playback.voiceMode = 'auto';
+  const degradedImport = await RD.importSceneData(missingRoleFile);
+  const degradedSceneDetail = degradedImport.ok ? await RD.threadDetail(degradedImport.threadId) : null;
+  check('P8. Missing role and Voice profiles degrade to a readable Scene without messages or Memory writes',
+    degradedImport.ok === true && degradedImport.missingRoles.indexOf('friend_missing') >= 0
+      && degradedImport.missingVoiceProfiles.indexOf('friend_aaa') >= 0
+      && degradedSceneDetail && degradedSceneDetail.participants.some(p => p.id === 'friend_missing' && p.missing)
+      && degradedSceneDetail.scene.playback.voiceMode === 'auto' && degradedSceneDetail.messages.length === 0
+      && Object.keys(DB.memories || {}).length === 0);
+  if (degradedImport.ok) await RD.deleteThread(degradedImport.threadId);
+
+  reset();
+  const oldTopic = '上次会话遗留的海边拍摄计划';
+  await RD.resolveThread('friend_aaa', 'friend_bbb', { topic: oldTopic });
+  const clearedContextFid = await seedPeerMessage('上次聊到周六要带新镜头出门。');
+  const clearContextResult = await RD.clearThread(clearedContextFid);
+  const clearedContextThread = RD._threadsAll().find(t => t.threadId === clearedContextFid);
+  const clearedContextPrompt = await RD._composeSide('friend_aaa', 'friend_bbb', clearedContextThread, {
+    history: await RD._loadMessages(clearedContextFid), topic: clearedContextThread && clearedContextThread.topic || '',
+    trigger: 'manual'
+  });
+  const clearedContextText = (clearedContextPrompt && clearedContextPrompt.messages || []).map(m => String(m.content || '')).join('\n');
+  check('P5. Clearing a thread removes its short-term topic state together with the message history',
+    clearContextResult && clearContextResult.ok === true && clearedContextThread && clearedContextThread.topic === ''
+      && clearedContextText.indexOf(oldTopic) < 0 && clearedContextText.indexOf('周六要带新镜头') < 0
+      && clearedContextText.indexOf('当前 thread 没有历史消息') >= 0
+      && Object.keys(DB.memories || {}).length === 0);
 }
 
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);

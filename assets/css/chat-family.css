@@ -1,0 +1,709 @@
+﻿/*
+ * P36-VL-D4.1-B · full Chat core adoption.
+ * This file is scoped to #page-chat. The mini Chat host and feature-owned overlays remain compatible.
+ */
+
+/* Conversation identity is the primary header; the existing tool row stays available below it. */
+#page-chat .chat-context-primitives {
+  min-inline-size: 0;
+  padding-block: var(--ib-token-space-sm);
+}
+
+#page-chat .chat-context-primitives .ib-page-header {
+  align-items: center;
+  gap: var(--ib-token-density-standard-control-gap);
+  min-inline-size: 0;
+  margin-block-end: 0;
+}
+
+#page-chat .chat-conversation-context .ib-page-header__title {
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-section-title);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-conversation-context .ib-page-header__supporting {
+  margin-block-start: var(--ib-token-space-xs);
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-meta);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-conversation-context .ib-page-header__actions[hidden] {
+  display: none;
+}
+
+#page-chat .chat-conversation-context .ib-page-header__actions {
+  display: none;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+#page-chat .chat-conversation-picker {
+  display: none;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+#page-chat .chat-conversation-picker[hidden] {
+  display: none;
+}
+
+#page-chat .chat-conversation-picker select {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Search and existing contextual actions remain visible as secondary page chrome. */
+#page-chat .chat-full-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ib-token-space-sm);
+  min-inline-size: 0;
+  padding-block: var(--ib-token-space-sm);
+  border-block-end: 1px solid var(--ib-token-boundary-subtle);
+}
+
+#page-chat .chat-full-search {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+#page-chat .chat-full-search input {
+  min-block-size: 44px;
+  color: var(--ib-token-input-content);
+  font: var(--ib-token-text-body);
+  background: var(--ib-token-input-bg);
+  border-color: var(--ib-token-input-boundary);
+  border-radius: var(--ib-token-radius-control);
+}
+
+#page-chat .chat-full-search input:focus {
+  border-color: var(--ib-token-input-focus);
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .chat-full-search input:focus-visible {
+  outline: var(--ib-token-focus-ring-width) solid var(--ib-token-focus-ring);
+  outline-offset: var(--ib-token-focus-ring-offset);
+}
+
+#page-chat .chat-header-tools {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  gap: var(--ib-token-space-sm);
+}
+
+/* The stream stays transparent. Speaker relation is carried by position and identity. */
+#page-chat .chat-full-body {
+  gap: var(--ib-token-space-lg);
+  padding-block: var(--ib-token-space-lg);
+  min-inline-size: 0;
+}
+
+#page-chat .chat-main-area {
+  min-inline-size: 0;
+}
+
+#page-chat .chat-messages {
+  min-inline-size: 0;
+  gap: var(--ib-token-density-standard-control-gap);
+  padding: var(--ib-token-space-md) var(--ib-token-space-lg);
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-surface);
+  border: 0;
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .chat-msg.user,
+#page-chat .chat-msg.ai {
+  max-inline-size: min(76ch, 92%);
+  min-inline-size: 0;
+  padding-block: var(--ib-token-space-xs);
+  padding-inline: 0;
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-body);
+  background: var(--ib-token-surface);
+  border: 0;
+  box-shadow: var(--ib-token-elevation-none);
+  overflow-wrap: anywhere;
+  animation: none;
+}
+
+#page-chat .chat-msg.ai.chat-msg-avatared {
+  max-inline-size: calc(100% - var(--ib-token-space-xxxl) - var(--ib-token-space-xs));
+  margin-inline-start: calc(var(--ib-token-space-xxxl) + var(--ib-token-space-xs));
+}
+
+#page-chat .chat-msg.user.chat-msg-avatared {
+  max-inline-size: calc(100% - var(--ib-token-space-xxxl) - var(--ib-token-space-xs));
+  margin-inline-end: calc(var(--ib-token-space-xxxl) + var(--ib-token-space-xs));
+}
+
+#page-chat .chat-msg .r-text {
+  min-inline-size: 0;
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-body);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-msg-header {
+  gap: var(--ib-token-space-sm);
+  margin-block-end: var(--ib-token-space-xs);
+  color: var(--ib-token-content-primary);
+  animation: none;
+}
+
+#page-chat .chat-msg-header .r-head-name {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-meta);
+  letter-spacing: normal;
+}
+
+#page-chat .chat-msg-header .r-time,
+#page-chat .chat-msg-cont-time {
+  color: var(--ib-token-content-muted);
+  font: var(--ib-token-text-meta);
+  opacity: 1;
+}
+
+#page-chat .chat-msg.ai.chat-msg-avatared .chat-msg-avatar,
+#page-chat .chat-msg.user.chat-msg-avatared .chat-msg-avatar {
+  background: var(--ib-token-surface);
+  border-color: var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-round);
+}
+
+#page-chat .chat-msg.system {
+  max-inline-size: 100%;
+  padding-block: var(--ib-token-space-xs);
+  padding-inline: 0;
+  color: var(--ib-token-content-muted);
+  font: var(--ib-token-text-meta);
+  background: var(--ib-token-surface);
+  border: 0;
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+/* Existing supported content keeps its renderer and interactions inside the turn. */
+#page-chat .md-rendered .r-text pre.md-cb {
+  max-inline-size: 100%;
+  overflow-x: auto;
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-technical);
+  background: var(--ib-token-surface);
+  border-color: var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .md-rendered .r-text pre.md-cb code {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-technical);
+}
+
+#page-chat .md-rendered .r-text table {
+  display: block;
+  max-inline-size: 100%;
+  overflow-x: auto;
+}
+
+#page-chat .chat-bubble-img {
+  max-inline-size: 100%;
+  border-color: var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+}
+
+#page-chat .chat-file-card {
+  max-inline-size: 100%;
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-surface);
+  border-color: var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .chat-file-card-name {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-body);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-file-card-meta {
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-meta);
+}
+
+/* Empty states are short, truthful stream content, not a card or welcome panel. */
+#page-chat .chat-empty-state {
+  display: grid;
+  justify-items: start;
+  gap: var(--ib-token-space-sm);
+  max-inline-size: 76ch;
+  min-inline-size: 0;
+  margin-block-start: var(--ib-token-space-xxl);
+  color: var(--ib-token-content-primary);
+}
+
+#page-chat .chat-empty-state__title,
+#page-chat .chat-empty-state__supporting {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-empty-state__title {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-section-title);
+}
+
+#page-chat .chat-empty-state__supporting {
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-body);
+}
+
+#page-chat .chat-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ib-token-space-sm);
+  min-inline-size: 0;
+  margin-block-start: var(--ib-token-space-sm);
+  background: var(--ib-token-surface);
+}
+
+#page-chat .chat-history-unavailable .ib-inline-status {
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-surface);
+}
+
+/* C2 · Failure copy stays with its owning Composer or message; the error model stays IBERR-owned. */
+#page-chat .chat-composer-feedback {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-message-error,
+#chat-panel .chat-message-error {
+  display: grid;
+  gap: var(--ib-token-space-xs);
+  max-inline-size: 76ch;
+  min-inline-size: 0;
+  margin-block: var(--ib-token-space-sm);
+  padding-block: var(--ib-token-space-xs);
+  padding-inline-start: var(--ib-token-space-sm);
+  color: var(--ib-token-content-primary);
+  overflow-wrap: anywhere;
+  background: var(--ib-token-surface);
+  border-inline-start: 2px solid var(--ib-token-status-danger);
+}
+
+#page-chat .chat-message-error__title,
+#chat-panel .chat-message-error__title {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-meta);
+}
+
+#page-chat .chat-message-error__message,
+#page-chat .chat-message-error__suggestion,
+#chat-panel .chat-message-error__message,
+#chat-panel .chat-message-error__suggestion {
+  margin: 0;
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-body);
+}
+
+#page-chat .chat-message-error__actions,
+#chat-panel .chat-message-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ib-token-space-sm);
+  min-inline-size: 0;
+}
+
+#chat-panel .chat-composer-feedback {
+  flex: 0 0 100%;
+  min-inline-size: 0;
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-meta);
+  overflow-wrap: anywhere;
+}
+
+/* C1 · Runtime-backed activity is concise text beside its owning turn. */
+#page-chat .chat-typing .typing-sec {
+  display: none;
+}
+
+#page-chat .chat-stream-activity {
+  align-self: flex-start;
+  max-inline-size: 76ch;
+  min-inline-size: 0;
+  padding-block-end: var(--ib-token-space-xs);
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-meta);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-stream-cursor::after {
+  animation: none;
+  opacity: 0.65;
+}
+
+#page-chat .chat-thinking-toggle {
+  transition: background-color var(--ib-token-motion-state) var(--ib-token-motion-easing-standard),
+    color var(--ib-token-motion-state) var(--ib-token-motion-easing-standard);
+}
+
+#page-chat .chat-thinking-toggle .think-arrow {
+  transition: transform var(--ib-token-motion-state) var(--ib-token-motion-easing-standard);
+}
+
+#page-chat .chat-thinking-wrap.expanded .chat-thinking-body {
+  animation: none;
+}
+
+/* Composer uses native input semantics and the frozen Foundation Control styles. */
+#page-chat .chat-input-area.ib-primitives {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: var(--ib-token-space-sm);
+  min-inline-size: 0;
+  padding: var(--ib-token-space-md) var(--ib-token-space-lg);
+  background: var(--ib-token-surface);
+  border-block-start: 1px solid var(--ib-token-boundary-subtle);
+}
+
+#page-chat .chat-composer-field {
+  display: grid;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  gap: 0;
+  padding: 0;
+  background: var(--ib-token-surface);
+  border: 0;
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .chat-composer-label {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+#page-chat .chat-composer-field textarea.chat-input {
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--ib-token-space-sm) var(--ib-token-space-md);
+  color: var(--ib-token-input-content);
+  font: var(--ib-token-text-body);
+  background: var(--ib-token-input-bg);
+  border: 1px solid var(--ib-token-input-boundary);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-none);
+  overflow-wrap: anywhere;
+}
+
+#page-chat .chat-composer-field textarea.chat-input:focus {
+  border-color: var(--ib-token-input-focus);
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .chat-composer-field textarea.chat-input:focus-visible {
+  outline: var(--ib-token-focus-ring-width) solid var(--ib-token-focus-ring);
+  outline-offset: var(--ib-token-focus-ring-offset);
+}
+
+#page-chat .chat-voice-btn.recording {
+  color: var(--ib-token-status-danger);
+  background: var(--ib-token-surface);
+  border-color: var(--ib-token-status-danger);
+}
+
+#page-chat .ib-sticker-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-body);
+  background: var(--ib-token-surface);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-none);
+}
+
+#page-chat .ib-sticker-btn:hover {
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-surface-interactive);
+}
+
+#page-chat .ib-sticker-btn:focus-visible {
+  outline: var(--ib-token-focus-ring-width) solid var(--ib-token-focus-ring);
+  outline-offset: var(--ib-token-focus-ring-offset);
+}
+
+@media (max-width: 760px) {
+  #page-chat .chat-context-primitives .ib-page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #page-chat .chat-conversation-context .ib-page-header__actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #page-chat .chat-conversation-picker:not([hidden]) {
+    display: grid;
+    inline-size: 100%;
+  }
+
+  #page-chat .chat-full-header {
+    align-items: stretch;
+  }
+
+  #page-chat .chat-full-search {
+    flex: 1 1 100%;
+    inline-size: 100%;
+  }
+
+  #page-chat .chat-full-search input {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  #page-chat .chat-header-tools {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  #page-chat .chat-input-area.ib-primitives {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  #page-chat .chat-composer-field {
+    order: 0;
+    flex: 1 1 calc(100% - 44px - var(--ib-token-space-sm));
+  }
+
+  #page-chat #chat-send-full,
+  #page-chat #chat-stop-full {
+    order: 1;
+  }
+
+  #page-chat .chat-attach-btn {
+    order: 2;
+  }
+
+  #page-chat .ib-sticker-btn {
+    order: 3;
+  }
+
+  #page-chat #chat-voice-full {
+    order: 4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #page-chat .chat-stream-cursor::after,
+  #page-chat .chat-thinking-toggle,
+  #page-chat .chat-thinking-toggle .think-arrow,
+  #page-chat .chat-thinking-wrap.expanded .chat-thinking-body {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* C3 · Keep one high-frequency action visible and place destructive work in a native contextual Popover. */
+.chat-msg-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ib-token-space-xs);
+  inline-size: max-content;
+  max-inline-size: 100%;
+  margin-block-start: var(--ib-token-space-xs);
+  white-space: normal;
+}
+
+.chat-msg-actions .chat-msg-fav,
+.chat-msg-actions .chat-msg-more {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 48px;
+  min-block-size: 48px;
+  padding: var(--ib-token-space-xs);
+  color: var(--ib-token-content-secondary);
+  background: var(--ib-token-surface);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-none);
+  font: var(--ib-token-text-body);
+  line-height: 1;
+}
+
+.chat-msg-actions .chat-msg-fav[aria-pressed="true"] {
+  color: var(--ib-token-status-warning);
+}
+
+.chat-msg-actions .btn:focus-visible,
+.chat-select-mode .chat-sel-circle:focus-visible {
+  outline: var(--ib-token-focus-ring-width) solid var(--ib-token-focus-ring);
+  outline-offset: var(--ib-token-focus-ring-offset);
+}
+
+.ib-primitives [popover].chat-msg-actions-popover:popover-open {
+  display: grid;
+  gap: var(--ib-token-space-xs);
+  min-inline-size: 10rem;
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline;
+}
+
+.chat-msg-actions-popover .chat-msg-action-delete {
+  justify-content: flex-start;
+  min-inline-size: 48px;
+  min-block-size: 48px;
+}
+
+.chat-select-mode .chat-msg-more,
+.chat-select-mode .chat-msg-actions-popover [data-action="delete"] {
+  display: none;
+}
+
+#page-chat .chat-select-mode .chat-sel-circle {
+  display: grid;
+  place-items: center;
+  inline-size: 44px;
+  block-size: 44px;
+  inset-inline-start: -42px;
+  padding: 0;
+  color: var(--ib-token-content-primary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--ib-token-radius-round);
+}
+
+#page-chat .chat-select-mode .chat-sel-circle::before {
+  content: "";
+  inline-size: 20px;
+  block-size: 20px;
+  background: var(--ib-token-surface);
+  border: 1px solid var(--ib-token-boundary-strong);
+  border-radius: var(--ib-token-radius-round);
+}
+
+#page-chat .chat-select-mode .chat-sel-circle.checked::before {
+  background: var(--ib-token-accent-action-fill);
+  border-color: var(--ib-token-accent-action-fill);
+}
+
+#page-chat .chat-select-mode .chat-sel-circle.checked::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ib-token-accent-action-content);
+}
+
+/* P5-B3-K · a user-authored preference candidate stays visibly untrusted until
+   the user chooses the structured report action. This is one calm card inside
+   the message surface and uses the shared semantic theme tokens. */
+.chat-free-text-report-candidate {
+  display: grid;
+  gap: var(--ib-token-space-xs);
+  min-inline-size: 0;
+  max-inline-size: 34rem;
+  margin-block-start: var(--ib-token-space-sm);
+  padding: var(--ib-token-space-sm);
+  color: var(--ib-token-content-primary);
+  background: var(--surface-card);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.chat-free-text-report-candidate__kicker {
+  color: var(--ib-token-content-muted);
+  font: var(--ib-token-text-meta);
+  letter-spacing: 0.12em;
+}
+
+.chat-free-text-report-candidate__proposition,
+.chat-free-text-report-candidate__copy,
+.chat-free-text-report-candidate__status {
+  min-inline-size: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-free-text-report-candidate__proposition {
+  font: var(--ib-token-text-body);
+}
+
+.chat-free-text-report-candidate__copy,
+.chat-free-text-report-candidate__status {
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-meta);
+  line-height: 1.6;
+}
+
+.chat-free-text-report-candidate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ib-token-space-xs);
+}
+
+.chat-free-text-report-candidate__actions[hidden] {
+  display: none;
+}
+
+.chat-free-text-report-candidate__actions button {
+  min-inline-size: 44px;
+  min-block-size: 44px;
+  padding: 0 var(--ib-token-space-sm);
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-surface);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  font: var(--ib-token-text-body);
+  cursor: pointer;
+}
+
+.chat-free-text-report-candidate__confirm {
+  color: var(--ib-token-accent-action-content);
+  background: var(--ib-token-accent-action-fill);
+  border-color: var(--ib-token-accent-action-fill);
+}
+
+.chat-free-text-report-candidate__actions button:focus-visible {
+  outline: var(--ib-token-focus-ring-width) solid var(--ib-token-focus-ring);
+  outline-offset: var(--ib-token-focus-ring-offset);
+}
+
+.chat-free-text-report-candidate__actions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+@media (max-width: 600px) {
+  .chat-free-text-report-candidate {
+    max-inline-size: 100%;
+  }
+}
+
+\n

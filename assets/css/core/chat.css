@@ -54,6 +54,17 @@
 .chat-msg.user{align-self:flex-end;background:var(--surface-chat-bubble-bg-me);border:1px solid var(--surface-chat-bubble-border-me);border-bottom-right-radius:4px}
 .chat-msg.ai{align-self:flex-start;background:var(--surface-chat-bubble-bg);border:1px solid var(--surface-chat-bubble-border);border-bottom-left-radius:4px}
 .chat-msg.system{align-self:center;font-size:var(--fs-meta);color:var(--content-muted);background:none;border:none;padding:var(--space-1) var(--space-2)}
+.ib-reply-quote-card{display:grid;gap:2px;width:100%;max-width:100%;margin:0 0 var(--space-2);padding:6px 9px;
+  text-align:left;font:inherit;color:var(--content-secondary);background:var(--glass-bg-ambient);
+  border:1px solid var(--border-soft);border-left:2px solid var(--accent);border-radius:var(--radius-control);cursor:pointer}
+.ib-reply-quote-card:hover{background:var(--glass-bg-surface);border-color:var(--border-strong)}
+.ib-reply-quote-card:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.ib-reply-quote-card__sender{font-size:var(--fs-meta);color:var(--content-muted);line-height:1.35}
+.ib-reply-quote-card__text{font-size:0.92em;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ib-reply-quote-card.is-unavailable{cursor:default;opacity:0.62;border-left-color:var(--border-strong)}
+.ib-reply-quote-card.is-unavailable:hover{background:var(--glass-bg-ambient);border-color:var(--border-soft)}
+.ib-reply-quote-target{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
 
 /* ═══ Markdown 全渲染样式（方案 B） ═══ */
 .chat-msg.ai.md-rendered{white-space:normal}

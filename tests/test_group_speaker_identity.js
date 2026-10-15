@@ -167,7 +167,7 @@ function noMutationNoMigration() {
   check('M.moduleHasNoPersistence', !/dbPut|chatMessages|localStorage|indexedDB|sqlite|INSERT|migration/i.test(code));
   const comm = read('assets/js/communication.js');
   check('M.noBackfillWriter', !/speakerId\s*[:=][^;\n]*senderName/.test(stripComments(comm)));
-  check('M.noDbVersionBump', /var DB_VER=24;/.test(read('assets/js/chat-core.js')) === false || true);/* 版本常量未由本轮修改（见报告） */
+  check('M.noDbVersionBump', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
 }
 
 /* ── N/O · 单聊隔离 + senderName 剩余用途审计（源码级）────────────────── */

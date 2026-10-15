@@ -32,6 +32,18 @@ const crypto = require('crypto');
 const ROOT = path.resolve(__dirname, '..');
 
 const WEB = require(path.join(ROOT, 'services', 'internal-beyond-server.js'));
+/* This smoke exercises Role DM only. Keep the static server's unrelated update route
+   offline too, so its background check cannot leave a network socket after the test. */
+const NO_NETWORK_UPDATE_CHECK = {
+  STATUS_NO_INFORMATION: 'no-information',
+  checkShared: async () => ({
+    ok: false, status: 'no-information', updateAvailable: false,
+    currentVersion: '', latestVersion: '', fromCache: false, transport: '',
+    checkedAt: '', error: { kind: 'test-disabled', message: 'network disabled in Role DM smoke' }, update: null
+  }),
+  summarize: result => result,
+  readCache: () => ({ hit: false })
+};
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
@@ -150,7 +162,7 @@ const SETUP = `(function(){
     endpoint:'https://example.invalid/a', apiKey:'k1', systemPrompt:'你是昔涟，安静而固执。', relationship:'挚友' };
   var CFG_B = { id:'friend_bbb', nickname:'初音未来', provider:'qwen', model:'qwen-plus',
     endpoint:'https://example.invalid/b', apiKey:'k2', systemPrompt:'你是初音未来，活泼直接。', relationship:'搭档' };
-  window.__dm = { msgs:{}, calls:[], lsmirror:{}, cfgs:{ friend_aaa:CFG_A, friend_bbb:CFG_B } };
+  window.__dm = { msgs:{}, calls:[], lsmirror:{}, quoteMode:false, cfgs:{ friend_aaa:CFG_A, friend_bbb:CFG_B } };
   window.apiConfigs.length = 0;
   window.apiConfigs.push(CFG_A, CFG_B);
   /* ── 假存储必须**装着**这两个角色（否则「隔离环境」是自相矛盾的）──────────
@@ -191,6 +203,7 @@ const SETUP = `(function(){
     if (store === 'apiConfigs') return Promise.resolve(window.__dm.cfgs[id] || null);
     return Promise.resolve(store==='about'?{id:'about',name:'用户'}:null);
   };
+  window._persistApiConfig = function(cfg){window.__dm.cfgs[cfg.id]=cfg;return Promise.resolve({idb:true,backend:'test'});};
   /* 假执行器：记录每次调用收到的 cfg 与 messages（"两边各调自己的模型"因此可断言）。 */
   window.quickCreateMemory = function(){ return Promise.resolve(null); };
   window.callApiChat = function(cfg, messages, opts){
@@ -210,6 +223,16 @@ const SETUP = `(function(){
       return Promise.resolve((opts && opts.wantMeta) ? { text: '', truncated: _of === 'truncated' } : '');
     }
     var out = '这是' + (cfg.nickname||cfg.id) + '说的第 ' + window.__dm.calls.length + ' 句话。';
+    if (window.__dm.quoteMode === true && String(cfg.id) === 'friend_aaa') {
+      var rows=Object.keys(window.__dm.msgs).map(function(k){return window.__dm.msgs[k]}).filter(function(m){return m.friendId&&String((m.metadata||{}).senderId||'')==='friend_bbb'}).sort(function(a,b){return Number(a.timestamp)-Number(b.timestamp)});
+      var source=rows[rows.length-1];
+      if(source)out='[role_dm:speak]\\n我记得你刚才说的。[[quote:Q1.1]]';
+    }
+     if (window.__dm.expressionMode === true) {
+       out = String(cfg.id) === 'friend_aaa'
+         ? '[[expression:happy]]太好了，真替你开心。\\n[[ib:message]]\\n[[expression:laugh]]哈哈，这下放心了。'
+         : '[[expression:sad]]这听起来真遗憾。';
+     }
     return Promise.resolve((opts && opts.wantMeta) ? { text: out, truncated: false } : out);
   };
   return true;
@@ -233,7 +256,7 @@ const SETUP = `(function(){
     return;
   }
 
-  const webSrv = WEB.createWebServer({ port: 0, root: ROOT });
+  const webSrv = WEB.createWebServer({ port: 0, root: ROOT, updateCheck: NO_NETWORK_UPDATE_CHECK });
   const webPort = await new Promise((res, rej) => {
     webSrv.once('error', rej);
     webSrv.listen(0, '127.0.0.1', () => res(webSrv.address().port));
@@ -280,6 +303,34 @@ const SETUP = `(function(){
     /* 装配隔离环境 */
     check('2) 隔离环境装配成功', await ev(cdp, SETUP));
 
+    const initiativeSettingsUi = await ev(cdp, `(function(){
+      var api=window.IB.roleDm, ui=window.IB.roleDmUI, social=window.IB.roleDmSocial;
+      ui.renderReplyInitiative();
+      var host=document.getElementById('roledm-reply-initiative-body');
+      var row=host&&host.querySelector('[data-char="friend_aaa"]');
+      var enabled=row&&row.querySelector('[data-role="enabled"]');
+      var supplement=row&&row.querySelector('[data-role="supplement"]');
+      var frequency=row&&row.querySelector('[data-role="frequency"]');
+      var before=api.replyInitiativePrefs('friend_aaa');
+      var socialBefore=social&&social.characterPrefs?JSON.stringify(social.characterPrefs('friend_aaa')):'';
+      if(enabled){enabled.checked=true;enabled.dispatchEvent(new Event('change',{bubbles:true}));}
+      if(supplement){supplement.checked=false;supplement.dispatchEvent(new Event('change',{bubbles:true}));}
+      var saved=api.replyInitiativePrefs('friend_aaa');
+      var socialAfter=social&&social.characterPrefs?JSON.stringify(social.characterPrefs('friend_aaa')):'';
+      api.setReplyInitiativePrefs('friend_aaa',{enabled:false,frequency:'low',types:{supplement:true,contextLink:true,careNudge:true}});
+      ui.renderReplyInitiative();
+      return {panel:!!host,row:!!row,defaultOff:!!before&&!before.enabled,low:!!frequency&&frequency.value==='low',
+        categories:!!(row&&row.querySelector('[data-role="contextLink"]')&&row.querySelector('[data-role="careNudge"]')),
+        saves:!!saved&&saved.enabled===true&&saved.types.supplement===false,
+        existingSchedulerUnchanged:!socialBefore||socialBefore===socialAfter,
+        restored:api.replyInitiativePrefs('friend_aaa').enabled===false};
+    })()`);
+    check('2a) 回复内主动表达设置按角色保存，默认关闭，且与现有主动私聊调度隔离',
+      initiativeSettingsUi && initiativeSettingsUi.panel && initiativeSettingsUi.row && initiativeSettingsUi.defaultOff
+        && initiativeSettingsUi.low && initiativeSettingsUi.categories && initiativeSettingsUi.saves
+        && initiativeSettingsUi.existingSchedulerUnchanged && initiativeSettingsUi.restored,
+      JSON.stringify(initiativeSettingsUi));
+
     /* 3) canonical thread identity：顺序不敏感 */
     const idRes = await ev(cdp, `(async function(){
       var A = window.IB.roleDm;
@@ -298,9 +349,10 @@ const SETUP = `(function(){
     const runRes = await ev(cdp, `(async function(){
       var r = await window.IB.roleDm.start('friend_aaa','friend_bbb',{ turns: 2 });
       var d = await window.IB.roleDm.threadDetail(r.thread.threadId);
+      var turnTraces = IBModelCore.turnTraceRecent(10).filter(function(t){return t.consumer==='role_dm'});
       return { ok:r.ok, turns:r.turns, stopReason:r.stopReason, err:r.error||null,
                calls: window.__dm.calls, msgs: Object.keys(window.__dm.msgs).length,
-               alloc: (await window.IB.roleDm.listThreads())[0] };
+               alloc: (await window.IB.roleDm.listThreads())[0], turnTraces:turnTraces };
     })()`);
     check('4) run 完成并产生 2 轮', runRes && runRes.ok === true && runRes.turns === 2,
       JSON.stringify(runRes && (runRes.err || runRes.stopReason)));
@@ -317,8 +369,31 @@ const SETUP = `(function(){
       runRes && runRes.calls[0].system.indexOf('你是昔涟') >= 0 && runRes.calls[0].system.indexOf('你是初音未来') < 0);
     check('   B 侧 prompt 含 B 的人格、不含 A 的人格',
       runRes && runRes.calls[1].system.indexOf('你是初音未来') >= 0 && runRes.calls[1].system.indexOf('你是昔涟') < 0);
+    check('   手动 Role DM 的实际 provider prompt 包含当前线程连续性规则',
+      runRes && runRes.calls.every(function(c){return c.system.indexOf('【Conversation State v1 · 当前 thread】') >= 0
+        && c.system.indexOf('不重复询问或机械追问') >= 0 && c.system.indexOf('不复述、回顾或机械总结') >= 0}));
     check('   2 条消息落进既有 chatMessages 存储', runRes && runRes.msgs === 2, runRes && runRes.msgs);
     check('   列表里 thread 的消息条数一致', runRes && runRes.alloc.messageCount === 2, runRes && runRes.alloc.messageCount);
+    check('   Turn Trace 覆盖输入、上下文、记忆、工具边界与结果', runRes && runRes.turnTraces.length === 2
+      && runRes.turnTraces.every(function(t){var types=t.events.map(function(e){return e.eventType});
+        return ['input','memory','middle_brain','context','tool_execution','result'].every(function(type){return types.indexOf(type)>=0})}));
+
+    /* P3.1 · Real Role DM run chooses a request-local source key; persisted metadata
+       keeps the canonical source ID, exact text, and verified peer identity. */
+    const quoteRun = await ev(cdp, `(async function(){
+      var A=window.IB.roleDm,tid=(await A.listThreads())[0].threadId,before=window.__dm.calls.length;
+      window.__dm.quoteMode=true;
+      var res=await A.start('friend_aaa','friend_bbb',{turns:2,force:true});
+      window.__dm.quoteMode=false;
+      var d=await A.threadDetail(tid),reply=d.messages.find(function(m){return !!m.replyQuote});
+      var source=reply.replyQuote&&d.messages.find(function(m){return m.id===reply.replyQuote.sourceMessageId});
+      return {ok:res.ok,turns:res.turns,calls:window.__dm.calls.length-before,reply:reply,source:source||null};
+    })()`);
+    check('4b) Role DM quote selection adds no model call beyond the existing two-turn run', quoteRun && quoteRun.ok === true
+      && quoteRun.turns === 2 && quoteRun.calls === 2 && quoteRun.source
+      && quoteRun.reply.replyQuote.sourceMessageId === quoteRun.source.id
+      && quoteRun.reply.replyQuote.snippet === quoteRun.source.content
+      && quoteRun.reply.replyQuote.sourceSenderKey === 'role:friend_bbb', JSON.stringify(quoteRun));
 
     /* 5) UI：导航到角色私信页后渲染成功 + 样式表运行时注入 */
     const uiRes = await ev(cdp, `(async function(){
@@ -335,13 +410,39 @@ const SETUP = `(function(){
     check('   样式表运行时注入（不占用 HTML 样式表预算）',
       uiRes && uiRes.cssInjected === true && uiRes.cssHref === 'assets/css/core/role-dm.css', JSON.stringify(uiRes));
 
+    /* A direct reload can route into Role DM before the async API-config bootstrap
+       has populated its live list. Opening the existing thread must refresh that
+       canonical list before projecting participants as deleted. */
+    const roleConfigRefresh = await ev(cdp, `(async function(){
+      var saved=Array.isArray(window.apiConfigs)?window.apiConfigs.slice():[];
+      var oldLoader=window.loadApiConfigs,loads=0;
+      window.apiConfigs=[];
+      window.loadApiConfigs=async function(){loads++;window.apiConfigs=saved;return saved;};
+      var thread=(await window.IB.roleDm.listThreads())[0];
+      await window.IB.roleDmUI.openThread(thread.threadId);
+      var head=document.getElementById('roledm-detail-head');
+      var start=document.getElementById('roledm-start-btn');
+      var result={loads:loads,hasDeletedLabel:!!(head&&head.textContent.indexOf('角色已删除')>=0),hasSavedNames:!!(head&&saved.slice(0,2).some(function(c){return c.nickname&&head.textContent.indexOf(c.nickname)>=0;})),startEnabled:!!(start&&!start.disabled)};
+      window.loadApiConfigs=oldLoader;window.apiConfigs=saved;
+      await window.IB.roleDmUI.render();
+      return result;
+    })()`);
+    check('5b) Role DM refreshes API configs before rendering participants as deleted',
+      roleConfigRefresh && roleConfigRefresh.loads === 1 && roleConfigRefresh.hasDeletedLabel === false
+        && roleConfigRefresh.hasSavedNames === true && roleConfigRefresh.startEnabled === true, JSON.stringify(roleConfigRefresh));
+
     /* 6) 打开详情：不渲染用户输入框（用户不是 participant） */
     const detailRes = await ev(cdp, `(async function(){
       window.IB.roleDmUI.openThread((await window.IB.roleDm.listThreads())[0].threadId);
       await new Promise(function(r){ setTimeout(r, 300); });
       var body = document.getElementById('roledm-detail-body');
+      var quote = body.querySelector('.ib-reply-quote-card[data-quote-target]');
+      if (quote) quote.click();
+      var sourceRow = quote && body.querySelector('.roledm-msg[data-message-id="'+quote.getAttribute('data-quote-target')+'"]');
       var ctl = document.getElementById('roledm-detail-controls');
       return { bubbles: body.querySelectorAll('.roledm-msg').length,
+               quoteCard: !!quote && quote.textContent.indexOf('这是初音未来说的第 2 句话。') >= 0,
+               quoteLocatesSource: !!sourceRow && sourceRow.classList.contains('ib-reply-quote-target'),
                hasStart: !!document.getElementById('roledm-start-btn'),
                hasStop: !!document.getElementById('roledm-stop-btn'),
                hasInput: !!document.getElementById('roledm-detail-controls').querySelector('textarea'),
@@ -349,11 +450,338 @@ const SETUP = `(function(){
                hasClear: !!document.getElementById('roledm-clear-btn'),
                hasDelete: !!document.getElementById('roledm-del-btn') };
     })()`);
-    check('6) 详情渲染出 2 条消息气泡', detailRes && detailRes.bubbles === 2, JSON.stringify(detailRes));
+    check('6) 详情渲染出引用卡并点击定位原角色消息', detailRes && detailRes.bubbles === 4
+      && detailRes.quoteCard === true && detailRes.quoteLocatesSource === true, JSON.stringify(detailRes));
     check('   控制条是「让她们聊一会儿 / 停止 / 给话题」而不是用户输入框',
       detailRes && detailRes.hasStart && detailRes.hasStop && detailRes.hasTopic && detailRes.hasInput === false, JSON.stringify(detailRes));
     check('   破坏性动作独立成按钮（清空聊天记录 / 删除这段私聊）',
       detailRes && detailRes.hasClear && detailRes.hasDelete);
+
+    /* Expression Pack selection is a role-config reference; the Role DM message
+       stays untouched while its selected image is rendered beside the bubble. */
+    const expressionRes = await ev(cdp, `(async function(){
+      var Core=window.IBExpressionPackCore,cfg=window.__dm.cfgs.friend_aaa,canvas=document.createElement('canvas');
+      canvas.width=canvas.height=16;canvas.getContext('2d').fillRect(0,0,16,16);
+      cfg=Core.addPack(cfg,'dm-expression-pack','DM 表情');
+      cfg=Core.addExpression(cfg,'dm-expression-pack',{id:'dm-smile',name:'微笑',dataUrl:canvas.toDataURL('image/webp')});
+      cfg=Core.setExpressionDefaults(cfg,{
+        neutralExpression:{packId:'dm-expression-pack',expressionId:'dm-smile'},
+        greetingExpression:{packId:'dm-expression-pack',expressionId:'dm-smile'},
+        typingExpression:{packId:'dm-expression-pack',expressionId:'dm-smile'},
+        voiceExpression:{packId:'dm-expression-pack',expressionId:'dm-smile'},
+        errorExpression:{packId:'dm-expression-pack',expressionId:'dm-smile'}
+      });
+      await window._persistApiConfig(cfg);await window.loadApiConfigs();await window.IB.roleDmUI.renderDetail();
+      var row=document.querySelector('#roledm-detail-body .roledm-msg.left[data-message-id]');
+      var messageId=row&&row.getAttribute('data-message-id'),trigger=row&&row.querySelector('.ib-expression-message-trigger');
+      var neutralImage=row&&row.querySelector('.ib-expression-message-image');
+      var neutralDefault=Core.defaultExpression(cfg,'neutralExpression');
+      var neutral=!!(neutralImage&&neutralDefault&&neutralImage.src===neutralDefault.expression.dataUrl);
+      var greeting=!!document.querySelector('#roledm-detail-head .ib-expression-state[data-expression-state="greetingExpression"] img');
+      if(trigger)trigger.click();
+      var choice=row&&row.querySelector('.ib-expression-choice[aria-label^="显示表情：微笑"]');
+      if(choice)choice.click();
+      var until=Date.now()+5000;
+      while(Date.now()<until){var stored=window.__dm.cfgs.friend_aaa.expressionAssignments||{};if(stored[messageId])break;await new Promise(function(resolve){setTimeout(resolve,40)});}
+      await window.IB.roleDmUI.renderDetail();
+      var thread=(await window.IB.roleDm.listThreads())[0];
+      window.IB.roleDmEmit('delivery',{threadId:thread.threadId,typing:true,speakerId:'friend_aaa',speakerName:'昔涟'});
+      var typing=!!document.querySelector('#roledm-detail-note .ib-expression-state[data-expression-state="typingExpression"] img');
+      window.IB.roleDmEmit('delivery',{threadId:thread.threadId,typing:false,speakerId:'friend_aaa',speakerName:'昔涟'});
+      var finalRow=document.querySelector('#roledm-detail-body .roledm-msg.left[data-message-id="'+messageId+'"]');
+      var storedMessage=window.__dm.msgs[messageId],assignment=window.__dm.cfgs.friend_aaa.expressionAssignments[messageId];
+      return {packButton:!!document.querySelector('#roledm-detail-head [data-expression-role-id="friend_aaa"]'),
+        selected:!!assignment&&assignment.expressionId==='dm-smile',display:!!(finalRow&&finalRow.querySelector('.ib-expression-message-image')),
+        neutral:neutral,greeting:greeting,typing:typing,
+        messageUnchanged:!!storedMessage&&!storedMessage.expression&&!storedMessage.expressionId&&String(storedMessage.content).indexOf('data:image')<0};
+    })()`);
+    check('6a) Role DM binds a character pack and displays a manually selected expression',
+      expressionRes && expressionRes.packButton && expressionRes.selected && expressionRes.display
+        && expressionRes.neutral && expressionRes.greeting && expressionRes.typing, JSON.stringify(expressionRes));
+    check('    expression reference stays in role config, not chatMessages', expressionRes && expressionRes.messageUnchanged, JSON.stringify(expressionRes));
+
+    const expressionRuntimeRes = await ev(cdp, `(async function(){
+      var Core=window.IBExpressionPackCore,api=window.IB.roleDm,ui=window.IB.roleDmUI;
+      var cfgA=window.__dm.cfgs.friend_aaa,cfgB=window.__dm.cfgs.friend_bbb,canvas=document.createElement('canvas');
+      canvas.width=canvas.height=16;var ctx=canvas.getContext('2d');ctx.fillStyle='#91c3ee';ctx.fillRect(0,0,16,16);var happy=canvas.toDataURL('image/webp');
+      ctx.fillStyle='#e9a9ba';ctx.fillRect(0,0,16,16);var laugh=canvas.toDataURL('image/webp');
+      ctx.fillStyle='#a9b4d4';ctx.fillRect(0,0,16,16);var sad=canvas.toDataURL('image/webp');
+      cfgA=Core.addExpression(cfgA,'dm-expression-pack',{id:'dm-happy',name:'开心',dataUrl:happy});
+      cfgA=Core.addExpression(cfgA,'dm-expression-pack',{id:'dm-laugh',name:'哈哈',dataUrl:laugh});
+      cfgA=Core.setSettings(cfgA,{enabled:true,modelTags:true,microMotion:true});
+      cfgB=Core.addPack(cfgB,'dm-expression-pack-b','B 表情');
+      cfgB=Core.addExpression(cfgB,'dm-expression-pack-b',{id:'dm-sad',name:'难过',dataUrl:sad});
+      cfgB=Core.setSettings(cfgB,{enabled:true,modelTags:true,microMotion:true});
+      await window._persistApiConfig(cfgA);await window._persistApiConfig(cfgB);await window.loadApiConfigs();
+      var before=Object.keys(window.__dm.msgs).length,callsBefore=window.__dm.calls.length,run=null;
+      window.__dm.expressionMode=true;
+      try{run=await api.start('friend_aaa','friend_bbb',{turns:2,force:true})}finally{window.__dm.expressionMode=false}
+      await ui.renderDetail();
+      var fresh=Object.keys(window.__dm.msgs).map(function(k){return window.__dm.msgs[k]}).filter(function(m){return m&&m.metadata&&m.metadata.senderId&&['friend_aaa','friend_bbb'].indexOf(m.metadata.senderId)>=0&&String(m.content||'').indexOf('[[expression:')<0})
+        .sort(function(a,b){return Number(a.timestamp)-Number(b.timestamp)}).slice(-3);
+      function view(message){var row=message&&document.querySelector('.roledm-msg[data-message-id="'+message.id+'"]'),display=row&&row.querySelector('.ib-expression-message-display');return {message:message,source:display&&display.dataset.expressionSource,label:display&&display.querySelector('.ib-expression-message-caption')&&display.querySelector('.ib-expression-message-caption').textContent,src:display&&display.querySelector('img')&&display.querySelector('img').src};}
+      var expectedHappy=Core.resolveExpressionTag(cfgA,'happy');
+      var a1=view(fresh.find(function(m){return m.metadata.senderId==='friend_aaa'&&String(m.content).indexOf('太好了')===0}));
+      var a2=view(fresh.find(function(m){return m.metadata.senderId==='friend_aaa'&&String(m.content).indexOf('哈哈')===0}));
+      var b=view(fresh.find(function(m){return m.metadata.senderId==='friend_bbb'&&String(m.content).indexOf('这听起来')===0}));
+      var calls=window.__dm.calls.slice(callsBefore);
+      return {ok:!!(run&&run.ok),calls:calls.length,hintCalls:calls.filter(function(c){return c.system.indexOf('[[expression:happy]]')>=0}).length,count:fresh.length,a1:a1.source==='model'&&expectedHappy&&a1.src===expectedHappy.expression.dataUrl,a1Label:a1.label,a2:a2.source==='model'&&a2.label==='哈哈',b:b.source==='model'&&b.label==='难过',clean:fresh.length===3&&fresh.every(function(m){return String(m.content).indexOf('[[expression:')<0&&!Object.prototype.hasOwnProperty.call(m,'expressionRef')})};
+    })()`);
+    check('6a-1) Role DM resolves optional expression markers independently per role and bubble',
+      expressionRuntimeRes && expressionRuntimeRes.ok && expressionRuntimeRes.count===3 && expressionRuntimeRes.a1 && expressionRuntimeRes.a2 && expressionRuntimeRes.b,
+      JSON.stringify(expressionRuntimeRes));
+    check('    optional Expression hints reuse the existing two provider calls', expressionRuntimeRes && expressionRuntimeRes.calls===2 && expressionRuntimeRes.hintCalls===2, JSON.stringify(expressionRuntimeRes));
+    check('    marker references stay out of persisted Role DM messages', expressionRuntimeRes && expressionRuntimeRes.clean, JSON.stringify(expressionRuntimeRes));
+
+    const roleDmVoiceRes = await ev(cdp, `(async function(){
+      var cfgA=window.__dm.cfgs.friend_aaa,cfgB=window.__dm.cfgs.friend_bbb;
+      var oldA=cfgA.voice?JSON.parse(JSON.stringify(cfgA.voice)):null,oldB=cfgB.voice?JSON.parse(JSON.stringify(cfgB.voice)):null;
+      var noVoiceBefore=!document.querySelector('.roledm-voice-btn');
+      cfgA.voice={enabled:true,source:'edge',provider:'edge',voiceId:'role-a-voice',rate:1,pitch:'+0Hz',autoPlay:false};
+      cfgB.voice={enabled:true,source:'voicebox',provider:'voicebox',voiceId:'role-b-profile',model:'voicebox-clone',voiceType:'clone',voiceData:{refAudioId:'role-b-ref'},autoPlay:false};
+      await window._persistApiConfig(cfgA);await window._persistApiConfig(cfgB);await window.loadApiConfigs();await window.IB.roleDmUI.renderDetail();
+      var rows=Array.prototype.slice.call(document.querySelectorAll('#roledm-detail-body .roledm-msg[data-message-id]'));
+      var rowA=null,rowB=null;
+      rows.forEach(function(row){var m=window.__dm.msgs[row.getAttribute('data-message-id')];if(!m)return;
+        if(m.metadata.senderId==='friend_aaa'&&!rowA)rowA=row;
+        if(m.metadata.senderId==='friend_bbb'&&!rowB)rowB=row;});
+      var calls=[],statePaths={a:[],b:[]},api=window.IB.bridge,ui=window.IB.roleDmUI,realSpeak=api&&api.speakText,active=null;
+      if(api)api.speakText=function(text,voice,host,button,onStatus){var row=host&&host.closest('.roledm-msg'),message=row&&window.__dm.msgs[row.getAttribute('data-message-id')],key=message&&message.metadata.senderId==='friend_aaa'?'a':'b';if(active&&active.onStatus)active.onStatus('interrupted');var current={text:String(text),voice:voice,bubble:host,onStatus:onStatus,key:key};calls.push(current);active=current;onStatus('generating');statePaths[key].push(row&&row.dataset.voiceStatus);onStatus('playing');statePaths[key].push(row&&row.dataset.voiceStatus);return true;};
+      try{
+        var buttonA=rowA&&rowA.querySelector('.roledm-voice-btn'),buttonB=rowB&&rowB.querySelector('.roledm-voice-btn');
+        if(buttonA)buttonA.click();var aStateBeforeB=rowA&&rowA.dataset.voiceStatus,aExprBeforeB=rowA&&rowA.querySelector('.ib-expression-message-display');var speakingExpression=aStateBeforeB==='speaking'&&!!aExprBeforeB&&aExprBeforeB.dataset.expressionState==='voiceExpression';if(buttonB)buttonB.click();
+        var aMsg=rowA&&window.__dm.msgs[rowA.getAttribute('data-message-id')],bMsg=rowB&&window.__dm.msgs[rowB.getAttribute('data-message-id')];
+        var aExpr=rowA&&rowA.querySelector('.ib-expression-message-display');
+        var aVoiceState=rowA&&rowA.querySelector('.roledm-voice-state'),bVoiceState=rowB&&rowB.querySelector('.roledm-voice-state');
+        var aStatus=aVoiceState&&aVoiceState.textContent,bStatus=bVoiceState&&bVoiceState.textContent;
+        var speakerSwitchIsolated=rowA&&rowA.dataset.voiceStatus==='interrupted'&&rowB&&rowB.dataset.voiceStatus==='speaking';
+        if(ui&&typeof ui.stopVoicePlayback==='function')ui.stopVoicePlayback();
+        var pageStopRestoresBoth=rowA&&rowA.dataset.voiceStatus==='interrupted'&&rowB&&rowB.dataset.voiceStatus==='interrupted';
+        var interruptExpression=rowA&&rowA.querySelector('.ib-expression-message-display');
+        var interruptUsesDefault=!!interruptExpression&&interruptExpression.dataset.expressionState==='neutralExpression';
+        if(calls[0])calls[0].onStatus('ended');if(calls[1])calls[1].onStatus('ended');
+        var restored=rowA&&rowA.querySelector('.ib-expression-message-display');
+        return {noVoiceBefore:noVoiceBefore,buttons:!!buttonA&&!!buttonB,isolated:calls.length===2
+          && calls[0].voice.voiceId==='role-a-voice'&&calls[1].voice.voiceId==='role-b-profile'
+          && calls[0].voice.provider==='edge'&&calls[1].voice.provider==='voicebox',
+          statePaths:statePaths,
+          speakerSwitchIsolated:speakerSwitchIsolated,
+          pageStopRestoresBoth:pageStopRestoresBoth,
+          interruptUsesDefault:interruptUsesDefault,
+          speakingExpression:speakingExpression,
+          restoresDefault:!!restored&&restored.dataset.expressionState==='manual',
+          statuses:aStatus==='语音已中断'&&bStatus==='正在播放',
+          messageProtocolUnchanged:!!aMsg&&!!bMsg&&!aMsg.voice&&!bMsg.voice
+            && calls[0].text===aMsg.content&&calls[1].text===bMsg.content};
+      }finally{
+        if(api)api.speakText=realSpeak;
+        if(oldA)cfgA.voice=oldA;else delete cfgA.voice;
+        if(oldB)cfgB.voice=oldB;else delete cfgB.voice;
+        await window._persistApiConfig(cfgA);await window._persistApiConfig(cfgB);await window.loadApiConfigs();await window.IB.roleDmUI.renderDetail();
+      }
+    })()`);
+    check('6a-2) Role DM voice playback uses each sender role Voice Profile and follows Expression Runtime states',
+      roleDmVoiceRes && roleDmVoiceRes.noVoiceBefore && roleDmVoiceRes.buttons && roleDmVoiceRes.isolated
+        && JSON.stringify(roleDmVoiceRes.statePaths)===JSON.stringify({a:['thinking','speaking'],b:['thinking','speaking']})
+        && roleDmVoiceRes.speakerSwitchIsolated && roleDmVoiceRes.pageStopRestoresBoth && roleDmVoiceRes.interruptUsesDefault
+        && roleDmVoiceRes.speakingExpression && roleDmVoiceRes.restoresDefault && roleDmVoiceRes.statuses
+        && roleDmVoiceRes.messageProtocolUnchanged, JSON.stringify(roleDmVoiceRes));
+
+    const roleDmReplayRes = await ev(cdp, `(async function(){
+      var ui=window.IB.roleDmUI,api=window.IB.roleDm,bridge=window.IB.bridge;
+      var cfgA=window.__dm.cfgs.friend_aaa,cfgB=window.__dm.cfgs.friend_bbb;
+      var oldA=JSON.parse(JSON.stringify(cfgA)),oldB=JSON.parse(JSON.stringify(cfgB));
+      var realSpeak=bridge.speakText,calls=[];
+      function waitFor(test){return new Promise(function(resolve){var until=Date.now()+3500;(function poll(){if(test())return resolve(true);if(Date.now()>until)return resolve(false);setTimeout(poll,15)})()})}
+      try{
+        cfgA.voice={enabled:true,source:'edge',provider:'edge',voiceId:'replay-a-voice',rate:1,pitch:'+0Hz'};
+        cfgB.voice={enabled:true,source:'voicebox',provider:'voicebox',voiceId:'replay-b-profile',model:'voicebox-clone',voiceType:'clone',voiceData:{refAudioId:'replay-b-ref'}};
+        var Core=window.IBExpressionPackCore,canvas=document.createElement('canvas');canvas.width=canvas.height=16;canvas.getContext('2d').fillRect(0,0,16,16);
+        cfgB=Core.addPack(cfgB,'replay-expression-pack','回放表情');
+        cfgB=Core.addExpression(cfgB,'replay-expression-pack',{id:'replay-face',name:'回放表情',dataUrl:canvas.toDataURL('image/webp')});
+        cfgB=Core.setExpressionDefaults(cfgB,{neutralExpression:{packId:'replay-expression-pack',expressionId:'replay-face'},voiceExpression:{packId:'replay-expression-pack',expressionId:'replay-face'}});
+        await window._persistApiConfig(cfgA);await window._persistApiConfig(cfgB);await window.loadApiConfigs();
+        await ui.renderDetail();
+        var tid=ui.activeThreadId(),before=await api.threadDetail(tid);
+        var expected=before.messages.filter(function(m){return !!String(m.content||'').trim()}).map(function(m){return {id:m.id,senderId:m.senderId,content:m.content}});
+        bridge.speakText=function(text,voice,bubble,button,onStatus,control){calls.push({text:String(text),voice:voice,bubble:bubble,control:control,onStatus:onStatus});onStatus('generating');return true};
+        var controls=!!document.getElementById('roledm-replay-start')&&!!document.getElementById('roledm-replay-pause')&&!!document.getElementById('roledm-replay-resume')&&!!document.getElementById('roledm-replay-stop')&&!!document.getElementById('roledm-replay-status');
+        var replayStartButton=document.getElementById('roledm-replay-start');if(replayStartButton)replayStartButton.click();
+        var gotFirst=await waitFor(function(){return calls.length===1});
+        if(gotFirst){
+          calls[0].onStatus('playing');
+          var firstRow=calls[0].bubble.closest('.roledm-msg'),firstExpression=firstRow&&firstRow.querySelector('.ib-expression-message-display');
+          var speaking=!!firstExpression&&firstExpression.dataset.expressionState==='voiceExpression';
+          var pauseButton=document.getElementById('roledm-replay-pause'),resumeButton=document.getElementById('roledm-replay-resume');
+          if(pauseButton)pauseButton.click();
+          var pauseWorks=document.getElementById('roledm-replay-status').dataset.state==='paused'&&pauseButton.disabled===true&&resumeButton.disabled===false;
+          if(resumeButton)resumeButton.click();
+          var resumeWorks=document.getElementById('roledm-replay-status').dataset.state==='playing'&&pauseButton.disabled===false&&resumeButton.disabled===true;
+          calls[0].onStatus('ended');
+          for(var i=1;i<expected.length;i++){
+            var got=await waitFor(function(){return calls.length>i});if(!got)break;
+            calls[i].onStatus('playing');calls[i].onStatus('ended');
+          }
+          await waitFor(function(){return /回放完成/.test(document.getElementById('roledm-replay-status').textContent)});
+          var replayDetail=await api.threadDetail(tid),idsInOrder=calls.map(function(c){var row=c.bubble.closest('.roledm-msg');return row&&row.getAttribute('data-message-id')});
+          var voicesIsolated=calls.length===expected.length&&calls.every(function(c,i){return c.text===expected[i].content&&c.voice.voiceId===(expected[i].senderId==='friend_aaa'?'replay-a-voice':'replay-b-profile')});
+          var messageUnchanged=JSON.stringify(replayDetail.messages.map(function(m){return {id:m.id,content:m.content}}))===JSON.stringify(before.messages.map(function(m){return {id:m.id,content:m.content}}))
+            && replayDetail.messages.every(function(m){var raw=window.__dm.msgs[m.id];return !!raw&&!raw.voice});
+          var endedExpression=firstRow&&firstRow.querySelector('.ib-expression-message-display');
+          var resetExpression=!!endedExpression&&endedExpression.dataset.expressionState!=='voiceExpression';
+        }else{var speaking=false,pauseWorks=false,resumeWorks=false,voicesIsolated=false,messageUnchanged=false,resetExpression=false,idsInOrder=[]}
+        calls=[];
+        if(replayStartButton)replayStartButton.click();
+        var gotStopVoice=await waitFor(function(){return calls.length===1});
+        var stopControl=gotStopVoice&&calls[0].control;
+        var replayStopButton=document.getElementById('roledm-replay-stop');if(gotStopVoice&&replayStopButton)replayStopButton.click();
+        var stopWorks=gotStopVoice&&stopControl&&stopControl.cancelled===true&&!document.querySelector('.roledm-replay-current')
+          &&document.getElementById('roledm-replay-status').dataset.state==='stopped';
+        await window._persistApiConfig(oldA);await window._persistApiConfig(oldB);await window.loadApiConfigs();await ui.renderDetail();
+        calls=[];
+        var noVoice=!document.querySelector('.roledm-voice-btn');replayStartButton=document.getElementById('roledm-replay-start');if(replayStartButton)replayStartButton.click();
+        var textStarted=await waitFor(function(){return /文字显示/.test(document.getElementById('roledm-replay-status').textContent)});
+        var textPauseButton=document.getElementById('roledm-replay-pause'),textResumeButton=document.getElementById('roledm-replay-resume');
+        var textPause=!!textPauseButton;if(textPauseButton)textPauseButton.click();var textPaused=document.getElementById('roledm-replay-status').dataset.state==='paused';
+        var textResume=!!textResumeButton;if(textResumeButton)textResumeButton.click();var textResumed=document.getElementById('roledm-replay-status').dataset.state==='playing';
+        replayStopButton=document.getElementById('roledm-replay-stop');if(replayStopButton)replayStopButton.click();
+        return {controls:controls,ordered:voicesIsolated&&JSON.stringify(idsInOrder)===JSON.stringify(expected.map(function(m){return m.id})),
+          voicesIsolated:voicesIsolated,speakingExpression:speaking,expressionRestored:resetExpression,pauseWorks:pauseWorks,resumeWorks:resumeWorks,
+          stopWorks:stopWorks,textFallback:noVoice&&textStarted&&textPause&&textPaused&&textResume&&textResumed&&calls.length===0,messageUnchanged:messageUnchanged};
+      }finally{
+        ui.stopReplay();bridge.speakText=realSpeak;
+        await window._persistApiConfig(oldA);await window._persistApiConfig(oldB);await window.loadApiConfigs();await ui.renderDetail();
+      }
+    })()`);
+    check('6a-3) Role DM Scene Replay has start/pause/resume/stop controls and plays messages in thread order',
+      roleDmReplayRes && roleDmReplayRes.controls && roleDmReplayRes.ordered && roleDmReplayRes.voicesIsolated, JSON.stringify(roleDmReplayRes));
+    check('    Replay voice follows expression state and pause/resume/stop controls',
+      roleDmReplayRes && roleDmReplayRes.speakingExpression && roleDmReplayRes.expressionRestored
+        && roleDmReplayRes.pauseWorks && roleDmReplayRes.resumeWorks && roleDmReplayRes.stopWorks, JSON.stringify(roleDmReplayRes));
+    check('    Missing Voice Profile falls back to text replay without modifying messages',
+      roleDmReplayRes && roleDmReplayRes.textFallback && roleDmReplayRes.messageUnchanged, JSON.stringify(roleDmReplayRes));
+
+    const roleDmSceneRes = await ev(cdp, `(async function(){
+      var ui=window.IB.roleDmUI,api=window.IB.roleDm,bridge=window.IB.bridge,tid=ui.activeThreadId();
+      var cfgA=window.__dm.cfgs.friend_aaa,cfgB=window.__dm.cfgs.friend_bbb;
+      var oldA=JSON.parse(JSON.stringify(cfgA)),oldB=JSON.parse(JSON.stringify(cfgB)),realSpeak=bridge.speakText,ttsCalls=[];
+      function waitFor(test){return new Promise(function(resolve){var until=Date.now()+3000;(function poll(){if(test())return resolve(true);if(Date.now()>until)return resolve(false);setTimeout(poll,15)})()})}
+      try{
+        cfgA.voice={enabled:true,source:'edge',provider:'edge',voiceId:'scene-a-voice'};
+        cfgB.voice={enabled:true,source:'voicebox',provider:'voicebox',voiceId:'scene-b-profile'};
+        await window._persistApiConfig(cfgA);await window._persistApiConfig(cfgB);await window.loadApiConfigs();await ui.renderDetail();
+        var before=await api.threadDetail(tid),beforeMessages=before.messages.map(function(m){return {id:m.id,content:m.content}});
+        var title=document.getElementById('roledm-scene-title'),tags=document.getElementById('roledm-scene-tags-input');
+        var voiceMode=document.getElementById('roledm-scene-voice-mode'),pacing=document.getElementById('roledm-scene-text-pacing');
+        var save=document.getElementById('roledm-scene-save'),visible=!!document.getElementById('roledm-scene-panel')
+          &&!!document.getElementById('roledm-scene-participants')&&!!document.getElementById('roledm-scene-created')
+          &&!!title&&!!tags&&!!voiceMode&&!!pacing&&!!save
+          &&document.getElementById('roledm-scene-created').textContent.indexOf('创建于')>=0;
+        if(title)title.value='海边排练';if(tags)tags.value='周末, 排练, 周末';if(voiceMode)voiceMode.value='text';if(pacing)pacing.value='fast';
+        if(save)save.click();
+        var saved=await waitFor(function(){return document.getElementById('roledm-scene-save-state').textContent.indexOf('已保存')>=0});
+        var after=await api.threadDetail(tid),summary=document.getElementById('roledm-scene-title-display');
+        bridge.speakText=function(text,voice,bubble,button,onStatus,control){ttsCalls.push({text:String(text),voice:voice});onStatus('generating');return true};
+        var replayStart=document.getElementById('roledm-replay-start');if(replayStart)replayStart.click();
+        var textMode=await waitFor(function(){return /文字显示/.test(document.getElementById('roledm-replay-status').textContent)});
+        var stop=document.getElementById('roledm-replay-stop');if(stop)stop.click();
+        var afterReplay=await api.threadDetail(tid),rawMessages=window.__dm.msgs;
+        var messagesUnchanged=JSON.stringify(afterReplay.messages.map(function(m){return {id:m.id,content:m.content}}))===JSON.stringify(beforeMessages)
+          &&afterReplay.messages.every(function(m){var raw=rawMessages[m.id];return !!raw&&!raw.scene&&!(raw.metadata&&raw.metadata.scene)});
+        return {visible:visible,titleSaved:saved&&after.scene.title==='海边排练'&&summary&&summary.textContent==='海边排练',
+          participants:after.scene.participants.map(function(p){return p.id}).join(',')===before.thread.participantIds.join(','),
+          tags:after.scene.tags.join(',')==='周末,排练',createdAt:after.scene.createdAt===before.thread.createdAt,
+          playbackSaved:after.scene.playback.voiceMode==='text'&&after.scene.playback.textPacing==='fast',
+          textModeUsesNoTts:textMode&&ttsCalls.length===0,messagesUnchanged:messagesUnchanged};
+      }finally{
+        ui.stopReplay();bridge.speakText=realSpeak;
+        await window._persistApiConfig(oldA);await window._persistApiConfig(oldB);await window.loadApiConfigs();await ui.renderDetail();
+      }
+    })()`);
+    check('6a-4) Role DM Scene shows title, participants, creation time, tags, and playback settings',
+      roleDmSceneRes && roleDmSceneRes.visible && roleDmSceneRes.titleSaved && roleDmSceneRes.participants
+        && roleDmSceneRes.tags && roleDmSceneRes.createdAt && roleDmSceneRes.playbackSaved, JSON.stringify(roleDmSceneRes));
+    check('    Scene text playback config is used by Replay and Scene data stays out of chat messages',
+      roleDmSceneRes && roleDmSceneRes.textModeUsesNoTts && roleDmSceneRes.messagesUnchanged, JSON.stringify(roleDmSceneRes));
+
+    const roleDmGalleryRes = await ev(cdp, `(async function(){
+      var ui=window.IB.roleDmUI,api=window.IB.roleDm,threadId=ui.activeThreadId();
+      function waitFor(test){return new Promise(function(resolve){var until=Date.now()+3500;(function poll(){if(test())return resolve(true);if(Date.now()>until)return resolve(false);setTimeout(poll,15)})()})}
+      ui.backToList();
+      await waitFor(function(){return document.getElementById('roledm-view-list').style.display!=='none'});
+      var entry=document.getElementById('roledm-gallery-open');if(entry)entry.click();
+      var cardLoaded=await waitFor(function(){return !!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]')});
+      var card=document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]');
+      var cardTitle=card&&card.querySelector('.roledm-gallery-card-head h3'),detailToggle=card&&card.querySelector('.roledm-gallery-details summary');
+      var detailVisible=!!card&&!!detailToggle;
+      if(detailToggle)detailToggle.click();
+      var detailOpened=!!(card&&card.querySelector('.roledm-gallery-details').open);
+      var search=document.getElementById('roledm-gallery-search');if(search){search.value='海边排练';search.dispatchEvent(new Event('input',{bubbles:true}))}
+      var searchFilters=!!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]');
+      var tagFilter=document.getElementById('roledm-gallery-tag-filter');if(tagFilter){tagFilter.value='周末';tagFilter.dispatchEvent(new Event('change',{bubbles:true}))}
+      var tagFilters=!!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]');
+      var open=document.querySelector('#roledm-gallery-list [data-gallery-open="'+threadId+'"]');if(open)open.click();
+      var openedThread=await waitFor(function(){return ui.activeThreadId()===threadId&&document.getElementById('roledm-view-detail').style.display!=='none'});
+      var openedTitle=document.getElementById('roledm-scene-title-display');
+      var back=document.querySelector('#roledm-view-detail .roledm-detail-bar button');if(back)back.click();
+      var returnedToGallery=await waitFor(function(){return document.getElementById('roledm-view-gallery').style.display!=='none'});
+      var cardReadyForReplay=await waitFor(function(){return !!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]')});
+      var replay=document.querySelector('#roledm-gallery-list [data-gallery-replay="'+threadId+'"]'),replayButtonDisabled=replay&&replay.disabled;if(replay)replay.click();
+      var replayStarted=await waitFor(function(){return /文字显示/.test(document.getElementById('roledm-replay-status').textContent)});
+      var replayStatusText=(document.getElementById('roledm-replay-status')||{}).textContent||'';
+      var stop=document.getElementById('roledm-replay-stop');if(stop)stop.click();
+      back=document.querySelector('#roledm-view-detail .roledm-detail-bar button');if(back)back.click();
+      var replayReturned=await waitFor(function(){return document.getElementById('roledm-view-gallery').style.display!=='none'});
+      var cardReadyForExport=await waitFor(function(){return !!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]')});
+      var urlApi=window.URL,realCreate=urlApi.createObjectURL,realRevoke=urlApi.revokeObjectURL;
+      var anchorProto=window.HTMLAnchorElement.prototype,realAnchorClick=anchorProto.click,captured={blob:null,download:'',clicked:false};
+      var exportButton=document.querySelector('#roledm-gallery-list [data-gallery-export="'+threadId+'"]');
+      try{
+        urlApi.createObjectURL=function(blob){captured.blob=blob;return 'blob:scene-gallery-test'};
+        urlApi.revokeObjectURL=function(){};
+        anchorProto.click=function(){captured.download=String(this.download||'');captured.clicked=true};
+        if(exportButton)exportButton.click();
+        var exported=await waitFor(function(){var c=document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"]');return !!(c&&c.querySelector('[data-gallery-export-status]').textContent.indexOf('已导出')>=0)});
+        var exportText=captured.blob&&captured.blob.text?await captured.blob.text():'';
+        var exportFile=exportText?JSON.parse(exportText):null;
+        var noSensitive=!!exportFile&&!/api.?key|credential|token|chatMessages|threadMemorandum|memories|messages/i.test(exportText);
+        var importCopy=exportFile?JSON.parse(JSON.stringify(exportFile)):null;
+        if(importCopy)importCopy.participants[1].roleId='friend_gallery_missing';
+        var fileInput=document.getElementById('roledm-gallery-import-file');
+        if(fileInput&&importCopy){var transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify(importCopy)],'scene.json',{type:'application/json'}));fileInput.files=transfer.files;fileInput.dispatchEvent(new Event('change',{bubbles:true}))}
+        var importOk=await waitFor(function(){return document.getElementById('roledm-gallery-import-status').textContent.indexOf('Scene 已导入')>=0});
+        var galleryRows=await api.listThreads(),importedThread=galleryRows.find(function(t){return t.participantIds.indexOf('friend_gallery_missing')>=0});
+        var importedDetail=importedThread&&await api.threadDetail(importedThread.threadId);
+        var importRoundTrip=!!importedDetail&&importedDetail.messages.length===0&&importedDetail.scene.title===exportFile.scene.title
+          &&JSON.stringify(importedDetail.scene.tags)===JSON.stringify(exportFile.scene.tags)
+          &&importedDetail.scene.createdAt===exportFile.scene.createdAt
+          &&importedDetail.scene.playback.voiceMode===exportFile.scene.playback.voiceMode
+          &&importedDetail.scene.playback.textPacing===exportFile.scene.playback.textPacing
+          &&document.getElementById('roledm-gallery-import-status').textContent.indexOf('缺少角色')>=0;
+        if(importedThread){await api.deleteThread(importedThread.threadId);await ui.renderGallery()}
+        var importedSceneRemoved=!!importedThread&&!document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+importedThread.threadId+'"]');
+      }finally{
+        urlApi.createObjectURL=realCreate;urlApi.revokeObjectURL=realRevoke;anchorProto.click=realAnchorClick;
+      }
+      return {entry:!!entry,cardLoaded:cardLoaded,title:cardTitle&&cardTitle.textContent==='海边排练',detailVisible:detailVisible&&detailOpened,
+        searchFilters:searchFilters,tagFilters:tagFilters,openedThread:openedThread&&openedTitle&&openedTitle.textContent==='海边排练',
+        returnedToGallery:returnedToGallery&&cardReadyForReplay,replayStarted:replayStarted&&replayReturned,
+        replayButtonEnabled:replayButtonDisabled===false,noMessagePreview:!document.querySelector('#roledm-gallery-list .roledm-preview'),
+        replayStatusText:replayStatusText,exported:exported&&captured.clicked&&!!captured.download&&noSensitive,
+        importRoundTrip:importOk&&importRoundTrip,importedSceneRemoved:importedSceneRemoved,
+        debug:{cardReadyForExport:cardReadyForExport,exportButton:!!exportButton,
+          exportStatus:(document.querySelector('#roledm-gallery-list .roledm-gallery-card[data-scene-thread="'+threadId+'"] [data-gallery-export-status]')||{}).textContent||'',
+          blobCaptured:!!captured.blob,download:captured.download,exportText:exportText.slice(0,140),
+          importText:(document.getElementById('roledm-gallery-import-status')||{}).textContent||''}};
+    })()`);
+    check('6a-5) Scene Gallery browses metadata, searches/filters, opens the source thread and starts Replay',
+      roleDmGalleryRes && roleDmGalleryRes.entry && roleDmGalleryRes.cardLoaded && roleDmGalleryRes.title
+        && roleDmGalleryRes.detailVisible && roleDmGalleryRes.searchFilters && roleDmGalleryRes.tagFilters
+        && roleDmGalleryRes.openedThread && roleDmGalleryRes.returnedToGallery && roleDmGalleryRes.replayStarted, JSON.stringify(roleDmGalleryRes));
+    check('    Gallery references thread metadata only and does not copy message content',
+      roleDmGalleryRes && roleDmGalleryRes.noMessagePreview && roleDmGalleryRes.exported, JSON.stringify(roleDmGalleryRes));
+    check('    Exported Scene imports with Replay settings, tolerates a missing role, and cleans up when deleted',
+      roleDmGalleryRes && roleDmGalleryRes.importRoundTrip && roleDmGalleryRes.importedSceneRemoved, JSON.stringify(roleDmGalleryRes));
 
     /* 6b) 输出类失败的用户文案（Phase 3.1）：**在真实页面上**跑一次
        "请求成功但没有正文"，然后看用户到底看到了什么。
@@ -372,7 +800,7 @@ const SETUP = `(function(){
       var note = document.getElementById('roledm-detail-note');
       return { stopReason: res && res.stopReason, err: res && res.error, turns: res && res.turns,
                persisted: detail.stopReason, text: note ? note.textContent : '',
-               calls: window.__dm.calls.length - before,
+               calls: window.__dm.calls.slice(before).filter(function(c){return c&&c.consumer==='role_dm'}).length,
                errCards: document.querySelectorAll('#ib-err-stack .ib-err-card').length };
     })()`);
     check('6b) 真实页面：请求成功但无正文 → stopReason=output-truncated（不是 provider-failed）',
@@ -397,7 +825,7 @@ const SETUP = `(function(){
       await new Promise(function(r){ setTimeout(r, 300); });
       var note = document.getElementById('roledm-detail-note');
       return { stopReason: res && res.stopReason, turns: res && res.turns, text: note ? note.textContent : '',
-               calls: window.__dm.calls.length - before };
+               calls: window.__dm.calls.slice(before).filter(function(c){return c&&c.consumer==='role_dm'}).length };
     })()`);
     check('6b-2) 未截断的空正文 → empty-output（与截断分开，同样不是 provider-failed）',
       failE && failE.stopReason === 'empty-output' && failE.stopReason !== 'provider-failed', JSON.stringify(failE));
@@ -421,10 +849,11 @@ const SETUP = `(function(){
       return { ok: r2.ok, turns: r2.turns, n: newCalls.length,
                sawOwn: joined.indexOf('这是昔涟说的第 1 句话。') >= 0,
                sawPeer: joined.indexOf('这是初音未来说的第 2 句话。') >= 0,
+               hasCurrentThreadGuidance: !!first.system&&first.system.indexOf('【Conversation State v1 · 当前 thread】')>=0,
                histRows: (first.hist || []).length };
     })()`);
     check('7) 第二次 run 的第一条 prompt 带着上一次 run 说过的话（跨 run 最近上下文）',
-      crossRes && crossRes.sawOwn === true, JSON.stringify(crossRes));
+      crossRes && crossRes.sawOwn === true && crossRes.hasCurrentThreadGuidance === true, JSON.stringify(crossRes));
     check('   对方说过的话也在（以「名字」对你说 的形式）', crossRes && crossRes.sawPeer === true);
     check('   两次 run 共 4 条消息，各 2 轮', crossRes && crossRes.n === 2 && crossRes.turns === 2, JSON.stringify(crossRes));
 
@@ -466,9 +895,48 @@ const SETUP = `(function(){
     check('   备忘不带来任何额外模型调用（producer=deterministic）',
       memoRes && memoRes.extraCalls === 0 && memoRes.summaryCalls === 0, JSON.stringify(memoRes && { extra: memoRes.extraCalls, s: memoRes.summaryCalls }));
 
-    /* 9) 全程没有未捕获异常 */
+    /* Dev-only quote diagnostics are aggregate counters and must survive the
+       per-turn render events without exposing text or prompt data. */
+    const quoteDiagUi = await ev(cdp, `(async function(){
+      var had=Object.prototype.hasOwnProperty.call(window,'__IB_DEV_MODE__'),old=window.__IB_DEV_MODE__;
+      window.__IB_DEV_MODE__=true;
+      var thread=(await window.IB.roleDm.listThreads())[0];
+      window.IB.roleDmUI.openThread(thread.threadId);
+      await new Promise(function(r){setTimeout(r,100)});
+      var start=document.getElementById('roledm-start-btn');if(start)start.click();
+      var end=Date.now()+15000;
+      while(Date.now()<end){
+        var note=document.getElementById('roledm-detail-note');
+        if(note&&note.textContent.indexOf('引用诊断（仅统计）')>=0)break;
+        await new Promise(function(r){setTimeout(r,100)});
+      }
+      var text=(document.getElementById('roledm-detail-note')||{}).textContent||'';
+      if(had)window.__IB_DEV_MODE__=old;else delete window.__IB_DEV_MODE__;
+      return {visible:text.indexOf('引用诊断（仅统计）')>=0,hasCandidateCount:text.indexOf('候选 ')>=0,hasParseCounts:text.indexOf('未选择 ')>=0,hasApplicationCount:text.indexOf('成功应用 ')>=0,
+        hasDeliveryCounts:text.indexOf('同次生成多消息 ')>=0&&text.indexOf('格式回退 ')>=0,
+        leaksText:['messageId','sourceMessageId','snippet','原文片段','apiKey','Bearer '].some(function(k){return text.indexOf(k)>=0})};
+    })()`);
+    check('9) Dev calibration shows quote and multi-message aggregate counts only',
+      quoteDiagUi && quoteDiagUi.visible && quoteDiagUi.hasCandidateCount && quoteDiagUi.hasParseCounts
+        && quoteDiagUi.hasApplicationCount && quoteDiagUi.hasDeliveryCounts && quoteDiagUi.leaksText === false, JSON.stringify(quoteDiagUi));
+
+    const galleryEmpty = await ev(cdp, `(async function(){
+      var A=window.IB.roleDm,ui=window.IB.roleDmUI;
+      await ui.openGallery();
+      var threads=await A.listThreads();
+      for(var i=0;i<threads.length;i++)await A.deleteThread(threads[i].threadId);
+      await ui.renderGallery();
+      var empty=document.querySelector('#roledm-gallery-list .roledm-gallery-empty');
+      return {emptyState:!!empty&&empty.textContent.indexOf('还没有可浏览的 Scene')>=0,
+        cards:document.querySelectorAll('#roledm-gallery-list .roledm-gallery-card').length,
+        threadCount:(await A.listThreads()).length};
+    })()`);
+    check('9a) Scene Gallery shows a normal empty state after all source threads are deleted',
+      galleryEmpty && galleryEmpty.emptyState && galleryEmpty.cards === 0 && galleryEmpty.threadCount === 0, JSON.stringify(galleryEmpty));
+
+    /* 10) 全程没有未捕获异常 */
     await new Promise(r => setTimeout(r, 600));
-    check('9) 全程无未捕获页面异常', pageErrors.length === 0, pageErrors.join(' | '));
+    check('10) 全程无未捕获页面异常', pageErrors.length === 0, pageErrors.join(' | '));
   } finally {
     if (cdp) cdp.close();
     try { browser.kill(); } catch (e) { }

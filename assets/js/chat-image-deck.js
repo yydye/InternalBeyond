@@ -52,10 +52,17 @@
     decks: Object.create(null),   /* msgId -> deck record */
     order: [],
     observer: null,
+    observedContainers: [],
+    observerTargets: [],
+    mountTimer: null,
+    readyHandler: null,
     scheduled: false,
+    scheduledHandle: null,
+    scheduledWithRaf: false,
     applying: false,
     overlay: null,
-    overlayReturn: null
+    overlayReturn: null,
+    overlayRecord: null
   };
 
   /* --------------------------------------------------------------- utils */
@@ -484,6 +491,7 @@
       }
     };
     document.addEventListener('keydown', state.overlayKey);
+    state.overlayRecord = rec;
     if (close.focus) close.focus({ preventScroll: true });
   }
 
@@ -494,6 +502,7 @@
     }
     if (state.overlay && state.overlay.parentNode) state.overlay.parentNode.removeChild(state.overlay);
     state.overlay = null;
+    state.overlayRecord = null;
     var back = state.overlayReturn;
     state.overlayReturn = null;
     if (back && back.isConnected && back.focus) {
@@ -503,8 +512,82 @@
 
   /* ---------------------------------------------------------------- scan */
 
+  function currentContainers() {
+    var out = [];
+    for (var i = 0; i < CONTAINER_IDS.length; i++) {
+      out.push(document.getElementById(CONTAINER_IDS[i]));
+    }
+    return out;
+  }
+
+  function sameContainers(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  function observerTargetsFor(containers) {
+    var targets = [];
+    function add(node, subtree) {
+      if (!node) return;
+      for (var i = 0; i < targets.length; i++) {
+        if (targets[i].node === node) {
+          if (subtree) targets[i].subtree = true;
+          return;
+        }
+      }
+      targets.push({ node: node, subtree: !!subtree });
+    }
+    var missing = false;
+    for (var c = 0; c < containers.length; c++) {
+      var container = containers[c];
+      if (!container) { missing = true; continue; }
+      add(container, true);
+      for (var parent = container.parentNode; parent; parent = parent.parentNode) {
+        add(parent, false);
+        if (parent === document.documentElement) break;
+      }
+    }
+    /* During startup, watch for containers that have not been inserted yet.
+       Once present, observation narrows to each container and its ancestors. */
+    if (missing || !targets.length) add(document.documentElement || document.body, true);
+    return targets;
+  }
+
+  function sameObserverTargets(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      var found = false;
+      for (var j = 0; j < b.length; j++) {
+        if (a[i].node === b[j].node && a[i].subtree === b[j].subtree) { found = true; break; }
+      }
+      if (!found) return false;
+    }
+    return true;
+  }
+
+  function isWithin(root, node) {
+    return !!(root && node && (root === node || (root.contains && root.contains(node))));
+  }
+
+  function mutationTouchesChat(records) {
+    var containers = currentContainers();
+    var targets = observerTargetsFor(containers);
+    if (!sameContainers(containers, state.observedContainers) || !sameObserverTargets(targets, state.observerTargets)) {
+      bindObserver();
+      return true;
+    }
+    for (var r = 0; r < records.length; r++) {
+      for (var c = 0; c < containers.length; c++) {
+        if (isWithin(containers[c], records[r].target)) return true;
+      }
+    }
+    return false;
+  }
+
   function scan() {
     state.applying = true;
+    var seen = Object.create(null);
     try {
       for (var c = 0; c < CONTAINER_IDS.length; c++) {
         var container = document.getElementById(CONTAINER_IDS[c]);
@@ -514,6 +597,7 @@
           var row = rows[i];
           var msgId = msgIdOf(row);
           if (!msgId) continue;
+          seen[msgId] = true;
           var rec = state.decks[msgId];
           if (rec && rec.adopted && row.contains(rec.deck)) { continue; }
           if (rec && rec.adopted) { forget(msgId); }   /* 行被重建：旧 DOM 已消失 */
@@ -521,6 +605,7 @@
           if (run.length >= MIN_DECK) enhance(row, run);
         }
       }
+      pruneRecords(seen);
     } finally {
       state.applying = false;
     }
@@ -530,6 +615,7 @@
     var rec = state.decks[msgId];
     if (!rec) return;
     rec.adopted = false;
+    if (state.overlayRecord === rec) closeGallery();
     rec.deck = null;
     rec.stack = null;
     rec.cards = [];
@@ -538,6 +624,24 @@
     rec.prev = null;
     rec.next = null;
     rec.expand = null;
+    rec.live = null;
+    rec.drag = null;
+  }
+
+  function releaseRecord(msgId) {
+    var rec = state.decks[msgId];
+    if (!rec) return;
+    forget(msgId);
+    delete state.decks[msgId];
+    var index = state.order.indexOf(msgId);
+    if (index >= 0) state.order.splice(index, 1);
+  }
+
+  function pruneRecords(seen) {
+    for (var i = state.order.length - 1; i >= 0; i--) {
+      var msgId = state.order[i];
+      if (!seen[msgId]) releaseRecord(msgId);
+    }
   }
 
   function schedule() {
@@ -545,21 +649,37 @@
     state.scheduled = true;
     var run = function () {
       state.scheduled = false;
+      state.scheduledHandle = null;
+      state.scheduledWithRaf = false;
+      if (!state.mounted) return;
       if (state.applying) return;
       scan();
     };
-    if (window.requestAnimationFrame) requestAnimationFrame(run);
-    else setTimeout(run, 40);
+    if (window.requestAnimationFrame) {
+      state.scheduledWithRaf = true;
+      state.scheduledHandle = window.requestAnimationFrame(run);
+    } else {
+      state.scheduledWithRaf = false;
+      state.scheduledHandle = window.setTimeout(run, 40);
+    }
   }
 
   function bindObserver() {
     if (!window.MutationObserver) return;
-    state.observer = new MutationObserver(function () { schedule(); });
-    for (var i = 0; i < CONTAINER_IDS.length; i++) {
-      var container = document.getElementById(CONTAINER_IDS[i]);
-      if (container) {
-        state.observer.observe(container, { childList: true, subtree: true });
-      }
+    var containers = currentContainers();
+    var targets = observerTargetsFor(containers);
+    if (state.observer && sameContainers(containers, state.observedContainers)
+      && sameObserverTargets(targets, state.observerTargets)) return;
+    if (state.observer) state.observer.disconnect();
+    state.observedContainers = containers;
+    state.observerTargets = targets;
+    state.observer = new window.MutationObserver(function (records) {
+      if (mutationTouchesChat(records || [])) schedule();
+    });
+    /* Observe chat subtrees and their ancestor child lists. This catches a
+       replaced container without watching unrelated page subtrees. */
+    for (var i = 0; i < targets.length; i++) {
+      state.observer.observe(targets[i].node, { childList: true, subtree: targets[i].subtree });
     }
   }
 
@@ -574,12 +694,15 @@
     scan();
     /* 两个容器可能在 mount 之后才出现（页面首次激活）。 */
     var tries = 0;
-    var timer = setInterval(function () {
+    state.mountTimer = window.setInterval(function () {
       tries += 1;
       var found = 0;
       for (var i = 0; i < CONTAINER_IDS.length; i++) if (document.getElementById(CONTAINER_IDS[i])) found += 1;
       scan();
-      if (found >= 2 || tries > 40) clearInterval(timer);
+      if (found >= 2 || tries > 40) {
+        window.clearInterval(state.mountTimer);
+        state.mountTimer = null;
+      }
     }, 250);
     return api;
   }
@@ -604,9 +727,31 @@
     visibleDepth: visibleDepth,
     scan: scan,
     destroy: function () {
+      if (state.readyHandler) {
+        document.removeEventListener('DOMContentLoaded', state.readyHandler);
+        state.readyHandler = null;
+      }
+      if (state.mountTimer !== null) {
+        window.clearInterval(state.mountTimer);
+        state.mountTimer = null;
+      }
+      if (state.scheduledHandle !== null) {
+        if (state.scheduledWithRaf && window.cancelAnimationFrame) {
+          window.cancelAnimationFrame(state.scheduledHandle);
+        } else {
+          window.clearTimeout(state.scheduledHandle);
+        }
+        state.scheduledHandle = null;
+      }
+      state.scheduled = false;
+      state.scheduledWithRaf = false;
       if (state.observer) { state.observer.disconnect(); state.observer = null; }
+      state.observedContainers = [];
+      state.observerTargets = [];
       closeGallery();
       state.mounted = false;
+      var ids = state.order.slice();
+      for (var i = 0; i < ids.length; i++) releaseRecord(ids[i]);
       state.decks = Object.create(null);
       state.order = [];
     },
@@ -639,7 +784,11 @@
   NS.expose('chatImageDeck', api);
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { mount(); }, { once: true });
+    state.readyHandler = function () {
+      state.readyHandler = null;
+      mount();
+    };
+    document.addEventListener('DOMContentLoaded', state.readyHandler, { once: true });
   } else {
     mount();
   }

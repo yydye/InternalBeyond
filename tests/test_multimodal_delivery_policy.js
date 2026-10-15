@@ -316,7 +316,7 @@ function adapterSandbox(opts) {
   };
   const api = new Function(
     'window', 'document', 'currentPage', 'activeFriendId', 'activeThreadId', 'esc',
-    '_getActiveAiName', 'dbPut', 'appendChatBubble', '_showStreamingUI', '_ibAppBroadcast', 'setTimeout', 'clearTimeout',
+    '_ibPrepareExpressionMessage', '_getActiveAiName', 'dbPut', 'appendChatBubble', '_showStreamingUI', '_ibAppBroadcast', 'setTimeout', 'clearTimeout',
     'var _ibTypingReg=Object.create(null);var _ibDeliveryRuntimeSingleton=null;\n' + block + '\n'
     + 'function __setActive(f,t){activeFriendId=f;activeThreadId=t;}\n'
     + 'return {api:{_ibConvId:_ibConvId,_ibConvIsActive:_ibConvIsActive,_ibMmResolve:_ibMmResolve,'
@@ -325,7 +325,7 @@ function adapterSandbox(opts) {
     + '_ibMaterializeVoiceUnit:_ibMaterializeVoiceUnit,_ibBuildUnitAt:_ibBuildUnitAt},setActive:__setActive};'
   )(
     win,
-    dom, 'chat', activeFriend, activeThread, s => String(s == null ? '' : s), () => 'AI',
+    dom, 'chat', activeFriend, activeThread, s => String(s == null ? '' : s), message => message, () => 'AI',
     async (s, row) => { if (!store.has(row.id)) store.set(row.id, row); },
     (role, text, senderName, reasoning, msgId, images, files, wsResults, voice) => { bubbles.push({ role: role, text: text, msgId: msgId, voice: voice || null, at: clock.now() }); },
     () => { },

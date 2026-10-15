@@ -70,22 +70,28 @@
 
   /* ── 持久化命名空间 ────────────────────────────────────────────────
      消息历史在 canonical chatMessages（Home Node 权威 / IndexedDB 镜像）。
-     下面两个 key 只存**索引与有界状态**，不存正文：
-       · threads  —— canonical thread 记录（participants/createdAt/lastMessageAt/state…）
+     下面几个 key 只存**索引与有界状态**，不存正文：
+       · threads  —— canonical thread 元数据（participants/createdAt/state、thread memorandum，及可选 Scene 标题/标签/播放设置）
        · relations —— directional 关系状态（A→B 与 B→A 各自一条）
        · ledger   —— 每角色的轮次时间戳（时/日两级 quota）
        · runs     —— 每 thread 的最近一次 run 结果（停止原因，供 UI 如实展示）
      为什么不用新的 IndexedDB object store：本仓库的既有决策是"数据模型向后
      兼容优先，不轻易升 DB_VER"，而新增 store 会强制升版并牵动多处硬编码
-     断言（tests/test_chat_core_contract.js 等）。索引是可从 chatMessages
-     重建的**派生数据**（rebuildThreadIndex），因此放在有版本号的私有
-     localStorage key 里既不越权也不丢真相：真相始终是消息行本身。
-     正文与 provenance 一律写在 canonical 存储（chatMessages / memories）。 */
+     断言（tests/test_chat_core_contract.js 等）。Thread 身份与消息计数可从
+     chatMessages 重建；Scene 标签和播放偏好是 thread 自身的轻量元数据，随
+     thread 索引一起保存，不复制消息，也不进入 chatMessages。正文与 provenance
+     仍只写在 canonical 存储（chatMessages / memories）。 */
   var KEY_THREADS = 'ib_role_dm_threads_v1';
   var KEY_RELATIONS = 'ib_role_dm_relations_v1';
   var KEY_LEDGER = 'ib_role_dm_ledger_v1';
   var KEY_PREFS = 'ib_role_dm_prefs_v1';
+  var KEY_REPLY_INITIATIVE = 'ib_role_dm_reply_initiative_v1';
   var INDEX_VERSION = 1;
+  var SCENE_TITLE_MAX = 80;
+  var SCENE_TAG_MAX = 8;
+  var SCENE_TAG_LENGTH_MAX = 24;
+  var SCENE_EXPORT_FORMAT = 'internalbeyond.role-dm-scene';
+  var SCENE_EXPORT_VERSION = 1;
 
   /* ── 运行期锁（本标签页内；跨标签页由 pair cooldown + ledger 兜底）── */
   var _runningThreads = {};   /* friendId -> runId */
@@ -103,6 +109,34 @@
     if (PROFILE_CORE) return PROFILE_CORE;
     try { PROFILE_CORE = window.IBPublicProfileCore; } catch (e) { PROFILE_CORE = null; }
     return PROFILE_CORE;
+  }
+  function _roleTurnTraceCore() {
+    try { return window.IBModelCore || null; } catch (e) { return null; }
+  }
+  function _roleTurnTraceBegin(meta) {
+    try { var c = _roleTurnTraceCore(); return c && typeof c.turnTraceBegin === 'function' ? c.turnTraceBegin(meta || {}) : ''; } catch (e) { return ''; }
+  }
+  function _roleTurnTraceEvent(traceId, type, fields) {
+    try { var c = _roleTurnTraceCore(); return c && typeof c.turnTraceEvent === 'function' ? c.turnTraceEvent(traceId, type, fields || {}) : null; } catch (e) { return null; }
+  }
+  function _roleTurnTraceFinish(traceId, status, fields, turn) {
+    try {
+      var c = _roleTurnTraceCore();
+      var guard = turn && turn.guard;
+      if (guard && typeof guard.snapshot === 'function') {
+        var snap = guard.snapshot(), events = [];
+        try { events = (typeof guard.trace === 'function' ? guard.trace() : []).map(function (event) { return String(event && event.t || '') + (event && event.reason ? ':' + String(event.reason) : ''); }).filter(Boolean).slice(-16); } catch (e) {}
+        _roleTurnTraceEvent(traceId, 'tool_execution', { toolName: 'turn_summary', toolStatus: Number(snap.toolCalls) > 0 ? 'accounted' : 'none',
+          toolCount: Number(snap.toolCalls) || 0, toolCalls: Number(snap.toolCalls) || 0, toolRounds: Number(snap.rounds) || 0 });
+        _roleTurnTraceEvent(traceId, 'tool_guard', { toolCalls: Number(snap.toolCalls) || 0, toolRounds: Number(snap.rounds) || 0,
+          guardTripped: !!snap.tripped, guardReason: String(snap.breakerReason || ''), guardEvents: events });
+      }
+      return c && typeof c.turnTraceFinish === 'function' ? c.turnTraceFinish(traceId, status || 'completed', fields || {}) : null;
+    } catch (e) { return null; }
+  }
+  function _roleErrorCategory(error) {
+    try { if (window.IBERR && typeof window.IBERR.classify === 'function') return window.IBERR.classify(error); } catch (e) {}
+    return String(error && (error.ibCat || error.code) || 'unknown').slice(0, 64);
   }
   function apiConfigsLive() {
     try { return window.apiConfigs || []; } catch (e) { return []; }
@@ -167,6 +201,57 @@
   function sanitizeName(v) {
     return sanitizeInput(v).slice(0, 60);
   }
+  function defaultSceneMetadata(thread) {
+    return {
+      title: '',
+      tags: [],
+      createdAt: Number((thread || {}).createdAt) || 0,
+      playback: { voiceMode: 'auto', textPacing: 'natural' }
+    };
+  }
+  function normalizeSceneMetadata(value, thread) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    var src = value, base = defaultSceneMetadata(thread), tags = [], seen = {};
+    var title = String(typeof src.title === 'string' ? src.title : '')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SCENE_TITLE_MAX);
+    var rawTags = Array.isArray(src.tags) ? src.tags : [];
+    for (var i = 0; i < rawTags.length && tags.length < SCENE_TAG_MAX; i++) {
+      if (typeof rawTags[i] !== 'string') continue;
+      var tag = rawTags[i].replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SCENE_TAG_LENGTH_MAX);
+      var key = tag.toLocaleLowerCase();
+      if (!tag || seen[key]) continue;
+      seen[key] = true;
+      tags.push(tag);
+    }
+    var playback = src.playback && typeof src.playback === 'object' && !Array.isArray(src.playback) ? src.playback : {};
+    var parsedCreatedAt = Number(src.createdAt);
+    var createdAt = isFinite(parsedCreatedAt) && parsedCreatedAt > 0 ? parsedCreatedAt : (base.createdAt || nowMs());
+    return {
+      title: title,
+      tags: tags,
+      createdAt: createdAt,
+      playback: {
+        voiceMode: playback.voiceMode === 'text' ? 'text' : 'auto',
+        textPacing: playback.textPacing === 'fast' ? 'fast' : 'natural'
+      }
+    };
+  }
+  function sceneMetadataView(thread) {
+    var rec = thread || {}, stored = normalizeSceneMetadata(rec.scene, rec) || defaultSceneMetadata(rec);
+    var participantIds = Array.isArray(rec.participantIds) ? rec.participantIds.slice(0, 2) : [];
+    var participants = participantIds.map(function (id) {
+      var cfg = cfgOf(id);
+      return { id: String(id || ''), name: nameOf(cfg), missing: !cfg };
+    });
+    var fallbackTitle = participants.map(function (participant) { return participant.name; }).join(' × ') || 'Role DM Scene';
+    return {
+      title: stored.title || fallbackTitle,
+      participants: participants,
+      createdAt: Number(stored.createdAt) || Number(rec.createdAt) || 0,
+      tags: stored.tags.slice(),
+      playback: { voiceMode: stored.playback.voiceMode, textPacing: stored.playback.textPacing }
+    };
+  }
 
   /* ── 层④（跨 run 的共同历史）进入 prompt 的**唯一** canonical 边界 ──────
      备忘的正文来自模型自己说过的话，也就是"用户可间接影响的文本"。
@@ -206,7 +291,12 @@
     for (var k in v.items) {
       if (!Object.prototype.hasOwnProperty.call(v.items, k)) continue;
       var rec = core() ? core().normalizeThreadRecord(v.items[k]) : null;
-      if (rec) out.push(rec);
+      if (rec) {
+        var scene = normalizeSceneMetadata(rec.scene, rec);
+        if (scene) rec.scene = scene;
+        else delete rec.scene;
+        out.push(rec);
+      }
     }
     out.sort(function (a, b) { return (Number(b.lastMessageAt) || Number(b.createdAt) || 0) - (Number(a.lastMessageAt) || Number(a.createdAt) || 0); });
     return out;
@@ -220,6 +310,9 @@
     if (!rec || !core()) return false;
     var norm = core().normalizeThreadRecord(rec);
     if (!norm) return false;
+    var scene = normalizeSceneMetadata(norm.scene, norm);
+    if (scene) norm.scene = scene;
+    else delete norm.scene;
     var v = readJSON(KEY_THREADS, null);
     var items = (v && Number(v.v) === INDEX_VERSION && v.items && typeof v.items === 'object') ? v.items : {};
     items[norm.threadId] = norm;
@@ -309,6 +402,68 @@
     return next;
   }
 
+  /* Optional reply behavior is isolated from the autonomous social scheduler.
+     It is per-character UI preference only; it never creates work or messages. */
+  function normalizeReplyInitiativePrefs(value) {
+    var raw = value && typeof value === 'object' ? value : {};
+    var types = raw.types && typeof raw.types === 'object' ? raw.types : {};
+    return {
+      enabled: raw.enabled === true,
+      frequency: raw.frequency === 'occasional' ? 'occasional' : 'low',
+      types: {
+        supplement: types.supplement === undefined ? true : types.supplement === true,
+        contextLink: types.contextLink === undefined ? true : types.contextLink === true,
+        careNudge: types.careNudge === undefined ? true : types.careNudge === true
+      }
+    };
+  }
+  function replyInitiativeAll() {
+    var raw = readJSON(KEY_REPLY_INITIATIVE, null);
+    var source = raw && raw.characters && typeof raw.characters === 'object' ? raw.characters : {};
+    var out = {};
+    Object.keys(source).forEach(function (id) {
+      if (id) out[String(id)] = normalizeReplyInitiativePrefs(source[id]);
+    });
+    return out;
+  }
+  function replyInitiativePrefs(roleId) {
+    var id = String(roleId || '').trim();
+    var all = replyInitiativeAll();
+    return id && all[id] ? all[id] : normalizeReplyInitiativePrefs(null);
+  }
+  function setReplyInitiativePrefs(roleId, patch) {
+    var id = String(roleId || '').trim();
+    if (!id) return normalizeReplyInitiativePrefs(null);
+    var all = replyInitiativeAll();
+    var current = all[id] || normalizeReplyInitiativePrefs(null);
+    var update = patch && typeof patch === 'object' ? patch : {};
+    var next = normalizeReplyInitiativePrefs({
+      enabled: update.enabled === undefined ? current.enabled : update.enabled,
+      frequency: update.frequency === undefined ? current.frequency : update.frequency,
+      types: Object.assign({}, current.types, update.types && typeof update.types === 'object' ? update.types : {})
+    });
+    all[id] = next;
+    writeJSON(KEY_REPLY_INITIATIVE, { v: 1, characters: all });
+    return next;
+  }
+  function replyInitiativeOpportunity(roleId, runId, frequency) {
+    var source = String(roleId || '') + '\u001f' + String(runId || '');
+    var hash = 0;
+    for (var i = 0; i < source.length; i++) hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+    var divisor = frequency === 'occasional' ? 2 : 4;
+    return source.length > 1 && hash % divisor === 0;
+  }
+  function replyInitiativeForTurn(roleId, trigger, runId, rawPrefs, grantedByRole) {
+    var id = String(roleId || '').trim();
+    var config = normalizeReplyInitiativePrefs(rawPrefs);
+    var granted = grantedByRole && typeof grantedByRole === 'object' ? grantedByRole : null;
+    if (!id || trigger !== 'manual' || !config.enabled || !config.types.supplement && !config.types.contextLink && !config.types.careNudge) return null;
+    if (granted && granted[id] === true) return null;
+    if (!replyInitiativeOpportunity(id, runId, config.frequency)) return null;
+    if (granted) granted[id] = true;
+    return config;
+  }
+
   /* ══════════ thread 解析与创建 ═══════════════ */
   /* 同一对角色**只**对应一个 canonical DM identity —— 与 A/B 顺序无关。 */
   async function resolveThread(a, b, opts) {
@@ -348,6 +503,126 @@
     }
     threadSave(rec);
     return { ok: true, created: true, thread: rec };
+  }
+
+  function updateSceneMetadata(threadId, patch) {
+    var fid = String(threadId || '');
+    var rec = threadGet(fid);
+    if (!rec) return { ok: false, reason: 'thread-not-found' };
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return { ok: false, reason: 'bad-scene-patch' };
+    var current = normalizeSceneMetadata(rec.scene, rec) || defaultSceneMetadata(rec);
+    var playbackPatch = patch.playback && typeof patch.playback === 'object' && !Array.isArray(patch.playback) ? patch.playback : {};
+    rec.scene = normalizeSceneMetadata({
+      title: Object.prototype.hasOwnProperty.call(patch, 'title') ? patch.title : current.title,
+      tags: Object.prototype.hasOwnProperty.call(patch, 'tags') ? patch.tags : current.tags,
+      createdAt: Object.prototype.hasOwnProperty.call(patch, 'createdAt') && isFinite(Number(patch.createdAt)) && Number(patch.createdAt) > 0
+        ? Number(patch.createdAt) : (current.createdAt || Number(rec.createdAt) || nowMs()),
+      playback: {
+        voiceMode: Object.prototype.hasOwnProperty.call(playbackPatch, 'voiceMode') ? playbackPatch.voiceMode : current.playback.voiceMode,
+        textPacing: Object.prototype.hasOwnProperty.call(playbackPatch, 'textPacing') ? playbackPatch.textPacing : current.playback.textPacing
+      }
+    }, rec);
+    rec.updatedAt = nowMs();
+    if (!threadSave(rec)) return { ok: false, reason: 'scene-save-failed' };
+    return { ok: true, scene: sceneMetadataView(rec) };
+  }
+
+  function exportSceneData(threadId) {
+    var rec = threadGet(String(threadId || ''));
+    if (!rec) return { ok: false, reason: 'thread-not-found' };
+    var scene = sceneMetadataView(rec);
+    return {
+      ok: true,
+      data: {
+        format: SCENE_EXPORT_FORMAT,
+        version: SCENE_EXPORT_VERSION,
+        exportedAt: nowMs(),
+        participants: rec.participantIds.map(function (roleId) { return { roleId: String(roleId) }; }),
+        scene: {
+          title: scene.title,
+          tags: scene.tags.slice(),
+          createdAt: scene.createdAt,
+          playback: { voiceMode: scene.playback.voiceMode, textPacing: scene.playback.textPacing }
+        }
+      }
+    };
+  }
+
+  async function importSceneData(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, reason: 'bad-scene-file' };
+    if (payload.format !== SCENE_EXPORT_FORMAT) return { ok: false, reason: 'bad-scene-format' };
+    if (payload.version !== SCENE_EXPORT_VERSION) return { ok: false, reason: 'unsupported-scene-version' };
+    var sourceScene = payload.scene;
+    if (!sourceScene || typeof sourceScene !== 'object' || Array.isArray(sourceScene)) return { ok: false, reason: 'bad-scene-metadata' };
+    var hasMessageData = Object.prototype.hasOwnProperty.call(payload, 'messages')
+      || Object.prototype.hasOwnProperty.call(payload, 'chatMessages')
+      || Object.prototype.hasOwnProperty.call(sourceScene, 'messages');
+    if (hasMessageData) return { ok: false, reason: 'message-data-not-allowed' };
+    if (!Array.isArray(payload.participants) || payload.participants.length !== 2) return { ok: false, reason: 'bad-participant-refs' };
+    var roleIds = [];
+    for (var i = 0; i < payload.participants.length; i++) {
+      var ref = payload.participants[i];
+      var roleId = ref && typeof ref === 'object' && typeof ref.roleId === 'string' ? ref.roleId.trim() : '';
+      if (!roleId || roleId.length > 120 || !/^[A-Za-z0-9_.:-]+$/.test(roleId) || roleIds.indexOf(roleId) >= 0) {
+        return { ok: false, reason: 'bad-participant-refs' };
+      }
+      roleIds.push(roleId);
+    }
+    var c = core();
+    var friendId = c ? c.roleDmFriendId(roleIds[0], roleIds[1]) : '';
+    if (!friendId) return { ok: false, reason: 'bad-participant-refs' };
+    /* Refuse collisions before resolveThread: import never adopts or overwrites an
+       existing thread. Also check canonical messages in case its index is missing. */
+    if (threadGet(friendId)) return { ok: false, reason: 'thread-exists', threadId: friendId };
+    var priorRows = [];
+    try { priorRows = await dbGetByIndex('chatMessages', 'byFriend', friendId); }
+    catch (e) { return { ok: false, reason: 'message-store-unavailable' }; }
+    var priorMessages = (priorRows || []).filter(function (message) { return c.messageBelongsToThread(message, friendId); });
+    if (priorMessages.length) return { ok: false, reason: 'thread-exists', threadId: friendId };
+
+    var resolved = await resolveThread(roleIds[0], roleIds[1]);
+    if (!resolved || !resolved.ok) return { ok: false, reason: (resolved && resolved.reason) || 'thread-create-failed' };
+    if (!resolved.created || Number((resolved.thread || {}).messageCount) > 0) {
+      return { ok: false, reason: 'thread-exists', threadId: (resolved.thread || {}).threadId || friendId };
+    }
+    var currentRows = [];
+    try { currentRows = await dbGetByIndex('chatMessages', 'byFriend', friendId); }
+    catch (e) { return { ok: false, reason: 'message-store-unavailable', threadId: friendId };
+    }
+    if ((currentRows || []).some(function (message) { return c.messageBelongsToThread(message, friendId); })) {
+      return { ok: false, reason: 'thread-exists', threadId: friendId };
+    }
+    var playback = sourceScene.playback && typeof sourceScene.playback === 'object' && !Array.isArray(sourceScene.playback)
+      ? sourceScene.playback : {};
+    var createdAt = Number(sourceScene.createdAt);
+    if (!isFinite(createdAt) || createdAt <= 0) createdAt = nowMs();
+    var saved = updateSceneMetadata(resolved.thread.threadId, {
+      title: typeof sourceScene.title === 'string' ? sourceScene.title : '',
+      tags: Array.isArray(sourceScene.tags) ? sourceScene.tags : [],
+      createdAt: createdAt,
+      playback: {
+        voiceMode: playback.voiceMode === 'text' ? 'text' : 'auto',
+        textPacing: playback.textPacing === 'fast' ? 'fast' : 'natural'
+      }
+    });
+    if (!saved.ok) {
+      await deleteThread(resolved.thread.threadId);
+      return { ok: false, reason: saved.reason || 'scene-save-failed' };
+    }
+    var missingRoles = [], missingVoiceProfiles = [];
+    roleIds.forEach(function (roleId) {
+      var cfg = cfgOf(roleId);
+      if (!cfg) missingRoles.push(roleId);
+      else if (saved.scene.playback.voiceMode === 'auto' && !(cfg.voice && cfg.voice.enabled === true)) missingVoiceProfiles.push(roleId);
+    });
+    return {
+      ok: true,
+      created: true,
+      threadId: resolved.thread.threadId,
+      scene: saved.scene,
+      missingRoles: missingRoles,
+      missingVoiceProfiles: missingVoiceProfiles
+    };
   }
 
   /* 从 canonical 存储重建索引（导入恢复 / 索引丢失时自愈）。
@@ -457,6 +732,81 @@
     return { ok: true, id: msg.id };
   }
 
+  /* Reuse communication.js's singleton Delivery Runtime. Role DM keeps its own
+     canonical message adapter, but shares ordered timing/cancel semantics. The
+     conversation key is intentionally disjoint from Chat's dm:/group: keys. */
+  async function deliverRoleDmSequence(options) {
+    var opts = options || {};
+    var signal = opts.signal || null;
+    if (signal && signal.aborted) return { ok: false, reason: 'aborted', delivered: 0 };
+    var runtime = null;
+    try {
+      if (window && typeof window._ibDeliveryRuntime === 'function') runtime = window._ibDeliveryRuntime();
+    } catch (e) { runtime = null; }
+    if (!runtime || typeof runtime.enqueue !== 'function') {
+      return { ok: false, reason: 'delivery-unavailable', delivered: 0 };
+    }
+    var conversationId = 'role-dm:' + String(opts.threadId || '');
+    if (!opts.threadId || !Array.isArray(opts.units) || !opts.units.length || typeof opts.onUnit !== 'function') {
+      return { ok: false, reason: 'bad-delivery-sequence', delivered: 0 };
+    }
+    var inFlight = null;
+    var abortHandler = function () {
+      try { if (typeof runtime.abort === 'function') runtime.abort(conversationId, 'user_stop'); } catch (e) { }
+    };
+    if (signal && typeof signal.addEventListener === 'function') {
+      try { signal.addEventListener('abort', abortHandler, { once: true }); } catch (e) { }
+    }
+    var handle = null;
+    try {
+      handle = runtime.enqueue({
+        turnId: String(opts.runId || 'role-dm') + ':' + String(opts.modelTurnIndex || 0),
+        conversationId: conversationId,
+        scope: 'role-dm',
+        units: opts.units.map(function (unit) { return { content: String((unit && unit.text) || ''), payload: unit }; }),
+        /* Short deterministic pacing follows the existing runtime's silent-delay
+           and typing stages. It is bounded by that runtime's own clamp. */
+        pacing: { baseMs: 240, perCharMs: 8 },
+        onUnit: function (unit, index) {
+          inFlight = Promise.resolve().then(function () {
+            if (signal && signal.aborted) return { ok: false, reason: 'aborted' };
+            return opts.onUnit(unit && unit.payload, index);
+          });
+          return inFlight;
+        },
+        onTyping: function (on, info) {
+          try {
+            if (typeof NS.roleDmEmit === 'function') NS.roleDmEmit('delivery', {
+              threadId: String(opts.threadId), typing: !!on, sequenceIndex: Number((info || {}).sequenceIndex) || 0,
+              speakerId: String(opts.speakerId || ''),
+              speakerName: String(opts.speakerName || '')
+            });
+          } catch (e) { }
+        }
+      });
+      if (!handle || !handle.promise) return { ok: false, reason: 'delivery-unavailable', delivered: 0 };
+      if (signal && signal.aborted) abortHandler();
+      var result = await handle.promise;
+      /* Delivery Runtime resolves cancellation immediately. Wait for a unit whose
+         persistence had already started so run() cannot return ahead of its commit. */
+      if (inFlight) { try { await inFlight; } catch (e) { } }
+      if (signal && signal.aborted) return { ok: false, reason: 'aborted', delivered: Number((result || {}).delivered) || 0 };
+      return {
+        ok: !!(result && result.state === 'completed'),
+        reason: String((result && result.reason) || (result && result.state) || 'delivery-failed'),
+        delivered: Number((result && result.delivered) || 0),
+        total: Number((result && result.total) || opts.units.length)
+      };
+    } catch (e) {
+      if (inFlight) { try { await inFlight; } catch (ignored) { } }
+      return { ok: false, reason: signal && signal.aborted ? 'aborted' : 'delivery-failed', delivered: 0 };
+    } finally {
+      if (signal && typeof signal.removeEventListener === 'function') {
+        try { signal.removeEventListener('abort', abortHandler); } catch (e) { }
+      }
+    }
+  }
+
   /* ══════════ A 侧 / B 侧 context 组装 ═══════════════
      每一侧只用**自己**的人格与**自己**的记忆；对方只以**公开认知层**
      （名字 / 公开简介·身份·特征·兴趣 / 你对 TA 的有向看法）出现。
@@ -479,6 +829,13 @@
     var speaker = cfgOf(speakerId);
     var peer = cfgOf(peerId);
     var history = opts.history || [];
+    /* Request-local Conversation State: derived only from this thread's already
+       loaded messages and this run's explicit topic hint. Never persisted. */
+    var conversationState = opts.trigger === 'autonomous' ? null : {
+      threadId: String((thread && thread.threadId) || ''),
+      messageCount: history.length,
+      topicHint: sanitizeInput(String(opts.topic || '')).slice(0, 200)
+    };
     /* ── 层④（我们以前聊过什么）的真源是 **thread 记录** ────────────────
        挂在一对角色上而不是任一角色上，因此 A 与 B **必然**读到同一份
        （memorandum(A,B) === memorandum(B,A)）；有向的是层③ relationship，
@@ -541,6 +898,24 @@
       })
     };
     var built = c.buildRoleDmContext(spec);
+    var roleDmDetailedRequest = false;
+    /* Reuse the loaded shared brevity policy, with its Role DM-specific strategy.
+       This is prompt composition only: no extra provider call, state, or persistence. */
+    try {
+      var brevity = (window.IB && window.IB.brevity) || null;
+      if (brevity && typeof brevity.applyRoleDm === 'function') {
+        var styleText = String(opts.lastPeerText || opts.topic || '');
+        roleDmDetailedRequest = typeof brevity.isRoleDmDetailedRequest === 'function'
+          ? brevity.isRoleDmDetailedRequest(styleText)
+          : (typeof brevity.isDetailedRequest === 'function' && brevity.isDetailedRequest(styleText));
+        built.system = brevity.applyRoleDm(built.system, {
+          detailed: roleDmDetailedRequest,
+          concise: !!(speaker && speaker.replyStyle === 'concise'),
+          naturalEnding: !!(speaker && speaker.naturalEnding === true),
+          conversationContinuity: !!(speaker && speaker.conversationContinuity === true)
+        });
+      }
+    } catch (e) { }
     /* 站点上下文 / Auto Memory 注入：与群聊逐字同款（按本角色独立门控），
        但**不含**玩家可见性档位之外的任何私密内容 —— 复用既有 producer，
        不新造第二套注入器。 */
@@ -612,15 +987,132 @@
       chars: memoForPrompt ? memoForPrompt.text.length : 0,
       coveredMessages: memoForPrompt ? Number(memoForPrompt.sourceMessageCount) || 0 : 0
     };
-    /* 输出契约：一句话正文 + 可选的、有界的私聊记忆候选。
+    /* 输出契约：私聊正文 + 可选的、有界的私聊记忆候选。
        记忆候选**不是** <mem_create> 标签（那是给前台聊天、且带用户审批弹窗的
        协议）；它只作为本 run 的一次候选，由本域在 run 结束后统一决定是否落成
        一条 episodic 记忆，再交给既有 Memory Consolidation。 */
-    built.system += '\n\n【本轮的输出格式】先写你要对「' + spec.peerName + '」说的那一段话（不要任何前缀/标签）；'
+    built.system += '\n\n【本轮的输出格式】正文写你要对「' + spec.peerName + '」说的消息（不要角色名或解释标注）。'
+      + '默认一条消息；同一次生成只有在话题自然转向、或确有独立补充时才可写成最多三条。'
+      + '每条消息只表达一个自然完整的意思；复杂说明可以留在一条里。'
+      + '多条消息必须用单独一行 [[ib:message]] 分隔；普通换行、分段和标点都不会自动拆成多个气泡。'
       + '如果这次私聊里出现了**值得你长期记住**的具体事情，再另起一行输出一行私聊记忆候选：'
       + '<role_dm_memo importance="1-10">一句话，≤80字</role_dm_memo>。'
       + '没有值得长期记住的事就完全不要输出这个标签。绝大多数闲聊都不需要它。';
+    built.system += '\n\n【可选的自然聊天节奏】只按角色原有语气和当前上下文说话，不必每轮拆分，也不必刻意口语化。'
+      + '合适时可以用短句和轻停顿、简短回应（如“嗯”“好”“哈哈”），或在想到真实补充时轻微改口。'
+      + '短回应后若只是同一意思的解释，优先合成一条；确实像两个自然接话节拍、或补充本身独立时，才用既有 [[ib:message]] 分成气泡。'
+      + '不要为了显得自然或凑气泡数而添加回应、重复内容或虚构事实；改口只纠正当前对话中已有依据的内容。';
+    try {
+      var expressionHint = window.IBExpressionPacks && typeof window.IBExpressionPacks.promptHint === 'function'
+        ? window.IBExpressionPacks.promptHint(speakerId) : '';
+      if (expressionHint) built.system += '\n\n' + expressionHint;
+    } catch (expressionPromptError) { }
+    built.system += '\n\n【Correction / Hesitation v1 · 低频修正】改口、补充或犹豫后修正完全可选且低频，绝大多数回复直接自然说完。'
+      + '只有当当前 thread 的明确原文，或本轮已经写出的当前措辞，提供了可指出的具体依据时才修正；补充也只能澄清本句或 thread 已提供的事实。'
+      + '如果当前 thread 没有那句话，就不要声称“我刚才说过”或“刚才说错了”，不编造先前错误、反悔或新事实；空 thread 不假设有旧说法。'
+      + '犹豫只可作为确有修正依据时的一小句承接，并立刻给出修正；不写戏剧化停顿、拉长省略号、口吃或重复道歉。轻微否定自己前一句时，必须能指出该句及更正依据。'
+      + '一次回复最多出现一处修正，即使有依据也可以不修正；不要每轮安排。若改口自然分成两拍，先说原表达再紧接更正；一句内能自然完成就不要为犹豫单独拆泡，多条消息只沿用 [[ib:message]] 的既有顺序和格式。';
+    if (opts.trigger !== 'autonomous') {
+      built.system += '\n\n【Conversation State v1 · 当前 thread】'
+        + (conversationState.messageCount > 0
+          ? '本轮使用当前 thread 最近 ' + conversationState.messageCount + ' 条对话原文。'
+          : '当前 thread 没有历史消息；不要假设曾讨论过的话题、已回答的问题或共同事件。')
+        + (conversationState.topicHint
+          ? '本轮明确给出的话题入口是「' + conversationState.topicHint + '」；如果近期对话已经转向，以较新的原文为准。'
+          : '从当前 thread 最近对话识别正在讨论的主题；近期已转向时不要固守旧话题。')
+        + '把仍未回答的问题、尚未完成的约定作为可承接项；后续消息已答复或完成的就视为解决，不重复询问或机械追问。'
+        + '计划、偏好和状态以本 thread 最近的明确说法为准，较新的明确修正覆盖较早说法；问题、猜测和假设不当作已确认事实。'
+        + '只在自然相关时轻提一处近期内容，不复述、回顾或机械总结；无自然承接点时直接回应当前内容。'
+        + '当前内容确有依据时，可以轻微反驳、补充、改口或插入一句短促的打断式补充；这些表达完全可选，每次回复至多一种，不要每轮加入或演成戏剧冲突。'
+        + '以上判断只用当前 thread 的消息与本轮话题提示，不从其他 thread、Chat 或跨会话内容补足，也不凭空补写过去事件。';
+    }
+    var replyInitiative = opts.replyInitiative && typeof opts.replyInitiative === 'object'
+      ? normalizeReplyInitiativePrefs(opts.replyInitiative) : null;
+    if (replyInitiative && replyInitiative.enabled) {
+      var initiativeGuidance = [];
+      if (replyInitiative.types.supplement) initiativeGuidance.push('回复中补充：加一句相关想法或轻微反问');
+      if (replyInitiative.types.contextLink) initiativeGuidance.push('关联上下文：连接本线程已提供的相关内容，不声称记得未提供的经历');
+      if (replyInitiative.types.careNudge) initiativeGuidance.push('轻量关心或提醒：只根据对方明确说过的状态、安排或困难，不推断新事实');
+      if (initiativeGuidance.length) {
+        built.system += '\n\n【回复内轻量主动表达】本轮可选下面一种方式，在当前 Role DM 回复中自然带出：'
+          + initiativeGuidance.join('；') + '。这只是低频机会，不要求每次都添加；如果当前上下文没有明确依据、或正常回复已经足够，就不要补充。'
+          + '保持角色原有语气，不新开话题，不为了主动表达额外制造气泡；若补充确实独立，再沿用现有多气泡格式。';
+      }
+    }
+    built.system += '\n\n【本轮回合意图】输出的第一行必须且只写一个短控制标记，紧接着从下一行开始写消息正文：'
+      + '[role_dm:speak]、[role_dm:continue_self]、[role_dm:yield] 或 [role_dm:end]。'
+      + 'speak 表示本次生成的消息已经说完，现在交给对方；continue_self 表示这些消息之后确实还有独立的后续想法，需要下一次模型调用。'
+      + '同一次生成里的 1–3 条消息仍只算一个模型回合；continue_self 才会再消耗一个模型回合，同一角色最多连续两次模型生成。'
+      + '不要把本来适合分开发送的两件事用多个段落塞进同一条普通闲聊，也不要把一句完整答复拆成碎片。'
+      + 'yield 表示这次不发消息、让对方接话，适合停顿或把话让给对方；end 表示对话已经自然停在这里，可附一条简短收尾，也可不写正文。'
+      + '一条消息已经自然说完时用 speak；有真正独立的补充才用 continue_self；对话停住时可用 yield 或 end。不要为了延长对话而制造补充，也不要解释或复述控制标记；标记不会显示给对方。';
+    if ((Number(opts.consecutiveSpeakerCount) || 0) >= 1) {
+      built.system += '\n\n【跨模型连续发言上限】你已经连续完成 ' + Math.min(2, Number(opts.consecutiveSpeakerCount) || 0)
+        + ' 次模型生成；本轮之后若再由你开启一次模型生成会超过上限。当前生成内的多条消息仍只算一次，请不要选择 continue_self。';
+    }
+    if (!roleDmDetailedRequest) {
+      built.system += '\n\n【普通闲聊的优先格式】最近的历史只提供事实和关系背景，不要求你模仿它的长度或排版。'
+        + '除非对方明确要求展开，或话题确实复杂，一条普通回应通常一两句；先接住最近的一件事，说完就停。'
+        + '如果自然地转到另一件独立的事，可以在本次生成里另发一条；不要按句号、换行或固定长度机械拆分。'
+        + '只有还需要另一次模型生成补充时才选择 continue_self；不要把多条消息误当成多个模型回合。'
+        + '不要为了遵守格式删掉复杂问题必需的解释，也不要为了多发消息拆开一段完整的话。';
+    }
+    /* Keep a compact copy of the control contract in the final generation frame.
+       The model sees this after recent history and Memory context, while the stored
+       message remains untouched and the runtime still performs exactly one call. */
+    var finalUserIndex = built.messages.length - 1;
+    if (finalUserIndex >= 0 && built.messages[finalUserIndex].role === 'user') {
+      var finalFrame = '【本轮输出格式】第一行只写一个控制标记：[role_dm:speak]、[role_dm:continue_self]、[role_dm:yield] 或 [role_dm:end]；下一行开始写正文。'
+        + '默认一条；确有自然话题转向时最多三条，并且只用单独一行 [[ib:message]] 分隔，不按标点或换行拆分。'
+        + '每条可在自己的末尾另起一行选择一个引用键，例如 [[quote:Q1.2]]；每条独立决定是否引用。'
+        + '一次生成里的多条消息仍只消耗一个模型回合；continue_self 才会调用模型生成下一回合。'
+        + '不要省略标记，不要加代码围栏或解释。yield 仅写标记不写正文；end 可以只写标记或附收尾。';
+      if (!roleDmDetailedRequest) {
+        finalFrame += ' 普通闲聊通常一句或两句；复杂说明可以保持一条，只有独立话题才分成不同消息。';
+      }
+      if (opts.trigger !== 'autonomous') {
+        finalFrame += ' 回复前核对本 thread 最近消息里已经回答的内容；引用只在自然时轻带，不复述或机械总结。';
+      }
+      finalFrame += ' 自然聊天节奏是可选的：可按语境使用短停顿、简短回应或轻微改口补充；不要每轮套用，也不要为拆分制造消息，并保持角色原有语气与事实边界。';
+      finalFrame += ' 改口或犹豫完全可选且低频，只依据当前措辞或当前 thread 明确原文；无原文不声称说过或说错过，不添新事实。犹豫须立即接修正，不制造戏剧停顿；多气泡先原表达后修正，沿用 [[ib:message]]。';
+      if ((Number(opts.consecutiveSpeakerCount) || 0) >= 1) finalFrame += ' 你已连续完成模型生成，本轮之后请让对方接话，不要选择 continue_self。';
+      built.messages[finalUserIndex].content += '\n\n' + finalFrame;
+    }
+    /* Quote-Aware Reply uses the existing canonical messages only. The request-local
+       candidate map is also the validation allowlist; no new call or stored state. */
+    var quoteCore = (window && window.IBMessageQuoteCore) || null;
+    built.quoteContext = null;
+    try {
+      if (quoteCore && typeof quoteCore.buildContext === 'function') {
+        built.quoteContext = quoteCore.buildContext(history, {
+          mode: 'role-dm', friendId: String((thread && thread.threadId) || ''),
+          threadId: String((thread && thread.threadId) || ''), currentSenderId: speakerId,
+          limit: 8
+        });
+        if (built.quoteContext.prompt) built.system += '\n\n' + built.quoteContext.prompt
+          + '\n本轮如果使用 [[ib:message]] 分成多条，每条消息都可以单独选择至多一个目录中的引用键；引用标记紧跟该条正文并放在分隔符之前。';
+      }
+    } catch (e) { built.quoteContext = null; }
+    /* buildRoleDmContext returns both a diagnostic `system` string and the provider
+       `messages` array. Every policy above is appended to the former, so synchronize
+       the canonical system frame before the sole provider call. Without this copy,
+       the live model sees only the base persona and final user frame—not brevity,
+       intent, Memory framing, or Quote-Aware Reply guidance. */
+    if (built.messages.length && built.messages[0] && built.messages[0].role === 'system') {
+      built.messages[0].content = built.system;
+    }
     built.peerName = spec.peerName;
+    var _traceMemoryChars = String(_memCtx || '').length + String(_undCtx || '').length;
+    var _traceContextChars = String(built.system || '').length;
+    built.messages.forEach(function (message) { _traceContextChars += String((message && message.content) || '').length; });
+    built.traceMetrics = {
+      memoryState: _traceMemoryChars ? 'present' : 'empty',
+      memoryChars: _traceMemoryChars,
+      contextMessages: built.messages.length,
+      contextChars: _traceContextChars,
+      systemChars: String(built.system || '').length,
+      tailChars: built.messages.length ? String((built.messages[built.messages.length - 1] || {}).content || '').length : 0
+    };
     built.selfName = spec.selfName;
     return built;
   }
@@ -659,6 +1151,13 @@
     /* Middle Brain Trace：**在 context 组装之前** begin，因为组装本身就要往
        同一条记录上打点（MB 产出来源）。身份字段一律指本回合的真实执行上下文。 */
     var trace = (function () { try { return (window.IB && window.IB.__mbTrace) || null; } catch (e) { return null; } })();
+    var _turnTraceId = _roleTurnTraceBegin({consumer:'role_dm',characterId:speakerId,
+      threadId:String((ctx.thread && ctx.thread.threadId) || ''),turnId:String(ctx.runId || ctx.turnIndex || '')});
+    _roleTurnTraceEvent(_turnTraceId,'input',{inputMessages:history.length+1,inputChars:String(lastPeer || '').length});
+    function _finishRoleDmTrace(status, fields) {
+      if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
+      _roleTurnTraceFinish(_turnTraceId,status,Object.assign({resultChars:0,assistantMessages:0},fields || {}),turn);
+    }
     if (trace) {
       trace.begin('role_dm', speakerId);
       /* 只记稳定身份；**不记** API key、不记 prompt、不记消息正文。 */
@@ -676,19 +1175,60 @@
       trace.note(speakerId, 'model', String(speaker.model || ''));
       trace.note(speakerId, 'executor', 'callApiChat');
     }
-    var built = await composeSide(speakerId, peerId, ctx.thread, {
-      history: history,
-      topic: ctx.topic,
-      userName: ctx.userName,
-      userPresent: ctx.userPresent,
-      threadContext: ctx.threadContext,
-      lastPeerText: lastPeer,
-      /* 自主发起的行为背景。**只**透传闭集里的 code；任何其它字段
-         （score / peerId / quota / signals 数组）都到不了这里。 */
-      initiationSignal: (ctx.trigger === 'autonomous' && ctx.signal && ctx.signal.reasonCode)
-        ? { signalCode: String(ctx.signal.reasonCode) }
-        : null
-    });
+    var built;
+    try {
+      built = await composeSide(speakerId, peerId, ctx.thread, {
+        history: history,
+        topic: ctx.topic,
+        userName: ctx.userName,
+        userPresent: ctx.userPresent,
+        threadContext: ctx.threadContext,
+        lastPeerText: lastPeer,
+        /* 自主发起的行为背景。**只**透传闭集里的 code；任何其它字段
+           （score / peerId / quota / signals 数组）都到不了这里。 */
+        initiationSignal: (ctx.trigger === 'autonomous' && ctx.signal && ctx.signal.reasonCode)
+          ? { signalCode: String(ctx.signal.reasonCode) }
+          : null,
+        trigger: ctx.trigger,
+        runId: ctx.runId,
+        replyInitiative: ctx.replyInitiative || null,
+        consecutiveSpeakerCount: Number(ctx.consecutiveSpeakerCount) || 0
+      });
+    } catch (contextError) {
+      _finishRoleDmTrace('failed',{errorCategory:'context'});
+      throw contextError;
+    }
+    _roleTurnTraceEvent(_turnTraceId,'memory',{memoryState:built.traceMetrics&&built.traceMetrics.memoryState||'empty',
+      memoryChars:built.traceMetrics&&built.traceMetrics.memoryChars||0,memoryAuthority:'role_visible'});
+    _roleTurnTraceEvent(_turnTraceId,'middle_brain',{mbSource:String((built._mb&&built._mb.source)||'bypass'),
+      mbInjected:!!(built._mb&&built._mb.injected)});
+    _roleTurnTraceEvent(_turnTraceId,'context',{contextMessages:built.traceMetrics&&built.traceMetrics.contextMessages||built.messages.length,
+      contextChars:built.traceMetrics&&built.traceMetrics.contextChars||0,systemChars:built.traceMetrics&&built.traceMetrics.systemChars||0,
+      tailChars:built.traceMetrics&&built.traceMetrics.tailChars||0});
+    _roleTurnTraceEvent(_turnTraceId,'tool_execution',{toolName:'none',toolStatus:'disabled',toolCount:0});
+    var promptContract = {
+      roleDmBrevity: String(built.system || '').indexOf('【角色私聊表达】') >= 0,
+      ordinaryShortFormat: String(built.system || '').indexOf('【普通闲聊的优先格式】') >= 0,
+      intentContract: String(built.system || '').indexOf('[role_dm:continue_self]') >= 0,
+      finalUserIntentContract: !!(built.messages.length && built.messages[built.messages.length - 1].role === 'user'
+        && String(built.messages[built.messages.length - 1].content || '').indexOf('[role_dm:continue_self]') >= 0),
+      quoteGuidance: !!(built.messages.length && built.messages[0] && built.messages[0].role === 'system'
+        && String(built.messages[0].content || '').indexOf('【可选的引用回复】') >= 0),
+      messageProtocol: !!(built.messages.length && built.messages[0] && built.messages[0].role === 'system'
+        && String(built.messages[0].content || '').indexOf('[[ib:message]]') >= 0)
+    };
+    var quoteCandidateCount = built.quoteContext && Array.isArray(built.quoteContext.candidates)
+      ? built.quoteContext.candidates.length : 0;
+    var quoteOptionCount = built.quoteContext && Array.isArray(built.quoteContext.quoteOptions)
+      ? built.quoteContext.quoteOptions.length : 0;
+    try {
+      if (typeof ctx.onQuoteCandidates === 'function') ctx.onQuoteCandidates(quoteCandidateCount, quoteOptionCount);
+    } catch (e) { }
+
+    if (ctx.abortSignal && ctx.abortSignal.aborted) {
+      _finishRoleDmTrace('aborted',{reasonCode:'aborted'});
+      return { ok: false, reason: c.REASON.aborted };
+    }
 
     /* 宿主回合：ONE HOST AI TURN = ONE TOOL EXECUTION CYCLE = ONE TOTAL BUDGET。
        与群聊里"每个发言成员各自一个宿主回合"逐字同款（communication.js:2165-2167）。 */
@@ -721,7 +1261,7 @@
     var asked = { text: '', truncated: false, budgets: [] };
     try {
       if (typeof callApiChat !== 'function') {
-        if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
+        _finishRoleDmTrace('failed',{reasonCode:'executor_unavailable'});
         return { ok: false, reason: 'executor-unavailable' };
       }
       var res = {};
@@ -734,6 +1274,7 @@
       for (var bi = 0; bi < budgets.length; bi++) {
         var r = await callApiChat(speaker, built.messages, {
           _ibConsumer: 'role_dm',
+          _ibTraceId: _turnTraceId,
           /* RCI-1：调用身份 = 本回合**实际发言角色**与它所在的私聊 thread。
              两者都取自本回合的真实执行上下文（speakerId 是本回合的发言方 id，
              threadId 是本次 run 的会话 id）；没有独立 runId，也不为一个 trace
@@ -757,6 +1298,7 @@
         asked.budgets.push(budgets[bi]);
         asked.text = String((r && r.text) == null ? '' : r.text);
         asked.truncated = !!(r && r.truncated === true);
+        if (ctx.abortSignal && ctx.abortSignal.aborted) break;
         if (asked.text.trim()) break;
         /* 正文为空（无论是否被截断）⇒ 这一轮一个字都没说成，给**一次**更大的
            预算重试。实测有两种形态，都必须覆盖：
@@ -769,16 +1311,67 @@
       }
       built._res = res;
     } catch (err) {
-      if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
+      _finishRoleDmTrace('failed',{errorCategory:_roleErrorCategory(err)});
       return { ok: false, reason: c.REASON.providerFailed, error: String((err && err.message) || err).slice(0, 200) };
     } finally {
       try { if (lc) lc.end(); } catch (e) { }
     }
 
+    if (ctx.abortSignal && ctx.abortSignal.aborted) {
+      _finishRoleDmTrace('aborted',{reasonCode:'aborted'});
+      return { ok: false, reason: c.REASON.aborted };
+    }
+
     raw = asked.text;
     var text = String(raw == null ? '' : raw);
-    if (!text.trim()) {
-      if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
+    var parsedIntent = c.parseRoleDmIntent(text);
+    text = parsedIntent.text;
+    var intent = parsedIntent.intent;
+    var quoteCore = (window && window.IBMessageQuoteCore) || null;
+    var replyMessages = [{ text: text, quote: null, quoteResult: 'core-unavailable', quoteReason: 'core-unavailable' }];
+    var sequenceInfo = { multi: false, messageCount: 1, formatFallback: false, formatReason: '' };
+    try {
+      if (quoteCore && typeof quoteCore.parseReplyMessages === 'function') {
+        var parsedSequence = quoteCore.parseReplyMessages(text, built.quoteContext);
+        replyMessages = Array.isArray(parsedSequence.messages) ? parsedSequence.messages : replyMessages;
+        sequenceInfo = {
+          multi: parsedSequence.multi === true,
+          messageCount: replyMessages.length,
+          formatFallback: parsedSequence.formatFallback === true,
+          formatReason: String(parsedSequence.formatReason || '')
+        };
+      } else if (quoteCore && typeof quoteCore.parseReply === 'function') {
+        var parsedQuote = quoteCore.parseReply(text, built.quoteContext);
+        replyMessages = [{
+          text: parsedQuote.text,
+          quote: parsedQuote.valid === true ? (parsedQuote.quote || null) : null,
+          quoteResult: parsedQuote.valid === true ? 'accepted' : (parsedQuote.directiveFound ? 'rejected' : 'no-directive'),
+          quoteReason: parsedQuote.valid === true ? '' : String(parsedQuote.reason || (parsedQuote.directiveFound ? 'unknown' : 'missing-directive'))
+        }];
+      } else if (quoteCore && typeof quoteCore.stripDirectives === 'function') {
+        var strippedUnavailable = quoteCore.stripDirectives(text);
+        replyMessages = [{ text: strippedUnavailable.text, quote: null, quoteResult: 'core-unavailable', quoteReason: 'core-unavailable' }];
+      }
+    } catch (e) {
+      var safeText = quoteCore && typeof quoteCore.stripDirectives === 'function'
+        ? quoteCore.stripDirectives(text).text : text;
+      replyMessages = [{ text: safeText, quote: null, quoteResult: 'rejected', quoteReason: 'parse-error' }];
+      sequenceInfo = { multi: false, messageCount: 1, formatFallback: true, formatReason: 'parse-error' };
+    }
+    if (!replyMessages.length) replyMessages = [{ text: '', quote: null, quoteResult: 'no-directive', quoteReason: 'missing-directive' }];
+    text = replyMessages.map(function (unit) { return String((unit && unit.text) || ''); }).join('\n\n');
+    for (var qpi = 0; qpi < replyMessages.length; qpi++) {
+      try {
+        var quoteUnit = replyMessages[qpi] || {};
+        if (typeof ctx.onQuoteParse === 'function') ctx.onQuoteParse({
+          result: String(quoteUnit.quoteResult || 'core-unavailable'),
+          reason: String(quoteUnit.quoteReason || 'core-unavailable')
+        });
+      } catch (e) { }
+    }
+    try { if (typeof ctx.onSequenceParse === 'function') ctx.onSequenceParse(sequenceInfo); } catch (e) { }
+    if (!text.trim() && intent !== 'yield' && intent !== 'end') {
+      _finishRoleDmTrace('empty_output',{reasonCode:asked.truncated?'output_truncated':'empty_output'});
       /* 这里有界预算与那一次重试都已经走完，仍然一个字都没有 —— 于是**现在**
          才能给停止原因，且必须按**证据**分类（Phase 3.1 Output Failure Semantics）：
            · truncated=true（provider 的 finish_reason=length 翻过来的事实）
@@ -793,23 +1386,47 @@
         ok: false,
         reason: asked.truncated ? c.REASON.outputTruncated : c.REASON.emptyOutput,
         error: asked.truncated ? c.REASON.outputTruncated : c.REASON.emptyOutput,
-        emptyOutput: true
+        emptyOutput: true,
+        intent: intent,
+        intentParsed: parsedIntent.valid === true,
+        intentParseReason: parsedIntent.reason || 'unknown',
+        promptContract: promptContract
       };
     }
-    /* 私聊记忆候选：先摘掉标签，**绝不**让标签进入正文 / 持久化 / 渲染。 */
+    /* 私聊记忆候选：先从各条消息摘掉标签，**绝不**让标签进入正文 / 持久化 / 渲染。 */
     var memo = null;
-    var mm = text.match(/<role_dm_memo\b([^>]*)>([\s\S]*?)<\/role_dm_memo\s*>/i);
-    if (mm) {
-      text = text.replace(mm[0], '').trim();
-      var imp = /importance\s*=\s*"?(\d{1,2})"?/i.exec(mm[1] || '');
-      var mc = String(mm[2] || '').trim().slice(0, 200);
-      if (mc) memo = { content: mc, importance: imp ? parseInt(imp[1], 10) : 6 };
+    for (var memoIndex = 0; memoIndex < replyMessages.length; memoIndex++) {
+      var memoUnit = replyMessages[memoIndex] || {};
+      memoUnit.text = String(memoUnit.text || '').replace(/<role_dm_memo\b([^>]*)>([\s\S]*?)<\/role_dm_memo\s*>/ig, function (tag, attrs, body) {
+        if (!memo) {
+          var imp = /importance\s*=\s*"?(\d{1,2})"?/i.exec(attrs || '');
+          var mc = String(body || '').trim().slice(0, 200);
+          if (mc) memo = { content: mc, importance: imp ? parseInt(imp[1], 10) : 6 };
+        }
+        return '';
+      }).trim();
+    }
+    text = replyMessages.map(function (unit) { return String((unit && unit.text) || ''); }).join('\n\n');
+    /* A valid control-only response is a successful turn attempt, not provider empty-output.
+       Control actions never create a message or a Memory candidate. */
+    if (!text.trim() && (intent === 'yield' || intent === 'end')) {
+      _finishRoleDmTrace('completed',{resultChars:0,assistantMessages:0,reasonCode:intent});
+      return {
+        ok: true, text: '', messages: [], memo: null, stripped: [], intent: intent,
+        intentParsed: parsedIntent.valid === true,
+        intentParseReason: parsedIntent.reason || 'unknown',
+        sequence: sequenceInfo,
+        promptContract: promptContract,
+        peerText: String(lastPeer || ''), provider: String(speaker.provider || ''),
+        model: String(speaker.model || ''), speakerName: nameOf(speaker)
+      };
     }
     /* 兜底：模型可能只输出标签不写正文 → 说明这一轮没有实质内容。
        这同样不是 provider 故障（它回过话），归 empty-output。 */
     if (!text.trim()) {
-      if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
-      return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true };
+      _finishRoleDmTrace('empty_output',{reasonCode:'empty_output'});
+      return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true,
+        intent: intent, intentParsed: parsedIntent.valid === true, intentParseReason: parsedIntent.reason || 'unknown', promptContract: promptContract };
     }
     /* Middle Brain 生成后收口 —— 与单聊同一个唯一调用点、同一份裁定词表。
        consumer=role_dm 不豁免 persona guard / speech style / knowledge 边界。 */
@@ -818,7 +1435,14 @@
       var mb = (window.IB && window.IB.middleBrain) || null;
       if (mb && typeof mb.middleBrainFinalizeReply === 'function') {
         var fin = await mb.middleBrainFinalizeReply(speakerId, lastPeer || ctx.topic || '', text, { character: speaker, history: history });
-        if (fin && typeof fin.reply === 'string' && fin.reply) text = fin.reply;
+        if (fin && typeof fin.reply === 'string' && fin.reply && fin.reply !== text) {
+          text = fin.reply;
+          /* Keep the existing one-finalizer-per-model-generation contract. If the
+             integrity guard rewrites the combined candidate, no safe unit mapping
+             remains, so its result becomes one ordinary message without quote refs. */
+          replyMessages = [{ text: text, quote: null, quoteResult: 'no-directive', quoteReason: 'missing-directive' }];
+          sequenceInfo = { multi: false, messageCount: 1, formatFallback: false, formatReason: '' };
+        }
         verdict = (fin && fin.outcome && fin.outcome.verdict) || null;
       }
     } catch (e) { }
@@ -828,21 +1452,62 @@
        若模型仍写出了它们，从正文里剥掉，避免标签原样上屏或入库 —— 这既守住
        "角色之间聊天不操作用户环境"的边界，也不静默丢弃（下面如实报 stripped）。 */
     var stripped = [];
-    text = text.replace(/<\/?(?:ws_[a-z_]+|mem_(?:create|update|delete)|cal_note|blog_read|withdraw)\b[^>]*>/gi, function (tag) {
-      stripped.push(String(tag).replace(/[<>/]/g, '').split(/\s|>/)[0]);
-      return '';
-    });
-    text = text.replace(/```[a-z]*file:[^\n]*\n[\s\S]*?```/gi, '').trim();
-    text = text.trim();
+    var cleanMessages = [];
+    for (var cleanIndex = 0; cleanIndex < replyMessages.length; cleanIndex++) {
+      var candidateUnit = replyMessages[cleanIndex] || {};
+      var cleanText = String(candidateUnit.text || '').replace(/<\/?(?:ws_[a-z_]+|mem_(?:create|update|delete)|cal_note|blog_read|withdraw)\b[^>]*>/gi, function (tag) {
+        stripped.push(String(tag).replace(/[<>/]/g, '').split(/\s|>/)[0]);
+        return '';
+      });
+      cleanText = cleanText.replace(/```[a-z]*file:[^\n]*\n[\s\S]*?```/gi, '').trim();
+      if (cleanText) {
+        var expressionParse = { text: cleanText, expressionRef: null };
+        try {
+          if (window.IBExpressionPacks && typeof window.IBExpressionPacks.parseReply === 'function') {
+            expressionParse = window.IBExpressionPacks.parseReply(speakerId, cleanText) || expressionParse;
+          } else if (window.IBExpressionPackCore && typeof window.IBExpressionPackCore.parseReplyExpressions === 'function') {
+            expressionParse = window.IBExpressionPackCore.parseReplyExpressions(cleanText, speaker) || expressionParse;
+          }
+        } catch (expressionParseError) { expressionParse = { text: cleanText, expressionRef: null }; }
+        cleanMessages.push({ text: String(expressionParse.text || ''), replyQuote: candidateUnit.quote || null,
+          expressionRef: expressionParse.expressionRef || null });
+      }
+    }
+    replyMessages = cleanMessages;
+    text = replyMessages.map(function (unit) { return String(unit.text || ''); }).join('\n\n').trim();
     /* 我们自己把标签剥干净之后没剩正文：模型确实给了东西，只是没有可用正文。
        与"provider 失败"无关（同 empty-output 一类），因此**绝不**报密钥。 */
-    if (!text) return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true };
+    if (!text) {
+      if (intent === 'end') {
+        _roleTurnTraceFinish(_turnTraceId,'completed',{resultChars:0,assistantMessages:0,reasonCode:'end'},turn);
+        return {
+          ok: true, text: '', messages: [], memo: null, stripped: stripped, intent: intent,
+          intentParsed: parsedIntent.valid === true,
+          intentParseReason: parsedIntent.reason || 'unknown',
+          sequence: sequenceInfo,
+          promptContract: promptContract,
+          peerText: String(lastPeer || ''), provider: String(speaker.provider || ''),
+          model: String(speaker.model || ''), speakerName: nameOf(speaker)
+        };
+      }
+      _roleTurnTraceFinish(_turnTraceId,'empty_output',{resultChars:0,assistantMessages:0,reasonCode:'empty_output'},turn);
+      return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true,
+        intent: intent, intentParsed: parsedIntent.valid === true, intentParseReason: parsedIntent.reason || 'unknown', promptContract: promptContract };
+    }
 
+    _roleTurnTraceFinish(_turnTraceId,'completed',{resultChars:String(text || '').length,assistantMessages:replyMessages.length},turn);
     return {
       ok: true,
-      text: text,
+      text: String(replyMessages[0].text || ''),
+      messages: replyMessages,
       memo: memo,
       stripped: stripped,
+      intent: intent,
+      intentParsed: parsedIntent.valid === true,
+      intentParseReason: parsedIntent.reason || 'unknown',
+      sequence: sequenceInfo,
+      promptContract: promptContract,
+      replyQuote: replyMessages[0].replyQuote || null,
       /* 这一轮模型**实际看到**的上一条对方消息（组装 prompt 时已经从
          history 里取出来的那一条，正是 lastPeer）。
          为什么要在返回值里带出来：M3 软复读要回答"她是不是在复述对方刚说的话"，
@@ -857,7 +1522,7 @@
     };
   }
 
-  /* ══════════ 一次完整 run：A → B → A → B … ═══════════════
+  /* ══════════ 一次完整 run：默认交替，可有限连续、让话或结束 ═══════════
      opts: { aId, bId, turns, topic, trigger, initiatorId, force,
              signal (abort signal), initiationSignal (自主发起的社会理由) }
      两个 signal 刻意不同名：`opts.signal` 是本域既有的**中止信号**
@@ -952,10 +1617,45 @@
       return { ok: false, reason: c.REASON.pairCooldown, remainingMs: cooldown, thread: thread };
     }
 
+    /* Read the existing final speaker streak so the two-message cap also holds across
+       run boundaries. A short/incomplete read is treated conservatively when the thread
+       already records messages; this adds no stored state or alternate message authority. */
+    var priorMessages = await loadMessages(friendId, 2);
+    var priorStreak = c.trailingSpeakerStreak(priorMessages);
+    if (Number(thread.messageCount) > priorMessages.length && priorMessages.length < 2) {
+      priorStreak = { speakerId: priorStreak.speakerId || String(thread.lastTurnRoleId || ''), count: 2 };
+    } else if (!priorStreak.speakerId && thread.lastTurnRoleId) {
+      priorStreak = { speakerId: String(thread.lastTurnRoleId), count: 2 };
+    }
+
     var maxTurns = c.normalizeTurnBudget(trigger, opts.turns);
     var turnsDone = 0;
+    /* P2 budget counts model generations. A P3.2 generation may deliver several
+       independent messages, but that never buys another provider call. */
+    var modelTurnsDone = 0;
+    var replyInitiativeGranted = {};
     var stallCount = 0;
     var produced = [];
+    /* Run-local prompt/output calibration counters. These contain only intent enums and
+       shape counts; they are returned to the caller and are never persisted or logged. */
+    var intentStats = {
+      total: 0, parsed: 0, fallback: 0,
+      byIntent: { speak: 0, continue_self: 0, yield: 0, end: 0 },
+      fallbackReasons: {}
+    };
+    var promptStats = { total: 0, roleDmBrevity: 0, ordinaryShortFormat: 0, intentContract: 0, finalUserIntentContract: 0, quoteGuidance: 0, messageProtocol: 0 };
+    /* Quote telemetry is request/run-local and content-free. Never retain source IDs,
+       excerpts, output text, prompts, or credential fields in the calibration summary. */
+    var quoteStats = {
+      candidateSets: 0, candidateCount: 0, maxCandidatesPerTurn: 0, quoteOptionCount: 0, maxQuoteOptionsPerTurn: 0,
+      parseTotal: 0, accepted: 0, noDirective: 0, rejected: 0, coreUnavailable: 0,
+      rejectedByReason: {}, applied: 0
+    };
+    var deliveryStats = {
+      generatedTurns: 0, multiMessageTurns: 0, messagesGenerated: 0, messagesDelivered: 0,
+      formatFallbacks: 0, formatFallbackReasons: {}, duplicateFiltered: 0, lowInfoFiltered: 0,
+      stoppedSequences: 0
+    };
     /* 本轮 run 里**出现过的所有文本**（含被判为重复/低信息而丢弃的那些）。
        只用 produced（=已落库）来判重是不够的：第一次重复被丢弃后，第二次的
        比较基准里仍然没有它，于是"同内容对轰"会先漏过一次才熔断。 */
@@ -991,15 +1691,26 @@
       releaseLocks(friendId, held, sending);
       return { ok: false, reason: 'initiator-not-participant', detail: initiatorId, thread: thread };
     }
+    var lastSpeakerId = priorStreak.speakerId;
+    var consecutiveSpeakerCount = Number(priorStreak.count) || 0;
+    var consecutiveCapBlocked = false;
+    if (speakerId === lastSpeakerId && consecutiveSpeakerCount >= 2) {
+      if (trigger === 'autonomous' && speakerId === initiatorId) consecutiveCapBlocked = true;
+      else speakerId = (parts[0] === speakerId) ? parts[1] : parts[0];
+    }
     try {
       for (var t = 0; t < maxTurns; t++) {
         /* ── 守卫 4：abort / 轮数 / 空转熔断 ── */
+        if (consecutiveCapBlocked) { stopReason = c.REASON.consecutiveCap; break; }
         if (opts.signal && opts.signal.aborted) { stopReason = c.REASON.aborted; break; }
-        var gate = c.canRunMoreTurn({ aborted: !!(opts.signal && opts.signal.aborted), providerFailed: providerFailed, stallCount: stallCount, maxTurns: maxTurns, turnsDone: turnsDone });
+        var gate = c.canRunMoreTurn({ aborted: !!(opts.signal && opts.signal.aborted), providerFailed: providerFailed, stallCount: stallCount, maxTurns: maxTurns, turnsDone: modelTurnsDone });
         if (!gate.ok) { stopReason = gate.reason; break; }
         /* ── 守卫 5：每角色时/日轮次配额 ── */
         if (!c.roleTurnRoomOk(roleTurnTimes(speakerId), nowMs())) { stopReason = c.REASON.roleDailyCap; break; }
         var peerId = (parts[0] === speakerId) ? parts[1] : parts[0];
+        var replyInitiative = trigger === 'manual'
+          ? replyInitiativeForTurn(speakerId, trigger, runId, replyInitiativePrefs(speakerId), replyInitiativeGranted)
+          : null;
 
         var turnRes = await runTurn({
           thread: thread,
@@ -1007,14 +1718,84 @@
           peerId: peerId,
           topic: runTopic,
           trigger: trigger,
+          replyInitiative: replyInitiative,
+          runId: runId,
           /* 自主发起的**社会理由**（闭集 code，不是自由文本）。
              只在真正由本角色发起的那一轮进入 prompt —— 对方的回应不该
              继承"我主动来找你"这个背景。 */
           signal: (trigger === 'autonomous' && speakerId === initiatorId) ? (opts.initiationSignal || null) : null,
-          turnIndex: t,
+          abortSignal: opts.signal || null,
+          turnIndex: modelTurnsDone,
+          consecutiveSpeakerCount: (lastSpeakerId === speakerId) ? consecutiveSpeakerCount : 0,
           userName: userName,
-          historyLimit: HISTORY_LIMIT
+          historyLimit: HISTORY_LIMIT,
+          onQuoteCandidates: function (count, options) {
+            var n = Math.max(0, Math.floor(Number(count) || 0));
+            var optionCount = Math.max(0, Math.floor(Number(options) || 0));
+            quoteStats.candidateSets++;
+            quoteStats.candidateCount += n;
+            if (n > quoteStats.maxCandidatesPerTurn) quoteStats.maxCandidatesPerTurn = n;
+            quoteStats.quoteOptionCount += optionCount;
+            if (optionCount > quoteStats.maxQuoteOptionsPerTurn) quoteStats.maxQuoteOptionsPerTurn = optionCount;
+          },
+          onQuoteParse: function (diagnostic) {
+            var d = diagnostic && typeof diagnostic === 'object' ? diagnostic : {};
+            var result = String(d.result || 'rejected');
+            quoteStats.parseTotal++;
+            if (result === 'accepted') quoteStats.accepted++;
+            else if (result === 'no-directive') quoteStats.noDirective++;
+            else if (result === 'core-unavailable') quoteStats.coreUnavailable++;
+            else {
+              quoteStats.rejected++;
+              var reason = /^(?:bad-json|bad-payload|duplicate-directive|unknown-source|source-id-mismatch|bad-snippet|snippet-not-in-source|wrong-conversation|wrong-thread|parse-error|sequence-fallback|unknown)$/.test(String(d.reason || ''))
+                ? String(d.reason) : 'unknown';
+              quoteStats.rejectedByReason[reason] = (quoteStats.rejectedByReason[reason] || 0) + 1;
+            }
+          }
         });
+
+        if (turnRes && turnRes.ok === true) {
+          modelTurnsDone++;
+          deliveryStats.generatedTurns++;
+          var generatedSequence = turnRes.messages && Array.isArray(turnRes.messages) ? turnRes.messages.length : (String(turnRes.text || '').trim() ? 1 : 0);
+          deliveryStats.messagesGenerated += generatedSequence;
+          if (generatedSequence > 1) deliveryStats.multiMessageTurns++;
+          if (turnRes.sequence && turnRes.sequence.formatFallback === true) {
+            deliveryStats.formatFallbacks++;
+            var formatReason = /^(?:too-many-messages|empty-message|parse-error)$/.test(String(turnRes.sequence.formatReason || ''))
+              ? String(turnRes.sequence.formatReason) : 'unknown';
+            deliveryStats.formatFallbackReasons[formatReason] = (deliveryStats.formatFallbackReasons[formatReason] || 0) + 1;
+          }
+        }
+
+        if (turnRes && typeof turnRes.intentParsed === 'boolean') {
+          intentStats.total++;
+          if (turnRes.intentParsed) intentStats.parsed++;
+          else {
+            intentStats.fallback++;
+            var fallbackReason = String(turnRes.intentParseReason || 'unknown').slice(0, 40);
+            intentStats.fallbackReasons[fallbackReason] = (intentStats.fallbackReasons[fallbackReason] || 0) + 1;
+          }
+          var countedIntent = turnRes.intent || 'speak';
+          if (Object.prototype.hasOwnProperty.call(intentStats.byIntent, countedIntent)) {
+            intentStats.byIntent[countedIntent]++;
+          } else {
+            intentStats.byIntent.speak++;
+          }
+        }
+        if (turnRes && turnRes.promptContract) {
+          promptStats.total++;
+          if (turnRes.promptContract.roleDmBrevity === true) promptStats.roleDmBrevity++;
+          if (turnRes.promptContract.ordinaryShortFormat === true) promptStats.ordinaryShortFormat++;
+          if (turnRes.promptContract.intentContract === true) promptStats.intentContract++;
+          if (turnRes.promptContract.finalUserIntentContract === true) promptStats.finalUserIntentContract++;
+          if (turnRes.promptContract.quoteGuidance === true) promptStats.quoteGuidance++;
+          if (turnRes.promptContract.messageProtocol === true) promptStats.messageProtocol++;
+        }
+
+        /* Stop can arrive while the non-streaming provider call is in flight. Discard its
+           returned candidate before any guard, control action, or canonical message write. */
+        if (opts.signal && opts.signal.aborted) { stopReason = c.REASON.aborted; break; }
 
         if (!turnRes.ok) {
           /* 任何失败都**安全停止**：已完成的消息保留、锁释放、原因落盘。
@@ -1047,33 +1828,59 @@
           break;
         }
 
-        /* ── 守卫 6：同内容 / 低信息检测 ──
-           分两种强度，因为两种事实不同：
-             · **低信息**（"哈哈"/"嗯"这类空洞短句）—— 单独出现就没有内容价值，
-               直接丢弃、不落库、不计轮，换对手方继续；
-             · **同内容**（与本次 run 里已经出现过的文本 bigram Dice ≥ 阈值）——
-               第一次出现时那条文本本身是**真实说过的话**，因此照常落库（历史
-               要如实）；紧随其后的重复才知道"他们在对轰"，于是计数并熔断。
-           两条通道都受 STALL_LIMIT 约束：连续凑数到上限即停止整个 run，
-           绝不会把整段重复的对话灌进历史，也不会无限互聊。 */
-        var dup = c.isDuplicateTurn(turnRes.text, seenTexts);
-        var lowInfo = c.lowInfoMatch(turnRes.text);
-        if (lowInfo) {
+        var turnIntent = turnRes.intent || 'speak';
+        var generatedUnits = turnRes.messages && Array.isArray(turnRes.messages)
+          ? turnRes.messages.slice() : (String(turnRes.text || '').trim() ? [{ text: turnRes.text, replyQuote: turnRes.replyQuote || null }] : []);
+        if (turnIntent === 'end' && !generatedUnits.length) {
+          stopReason = c.REASON.naturalEnd;
+          break;
+        }
+        if (turnIntent === 'yield') {
           stallCount++;
-          if (stallCount >= c.STALL_LIMIT) { stopReason = 'low-info-stall'; break; }
-          seenTexts.push(String(turnRes.text));
+          if (stallCount >= c.STALL_LIMIT) { stopReason = c.REASON.silentStall; break; }
+          speakerId = peerId;
+          continue; /* A control-only yield consumes this loop attempt but writes no message. */
+        }
+
+        /* ── 守卫 6：逐条执行既有低信息与重复过滤。一个 sequence 中的
+           被滤单元不会抹掉其余有效消息；整批都被滤掉时沿用旧的让话/熔断语义。 */
+        var acceptedUnits = [];
+        var unitStopReason = '';
+        for (var unitIndex = 0; unitIndex < generatedUnits.length; unitIndex++) {
+          var candidateUnit = generatedUnits[unitIndex] || {};
+          var unitText = String(candidateUnit.text || '').trim();
+          if (!unitText) continue;
+          var dup = c.isDuplicateTurn(unitText, seenTexts);
+          var lowInfo = c.lowInfoMatch(unitText);
+          var contextualShort = lowInfo && c.lowInfoContextuallyMeaningful(unitText, turnRes.peerText || '');
+          var repeatedShort = contextualShort && c.isRepeatedLowInfoTurn(unitText, seenTexts);
+          if (lowInfo && (!contextualShort || repeatedShort)) {
+            deliveryStats.lowInfoFiltered++;
+            stallCount++;
+            seenTexts.push(unitText);
+            if (turnIntent === 'end') { unitStopReason = c.REASON.naturalEnd; break; }
+            if (stallCount >= c.STALL_LIMIT) { unitStopReason = 'low-info-stall'; break; }
+            continue;
+          }
+          if (dup.duplicate) {
+            deliveryStats.duplicateFiltered++;
+            stallCount++;
+            seenTexts.push(unitText);
+            if (turnIntent === 'end') { unitStopReason = c.REASON.naturalEnd; break; }
+            if (stallCount >= c.STALL_LIMIT) { unitStopReason = c.REASON.duplicateStall; break; }
+            continue;
+          }
+          stallCount = 0;
+          seenTexts.push(unitText);
+          acceptedUnits.push({ text: unitText, replyQuote: candidateUnit.replyQuote || candidateUnit.quote || null,
+            expressionRef: candidateUnit.expressionRef || null });
+        }
+        if (!acceptedUnits.length) {
+          if (unitStopReason) { stopReason = unitStopReason; break; }
+          if (turnIntent === 'end') { stopReason = c.REASON.naturalEnd; break; }
           speakerId = peerId;
           continue;
         }
-        if (dup.duplicate) {
-          stallCount++;
-          seenTexts.push(String(turnRes.text));
-          if (stallCount >= c.STALL_LIMIT) { stopReason = c.REASON.duplicateStall; break; }
-          speakerId = peerId;
-          continue;
-        }
-        stallCount = 0;
-        seenTexts.push(String(turnRes.text));
 
         /* ── M3 软复读观测（**只观测，不拦截**）──
            为什么放在两个守卫**之后**：这条信号描述的是"这段对话实际说出口的
@@ -1090,7 +1897,7 @@
            continue、不碰 stopReason、不重试、不重写 —— 一次 run 的模型调用
            次数因此与 M3 之前**逐字相同**（见测试 AH2 / AH4 / AH9 / AH11）。 */
         try {
-          var sq = c.analyzeSoftRepetition(turnRes.text, turnRes.peerText || '',
+          var sq = c.analyzeSoftRepetition(acceptedUnits[0].text, turnRes.peerText || '',
             produced.slice(-2).map(function (p) { return String(p.content); }));
           if (sq) {
             quality.analyzed++;
@@ -1105,38 +1912,86 @@
           }
         } catch (e) { /* 观测失败绝不改变一次 run 的结果 */ }
 
-        var msg = c.buildRoleDmMessage({
-          friendId: friendId,
-          senderId: speakerId,
-          recipientId: peerId,
-          senderName: turnRes.speakerName,
-          content: turnRes.text,
-          timestamp: nowMs(),
-          trigger: trigger,
-          turnIndex: turnsDone,
+        var quotaRecordedForGeneration = false;
+        var memoAssignedForGeneration = false;
+        var deliveryResult = await deliverRoleDmSequence({
+          threadId: friendId,
           runId: runId,
-          provider: turnRes.provider,
-          model: turnRes.model
+          modelTurnIndex: modelTurnsDone - 1,
+          speakerId: speakerId,
+          speakerName: turnRes.speakerName,
+          signal: opts.signal || null,
+          units: acceptedUnits,
+          onUnit: async function (unit, sequenceIndex) {
+            if (opts.signal && opts.signal.aborted) return { ok: false, reason: c.REASON.aborted };
+            var timestamp = nowMs();
+            if (timestamp <= (Number(thread.lastMessageAt) || 0)) timestamp = (Number(thread.lastMessageAt) || 0) + 1;
+            var msg = c.buildRoleDmMessage({
+              friendId: friendId,
+              senderId: speakerId,
+              recipientId: peerId,
+              senderName: turnRes.speakerName,
+              content: unit.text,
+              timestamp: timestamp,
+              trigger: trigger,
+              turnIndex: turnsDone,
+              runId: runId,
+              provider: turnRes.provider,
+              model: turnRes.model,
+              replyQuote: unit.replyQuote || null
+            });
+            if (!msg) return { ok: false, reason: 'bad-message' };
+            try {
+              var expressionPacks = window.IBExpressionPacks;
+              if (unit.expressionRef && expressionPacks && typeof expressionPacks.rememberMessageExpression === 'function') {
+                expressionPacks.rememberMessageExpression(speakerId, msg.id, unit.expressionRef);
+              }
+              if (expressionPacks && typeof expressionPacks.rememberMessageText === 'function') {
+                expressionPacks.rememberMessageText(speakerId, msg.id, unit.text);
+              }
+            } catch (expressionRememberError) { }
+            /* This remains the canonical commit boundary. Abort cancels queued units;
+               a persistence request already in flight is awaited and kept. */
+            if (opts.signal && opts.signal.aborted) return { ok: false, reason: c.REASON.aborted };
+            var written = await appendMessage(msg);
+            if (!written.ok) return { ok: false, reason: written.reason || c.REASON.persistFailed };
+            if (msg.metadata && msg.metadata.replyQuote) quoteStats.applied++;
+            deliveryStats.messagesDelivered++;
+            if (!quotaRecordedForGeneration) {
+              roleTurnRecord(speakerId, msg.timestamp);
+              quotaRecordedForGeneration = true;
+            }
+            produced.push({
+              roleId: speakerId,
+              messageId: msg.id,
+              content: unit.text,
+              memo: memoAssignedForGeneration ? null : turnRes.memo
+            });
+            memoAssignedForGeneration = true;
+            turnsDone++;
+            thread.lastMessageAt = msg.timestamp;
+            thread.lastTurnRoleId = speakerId;
+            thread.messageCount = (Number(thread.messageCount) || 0) + 1;
+            thread.updatedAt = msg.timestamp;
+            threadSave(thread);
+            try { if (typeof NS.roleDmEmit === 'function') NS.roleDmEmit('turn', { threadId: friendId, messageId: msg.id }); } catch (e) { }
+            return { ok: true, id: msg.id, sequenceIndex: sequenceIndex };
+          }
         });
-        if (!msg) { stopReason = 'bad-message'; break; }
-        var written = await appendMessage(msg);
-        if (!written.ok) {
-          /* 持久化失败（含 Home Node fail-closed 离线）→ 停止并如实上报；
-             已经写进去的消息保留，绝不回滚、绝不重试。 */
-          stopReason = written.reason;
-          providerFailed = true;
+        if (!deliveryResult.ok) {
+          if (opts.signal && opts.signal.aborted) stopReason = c.REASON.aborted;
+          else stopReason = deliveryResult.reason || 'delivery-failed';
+          if (deliveryResult.delivered > 0) deliveryStats.stoppedSequences++;
+          if (/persist-failed|bad-message/.test(String(stopReason))) providerFailed = true;
           break;
         }
-        roleTurnRecord(speakerId, msg.timestamp);
-        produced.push({ roleId: speakerId, messageId: msg.id, content: turnRes.text, memo: turnRes.memo });
-        turnsDone++;
-        thread.lastMessageAt = msg.timestamp;
-        thread.lastTurnRoleId = speakerId;
-        thread.messageCount = (Number(thread.messageCount) || 0) + 1;
-        thread.updatedAt = msg.timestamp;
-        threadSave(thread);
-        try { if (typeof NS.roleDmEmit === 'function') NS.roleDmEmit('turn', { threadId: friendId, messageId: msg.id }); } catch (e) { }
-        speakerId = peerId;
+        if (opts.signal && opts.signal.aborted) { stopReason = c.REASON.aborted; break; }
+        if (lastSpeakerId === speakerId) consecutiveSpeakerCount = Math.min(2, consecutiveSpeakerCount + 1);
+        else { lastSpeakerId = speakerId; consecutiveSpeakerCount = 1; }
+        if (unitStopReason) { stopReason = unitStopReason; break; }
+        if (turnIntent === 'end') { stopReason = c.REASON.naturalEnd; break; }
+        if (turnIntent === 'continue_self' && consecutiveSpeakerCount < 2) speakerId = speakerId;
+        else speakerId = peerId;
       }
     } catch (err) {
       stopReason = 'run-error';
@@ -1158,7 +2013,7 @@
 
     /* ── 记忆边界：有界 episodic 候选 → 既有 consolidation。── */
     var memoryResult = null;
-    try { memoryResult = await emitMemories(thread, produced, trigger); } catch (e) { }
+    try { memoryResult = await emitMemories(thread, produced, trigger, modelTurnsDone); } catch (e) { }
 
     /* ── 层④：跨 run 共同历史的滚动更新 ──
        放在这两个观测之后：它读的是**已经落库**的消息，因此必须等本 run 的
@@ -1170,6 +2025,68 @@
     thread.stoppedReason = stopReason;
     thread.updatedAt = nowMs();
     threadSave(thread);
+
+    var calibrationChars = 0, calibrationParagraphs = 0, multiParagraphMessages = 0;
+    var shortMessages = 0, sameSpeakerTransitions = 0;
+    for (var ci = 0; ci < produced.length; ci++) {
+      var calibrationText = String(produced[ci].content || '').trim();
+      calibrationChars += calibrationText.length;
+      var calibrationParts = calibrationText ? calibrationText.split(/\r?\n\s*\r?\n/).filter(function (part) { return !!String(part || '').trim(); }) : [];
+      var paragraphCount = calibrationParts.length;
+      calibrationParagraphs += paragraphCount;
+      if (paragraphCount > 1) multiParagraphMessages++;
+      if (calibrationText.length <= 40) shortMessages++;
+      if (ci > 0 && produced[ci - 1].roleId === produced[ci].roleId) sameSpeakerTransitions++;
+    }
+    var calibrationTransitions = Math.max(0, produced.length - 1);
+    var calibration = {
+      prompts: promptStats,
+      intents: {
+        total: intentStats.total,
+        parsed: intentStats.parsed,
+        fallback: intentStats.fallback,
+        parseRate: intentStats.total ? intentStats.parsed / intentStats.total : null,
+        byIntent: intentStats.byIntent,
+        fallbackReasons: intentStats.fallbackReasons
+      },
+      messages: {
+        count: produced.length,
+        avgChars: produced.length ? calibrationChars / produced.length : 0,
+        avgParagraphs: produced.length ? calibrationParagraphs / produced.length : 0,
+        multiParagraph: multiParagraphMessages,
+        shortLe40: shortMessages,
+        sameSpeakerTransitions: sameSpeakerTransitions,
+        transitions: calibrationTransitions,
+        sameSpeakerRate: calibrationTransitions ? sameSpeakerTransitions / calibrationTransitions : 0
+      },
+      delivery: {
+        generatedTurns: deliveryStats.generatedTurns,
+        multiMessageTurns: deliveryStats.multiMessageTurns,
+        messagesGenerated: deliveryStats.messagesGenerated,
+        messagesDelivered: deliveryStats.messagesDelivered,
+        formatFallbacks: deliveryStats.formatFallbacks,
+        formatFallbackReasons: deliveryStats.formatFallbackReasons,
+        duplicateFiltered: deliveryStats.duplicateFiltered,
+        lowInfoFiltered: deliveryStats.lowInfoFiltered,
+        stoppedSequences: deliveryStats.stoppedSequences
+      },
+      quotes: {
+        candidateSets: quoteStats.candidateSets,
+        candidateCount: quoteStats.candidateCount,
+        maxCandidatesPerTurn: quoteStats.maxCandidatesPerTurn,
+        quoteOptionCount: quoteStats.quoteOptionCount,
+        maxQuoteOptionsPerTurn: quoteStats.maxQuoteOptionsPerTurn,
+        parseTotal: quoteStats.parseTotal,
+        accepted: quoteStats.accepted,
+        noDirective: quoteStats.noDirective,
+        rejected: quoteStats.rejected,
+        coreUnavailable: quoteStats.coreUnavailable,
+        rejectedByReason: quoteStats.rejectedByReason,
+        applied: quoteStats.applied
+      },
+      stopReason: stopReason,
+      naturalEnd: stopReason === c.REASON.naturalEnd
+    };
 
     var last = produced.length ? produced[produced.length - 1] : null;
     try {
@@ -1183,7 +2100,9 @@
       runId: runId,
       thread: thread,
       turns: turnsDone,
+      modelTurns: modelTurnsDone,
       stopReason: stopReason,
+      calibration: calibration,
       /* **实际**第一个说成话的人 —— 不是"计划由谁发起"。
          canonical truth 就是 produced[0]：它只在 appendMessage 成功**之后**
          才 append（同一条消息一旦落库，它的 senderId 就是既定事实；低信息 /
@@ -1330,7 +2249,7 @@
        · kind='episodic' → 进入既有 Memory Consolidation（episodic→semantic）；
        · provenance 指向 thread（不指向消息正文）—— 删除 raw history **不会**
          也不假装会级联删除已固化的长期记忆，UI 如实说明这一点。 */
-  async function emitMemories(thread, produced, trigger) {
+  async function emitMemories(thread, produced, trigger, modelTurnCount) {
     var c = core();
     if (!produced.length) return { written: 0, skipped: 'no-productions' };
     var parts = thread.participantIds;
@@ -1349,7 +2268,9 @@
       memos.sort(function (x, y) { return (Number(y.memo.importance) || 0) - (Number(x.memo.importance) || 0); });
       var chosen = memos[0].memo;
       var allowed = c.memoryCandidateAllowed({
-        turns: produced.length,
+        /* Three bubbles from one generation still count as one Role DM turn for
+           the existing Memory threshold; batching cannot manufacture eligibility. */
+        turns: Number(modelTurnCount) || 0,
         stallCount: 0,
         importance: Number(chosen.importance) || 0,
         content: chosen.content
@@ -1425,12 +2346,20 @@
       rec.messageCount = 0;
       rec.lastMessageAt = 0;
       rec.lastTurnRoleId = '';
+      /* The topic hint is thread-local short-term context too; an empty thread
+         must not carry it into a later conversation after the user clears history. */
+      rec.topic = '';
       /* 层④ 的备忘是 raw history 的**派生物**，因此必须与它同生共死：
          留着它等于"清空了聊天记录，但两个角色仍然记得聊过什么" ——
          那不是清空，那是一个用户无法察觉的残留。
          （刻意用 delete 而不是写 null：没有备忘的 thread 记录与加这一层
            之前逐字节相同，导入/导出与既有断言都不受影响。） */
       delete rec.threadMemorandum;
+      /* 清空聊天记录开始一个新的空 Scene：旧标题、标签和播放偏好随历史一起清掉。 */
+      rec.scene = {
+        title: '', tags: [], createdAt: nowMs(),
+        playback: { voiceMode: 'auto', textPacing: 'natural' }
+      };
       rec.updatedAt = nowMs();
       threadSave(rec);
     }
@@ -1565,6 +2494,7 @@
           { id: t.participantIds[1], name: nameOf(bCfg), missing: !bCfg }
         ],
         state: t.state,
+        scene: sceneMetadataView(t),
         createdAt: t.createdAt,
         lastMessageAt: t.lastMessageAt,
         messageCount: msgs.length,
@@ -1589,14 +2519,29 @@
     var bCfg = cfgOf(rec.participantIds[1]);
     return {
       thread: rec,
+      scene: sceneMetadataView(rec),
       messages: msgs.map(function (m) {
         var md = m.metadata || {};
         return {
           id: m.id,
           senderId: String(md.senderId || ''),
           recipientId: String(md.recipientId || ''),
+          friendId: String(m.friendId || friendId),
+          threadId: String(md.threadId || m.friendId || friendId),
           senderName: String(m.senderName || nameOf(cfgOf(md.senderId))),
           content: String(m.content || ''),
+          withdrawn: m.withdrawn === true,
+          replyQuote: (function () {
+            var q = md.replyQuote;
+            if (!q || typeof q !== 'object' || Array.isArray(q)) return null;
+            return {
+              version: Number(q.version) || 0,
+              sourceMessageId: String(q.sourceMessageId || ''),
+              sourceSenderKey: String(q.sourceSenderKey || ''),
+              snippet: typeof q.snippet === 'string' ? q.snippet : '',
+              mode: String(q.mode || '')
+            };
+          })(),
           timestamp: Number(m.timestamp) || 0,
           provider: String(md.provider || ''),
           model: String(md.model || ''),
@@ -1633,6 +2578,9 @@
   NS.roleDm = {
     /* 生命周期 / 索引 */
     resolveThread: resolveThread,
+    updateSceneMetadata: updateSceneMetadata,
+    exportSceneData: exportSceneData,
+    importSceneData: importSceneData,
     rebuildThreadIndex: rebuildThreadIndex,
     listThreads: listThreads,
     threadDetail: threadDetail,
@@ -1640,6 +2588,8 @@
     isRunning: isRunning,
     prefs: prefs,
     setPrefs: setPrefs,
+    replyInitiativePrefs: replyInitiativePrefs,
+    setReplyInitiativePrefs: setReplyInitiativePrefs,
     /* 执行 */
     start: start,
     startAutonomous: startAutonomous,
@@ -1658,6 +2608,8 @@
     _threadsAll: threadsAll,
     _loadMessages: loadMessages,
     _composeSide: composeSide,
+    _replyInitiativeOpportunity: replyInitiativeOpportunity,
+    _replyInitiativeForTurn: replyInitiativeForTurn,
     /* 层④（跨 run 共同历史）：投影边界 + 滚动更新 + 只读读取。 */
     _memorandumForPrompt: memorandumForPrompt,
     _updateMemorandum: updateMemorandum,
@@ -1665,7 +2617,8 @@
       var rec = threadGet(String(friendId));
       return (rec && rec.threadMemorandum) ? rec.threadMemorandum : null;
     },
-    _keys: { threads: KEY_THREADS, relations: KEY_RELATIONS, ledger: KEY_LEDGER, prefs: KEY_PREFS, indexVersion: INDEX_VERSION }
+    _keys: { threads: KEY_THREADS, relations: KEY_RELATIONS, ledger: KEY_LEDGER, prefs: KEY_PREFS,
+      replyInitiative: KEY_REPLY_INITIATIVE, indexVersion: INDEX_VERSION }
   };
   NS.expose('roleDm', NS.roleDm);
 })(window.IB || (window.IB = {}));

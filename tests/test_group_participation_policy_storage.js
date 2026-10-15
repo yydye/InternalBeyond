@@ -100,7 +100,8 @@ function sourceGuards() {
   ok('S9.exportImportCarriesWholeGroupObjects',
     /groups:await loadGroups\(\)/.test(read('assets/js/core.js'))
     && /data\.groups\)for\(const g of data\.groups\)await dbPut\('groups',g\)/.test(read('assets/js/core.js')));
-  ok('S10.noDbVersionBump', /DB_VER=24/.test(read('assets/js/core.js')) && /var DB_VER = 24;/.test(read('assets/js/chat-core.js')));
+  ok('S10.noDbVersionBump', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
+    && /var DB_VER = 24;/.test(read('assets/js/chat-core.js')));
 }
 
 function startMock() {

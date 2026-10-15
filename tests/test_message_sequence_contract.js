@@ -255,13 +255,14 @@ async function withdraw() {
   const store = new Map(ms.map(m => [m.id, JSON.parse(JSON.stringify(m))]));
   const writes = [];
   const fn = new Function(
-    'dbGet', 'dbPut', 'document', '_chatCfgById', 'window', 'activeFriendId', 'appendChatBubble',
+    'dbGet', 'dbPut', 'document', '_chatCfgById', '_chatRefreshReplyQuotesForTarget', 'window', 'activeFriendId', 'appendChatBubble',
     'return (' + fnSrc + ')'
   )(
     async (s, k) => (store.get(k) ? JSON.parse(JSON.stringify(store.get(k))) : null),
     async (s, d) => { store.set(d.id, JSON.parse(JSON.stringify(d))); writes.push(d.id) },
     { querySelectorAll: () => ({ forEach: () => {} }) },
     () => ({ nickname: 'X' }),
+    () => {},
     { IBVoiceMessage: VoiceCore },
     null,
     () => {}

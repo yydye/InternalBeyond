@@ -28,6 +28,15 @@
       /\b(why|how does|how do)\b/i.test(t);
   }
 
+  /* Role DM is casual conversation, so a standalone why/how question is not by itself
+     a request for a long explanation. Keep the general Chat classifier unchanged and
+     recognize explicit requests to elaborate here. */
+  function isRoleDmDetailedRequest(text) {
+    const t = String(text || '');
+    return /详细|展开|全面|完整|逐条|逐项|分点|说明一下|解释一下|分析一下|列出|原理解释|请说明|讲清楚|多讲讲|再讲讲|深入|剖析|长文|具体(?:说|讲|解释|分析)/i.test(t) ||
+      /\b(explain|elaborate|detailed|in detail|expand|break down|walk me through)\b/i.test(t);
+  }
+
   /* 角色级「简洁回复」约束文本（replyStyle === 'concise' 时注入）。
      这是「表达风格控制」而非文本长度限制：不为凑长度写出多余内容，但遇到确实需要
      详细解释的问题仍允许正常展开。不引入硬编码字符数，也不裁剪模型输出。 */
@@ -86,6 +95,46 @@
     ].join('\n');
   }
 
+  /* Optional, pure wording strategy shared by user Chat and Role DM through separate
+     adapters. It grants range without assigning a mood or keeping emotional state. */
+  function chatEmotionalTextureGuidance() {
+    return [
+      '【聊天中的情绪自然变化】',
+      '保持角色一贯的人设、说话习惯和与用户已经建立的关系；优先回应此刻这句话，不要自动套用万能安慰、认同、解释、总结或反问。',
+      '- 按语境可以犹豫一下、开个玩笑、轻微抱怨、说不同意、暂时不知道怎么回应，或先把真实反应说出来；',
+      '- 被指出问题后可以嘴硬一下、说明自己的看法，也可以承认没想到、改口或慢慢缓和；',
+      '- 这些只是允许的表达方式，不是每轮都要选一种；情绪应来自当前对话、人设和既有关系，不随机切换，不凭空编造共同经历或冲突；',
+      '- 玩笑归玩笑；对方确实受伤、遇到困难或需要事实帮助时，仍认真回应，不把“有毛边”演成冷漠或刻薄。'
+    ].join('\n');
+  }
+
+  function roleDmEmotionalTextureGuidance() {
+    return [
+      '【角色之间的情绪自然变化】',
+      '以当前发言角色自己的性格、价值观和习惯表达；结合对方刚说的话、已有的相处方式和最近对话，不要把两个角色都写成同一个温柔周全的助手。',
+      '- 不必总是认同、解释、安慰或把话收成圆满结论；语境合适时可以犹豫、嘴硬、轻微抱怨、敷衍一句、反驳、不认同、突然联想，也可以改口或慢慢缓和；',
+      '- 这些是表达空间，不是情绪任务：只在当前对话有依据时使用，不随机起伏、不强造争执、不把短暂反应写成稳定心情；',
+      '- 陌生、熟悉、玩笑、失望、争执或和解的分寸由现有人设、关系投影和近期内容决定；没有依据时不升级亲密、不虚构共同经历；',
+      '- 即使暂时不安慰，也要接住对方说的事；确实需要帮助时仍认真回应。'
+    ].join('\n');
+  }
+
+  /* Role DM keeps the same canonical style policy, with a mode for character-to-character
+     conversation. This is prompt text only: it does not schedule turns or call a model. */
+  function roleDmGuidance() {
+    return [
+      '【角色私聊表达】',
+      '这是两个角色之间的私人交谈，不必把每次发言写成完整、周全的答复。',
+      '- 普通闲聊默认发一条短消息，通常一句、最多一两句；有语境的短回应也完整自然；',
+      '- 一条消息先回应最近的一句话或一个情绪点，说到点上就停；不要把反应、背景、解释、总结和追问全塞进同一条；',
+      '- 普通闲聊正文通常只写一小段，不换行；不要照着历史消息的长度或段落数来模仿。换行仍属于同一条消息，不会变成新的气泡；',
+      '- 如果另一个想法确实适合单独发，当前消息只说第一件事，再用 continue_self 让下一次模型调用生成独立气泡；不要把两条都写完再用 speak，也不要按标点拆句或为了多发而硬拆；',
+      '- 复杂问题、明确要求详细说明的内容或需要认真安慰的情境，仍可以充分展开，也可以自然分段；',
+      '- 可以自然停顿、用口语片段或不完整句子承接；不必每条消息都总结、追问或把话题收成闭环；',
+      '- 只根据当前对话和角色设定表达情绪，不要为了显得自然而故意错字、争吵或改变人设。'
+    ].join('\n');
+  }
+
   /* 各模式下的风格策略文本（短回合原则）。voice 明显短于 text。 */
   function guidanceFor(mode) {
     const m = String(mode || 'text').toLowerCase();
@@ -139,13 +188,38 @@
       const cc = conversationContinuityGuidance();
       guidance = guidance ? guidance + '\n\n' + cc : cc;
     }
-    if (!guidance) return String(systemPrompt || '');
     const base = String(systemPrompt || '');
+    if (o.emotionalTexture === true) {
+      const hasExistingStyle = base.indexOf('【表达风格】') !== -1 || base.indexOf('【简洁回复') !== -1 ||
+        base.indexOf('【自然收尾') !== -1 || base.indexOf('【对话连贯') !== -1;
+      const blocks = [];
+      if (guidance && !hasExistingStyle) blocks.push(guidance);
+      if (base.indexOf('【聊天中的情绪自然变化】') === -1) blocks.push(chatEmotionalTextureGuidance());
+      return blocks.length ? base + (base ? '\n\n' : '') + blocks.join('\n\n') : base;
+    }
+    if (!guidance) return base;
     if (base.indexOf('【表达风格】') !== -1) return base;
     if (base.indexOf('【简洁回复') !== -1) return base;
     if (base.indexOf('【自然收尾') !== -1) return base;
     if (base.indexOf('【对话连贯') !== -1) return base;
     return base + (base ? '\n\n' : '') + guidance;
+  }
+
+  /* Role DM adapter: retain the normal concise/detailed/role-setting precedence, then add
+     its own low-priority style block. Chat callers continue to use apply() unchanged. */
+  function applyRoleDm(systemPrompt, opts) {
+    const o = opts || {};
+    let base = String(systemPrompt || '');
+    const blocks = [];
+    if (base.indexOf('【角色之间的情绪自然变化】') === -1) blocks.push(roleDmEmotionalTextureGuidance());
+    if (!o.detailed) {
+      if (o.concise && base.indexOf('【简洁回复') === -1) blocks.push(conciseGuidance());
+      if (base.indexOf('【角色私聊表达】') === -1) blocks.push(roleDmGuidance());
+      if (o.naturalEnding && base.indexOf('【自然收尾') === -1) blocks.push(naturalEndingGuidance());
+    }
+    if (o.conversationContinuity && base.indexOf('【对话连贯') === -1) blocks.push(conversationContinuityGuidance());
+    if (!blocks.length) return base;
+    return base + (base ? '\n\n' : '') + blocks.join('\n\n');
   }
 
   return {
@@ -154,8 +228,13 @@
     conciseGuidance: conciseGuidance,
     naturalEndingGuidance: naturalEndingGuidance,
     conversationContinuityGuidance: conversationContinuityGuidance,
+    chatEmotionalTextureGuidance: chatEmotionalTextureGuidance,
+    roleDmEmotionalTextureGuidance: roleDmEmotionalTextureGuidance,
+    roleDmGuidance: roleDmGuidance,
+    isRoleDmDetailedRequest: isRoleDmDetailedRequest,
     buildGuidance: buildGuidance,
     apply: apply,
+    applyRoleDm: applyRoleDm,
     DETAIL_REQUEST_RE: DETAIL_REQUEST_RE
   };
 });

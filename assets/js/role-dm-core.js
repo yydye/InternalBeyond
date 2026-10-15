@@ -388,6 +388,20 @@
       model: str(input.model)
     };
     if (isNonEmptyString(input.runId)) md.runId = str(input.runId);
+    if (input.replyQuote && typeof input.replyQuote === 'object' && !Array.isArray(input.replyQuote)) {
+      var q = input.replyQuote;
+      if (Number(q.version) === 1 && isNonEmptyString(q.sourceMessageId)
+        && isNonEmptyString(q.sourceSenderKey) && isNonEmptyString(q.snippet)
+        && (q.mode === 'whole' || q.mode === 'excerpt')) {
+        md.replyQuote = {
+          version: 1,
+          sourceMessageId: str(q.sourceMessageId),
+          sourceSenderKey: str(q.sourceSenderKey),
+          snippet: str(q.snippet),
+          mode: q.mode
+        };
+      }
+    }
     var msg = {
       id: str(input.id) || newMessageId(now),
       role: 'assistant',
@@ -699,6 +713,91 @@
     if (!k) return true;              /* 只剩形式噪声（"……" / "🙂"）：没有内容 */
     if (k.length <= 1) return true;
     return LOW_INFO_FALLBACK.test(k);
+  }
+
+  /* Role DM-only exception to the shared low-info guard. A short acknowledgement is
+     kept only when the immediately preceding peer message gives it a clear conversational
+     target (question/request, emotional disclosure, or playful cue). The shared reply-chain
+     vocabulary and Chat behavior remain unchanged. */
+  function lowInfoContextuallyMeaningful(content, peerText) {
+    if (!lowInfoMatch(content)) return false;
+    var key = textKey(content);
+    var peer = str(peerText).trim();
+    if (!key || !peer) return false;
+    var laughter = /^(?:哈哈+|哈+|呵+|笑死)$/;
+    if (laughter.test(key)) return /(?:哈哈|笑|好笑|逗|玩笑|开玩笑|有意思|😂|🤣|😆|😹|😄|😝)/u.test(peer);
+    var acknowledgment = /^(?:嗯+|哦+|是啊|确实|同感|好|好的|行|可以|知道了|明白|没错|是的|是|对|好吧)$/;
+    if (!acknowledgment.test(key)) return false;
+    var question = /[?？]|(?:吗|么|呢)\s*[。.!！?？…]*$|(?:要不要|想不想|能不能|可不可以|行不行|是不是|是否|你觉得|你认为|你怎么看|你说呢)/u.test(peer);
+    var request = /(?:请|麻烦|帮我|告诉我|给我|能不能|可不可以|愿不愿意|你先|你去|试试|看看|一起|不如|我们去|我们先|你能)/u.test(peer);
+    var emotionalDisclosure = /(?:我.{0,8}(?:难过|害怕|担心|累|委屈|失望|烦|生气|孤单|紧张|焦虑|不舒服|开心|高兴|激动|想你|想念|疼|痛))/u.test(peer);
+    return question || request || emotionalDisclosure;
+  }
+
+  /* Short acknowledgements have too few bigrams for the generic similarity detector.
+     Suppress an exact contextual acknowledgement repeated in this run. */
+  function isRepeatedLowInfoTurn(content, recentContents) {
+    var key = textKey(content);
+    if (!key) return false;
+    var list = Array.isArray(recentContents) ? recentContents : [];
+    for (var i = 0; i < list.length; i++) if (textKey(list[i]) === key) return true;
+    return false;
+  }
+
+  /* Parse one optional turn directive at either edge of the model text. Missing or malformed directives
+     intentionally return intent=null so the caller uses the legacy speak-and-yield flow. */
+  function parseRoleDmIntent(content) {
+    var raw = str(content);
+    var opens = raw.match(/<role_dm_intent\b[^>]*>/gi) || [];
+    var closes = raw.match(/<\/role_dm_intent\s*>/gi) || [];
+    var simpleMarkers = raw.match(/\[role_dm:[^\]\r\n]*\]/gi) || [];
+    if (!opens.length && !closes.length && !simpleMarkers.length) return { intent: null, text: raw, valid: false, reason: 'missing' };
+    var cleaned = raw
+      .replace(/<role_dm_intent\b[^>]*>[\s\S]*?<\/role_dm_intent\s*>/gi, '')
+      .replace(/<\/?role_dm_intent\b[^>]*>/gi, '')
+      .replace(/\[role_dm:[^\]\r\n]*\]/gi, '')
+      .trim();
+    /* Providers sometimes put the final control inline with the body or add harmless
+       whitespace/case variation. Accept only the closed vocabulary at the very end;
+       duplicate directives, attributes, and unknown values still fail closed. */
+    var xmlPrefix = /^\s*<role_dm_intent\s*>\s*(speak|continue_self|yield|end)\s*<\/role_dm_intent\s*>(?:\r?\n|$)/i.exec(raw);
+    var xmlSuffix = /<role_dm_intent\s*>\s*(speak|continue_self|yield|end)\s*<\/role_dm_intent\s*>\s*$/i.exec(raw);
+    var simplePrefix = /^\s*\[role_dm:(speak|continue_self|yield|end)\]\s*(?:\r?\n|$)/i.exec(raw);
+    var simpleSuffix = /\[role_dm:(speak|continue_self|yield|end)\]\s*$/i.exec(raw);
+    var xmlMatch = xmlPrefix || xmlSuffix;
+    var simpleMatch = simplePrefix || simpleSuffix;
+    var xmlOnly = opens.length === 1 && closes.length === 1 && simpleMarkers.length === 0 && !!xmlMatch;
+    var simpleOnly = opens.length === 0 && closes.length === 0 && simpleMarkers.length === 1 && !!simpleMatch;
+    var match = simpleMatch || xmlMatch;
+    if ((!xmlOnly && !simpleOnly) || !match) {
+      return { intent: null, text: cleaned, valid: false, reason: 'malformed' };
+    }
+    var prefixMatch = xmlPrefix || simplePrefix;
+    var body = prefixMatch ? raw.slice(prefixMatch[0].length).trim() : raw.slice(0, match.index).trim();
+    var intent = match[1].toLowerCase();
+    if ((intent === 'speak' || intent === 'continue_self') && !body) {
+      return { intent: null, text: cleaned, valid: false, reason: 'missing-body' };
+    }
+    if (intent === 'yield' && body) {
+      return { intent: null, text: cleaned, valid: false, reason: 'yield-has-body' };
+    }
+    return { intent: intent, text: body, valid: true, reason: '' };
+  }
+
+  /* Count the latest same-speaker run, capped at two because that is the scheduler limit. */
+  function trailingSpeakerStreak(messages) {
+    var list = Array.isArray(messages) ? messages : [];
+    var speakerId = '', count = 0;
+    for (var i = list.length - 1; i >= 0 && count < 2; i--) {
+      var message = list[i] || {};
+      var metadata = message.metadata || {};
+      var current = str(metadata.senderId).trim();
+      if (!current) break;
+      if (!speakerId) speakerId = current;
+      if (current !== speakerId) break;
+      count++;
+    }
+    return { speakerId: speakerId, count: count };
   }
 
   /* ══════════ 6b. M3 软复读分析（纯函数：零 IO / 零模型调用 / 零副作用）═══
@@ -1218,10 +1317,10 @@
        当成 assistant 续写（Anthropic 更会把相邻 assistant 轮合并成一条）。
        这里用一条**系统回执**而不是伪造对方发言 —— 绝不替对方说话。 */
     if (messages.length && messages[messages.length - 1].role === 'assistant') {
-      messages.push({ role: 'user', content: '（轮到你了。以「' + selfName + '」的身份，对「' + peerName + '」说一句话。）' });
+      messages.push({ role: 'user', content: '（轮到你了。以「' + selfName + '」的身份，自然地回应「' + peerName + '」。）' });
     }
     if (!messages.length || messages[messages.length - 1].role !== 'user') {
-      messages.push({ role: 'user', content: '（轮到你了。以「' + selfName + '」的身份，对「' + peerName + '」说一句话。）' });
+      messages.push({ role: 'user', content: '（轮到你了。以「' + selfName + '」的身份，自然地回应「' + peerName + '」。）' });
     }
     if (tail.length) {
       for (var j = messages.length - 1; j >= 0; j--) {
@@ -1240,7 +1339,8 @@
   /* ── 谁先说 ───────────────────────────────────────────────────────────
      两种语义，**必须**区分，否则会出现"她主动发起、但第一条是对方说的"：
 
-       · manual / 续聊（默认）：接上一个人，交替发言。initiatorId 只在
+        · manual / 续聊（默认）：接上一个人。之后的连续发言或让话由本轮闭集意图控制。
+          initiatorId 只在
          这段 thread 还没有 lastTurnRoleId 时生效。
        · autonomous（opts.forceInitiator === true）：**发起人必须第一个说**。
          自主发起这件事本身就是"她想找 TA"，让被联系的一方先开口等于
@@ -1304,6 +1404,9 @@
     roleDailyCap: 'role-daily-cap',
     aborted: 'aborted',
     maxTurns: 'max-turns',
+    naturalEnd: 'natural-end',
+    silentStall: 'silent-stall',
+    consecutiveCap: 'consecutive-cap',
     providerFailed: 'provider-failed',
     /* 输出类失败（Phase 3.1）：**请求本身是成功的**，只是这一轮没拿到可用正文。
        它们与 provider-failed 是两件不同的事实，用户该做的事也相反 ——
@@ -1388,6 +1491,10 @@
     isDuplicateTurn: isDuplicateTurn,
     diceSimilarity: diceSimilarity,
     lowInfoMatch: lowInfoMatch,
+    lowInfoContextuallyMeaningful: lowInfoContextuallyMeaningful,
+    isRepeatedLowInfoTurn: isRepeatedLowInfoTurn,
+    parseRoleDmIntent: parseRoleDmIntent,
+    trailingSpeakerStreak: trailingSpeakerStreak,
     /* 冻结副本的词表（canonical 形）。它不是第二份 authority，只是
        shared core 不可用时的等价实现 —— 测试逐字断言两份词表相同。 */
     LOW_INFO_FALLBACK_WORDS: LOW_INFO_FALLBACK_WORDS,

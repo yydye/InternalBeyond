@@ -55,6 +55,7 @@ function sourceGuards() {
   const comm = read('assets/js/communication.js');
   const code = comm.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const core = read('assets/js/group-runtime-core.js');
+  const dbSchema = read('assets/js/webcore-db-schema.js');
   const count = (s, t) => s.split(t).length - 1;
   ok('SG1.plannerStillCalledOncePerTurn', count(code, 'planParticipation(_gPlanInput)') === 1);
   ok('SG2.dynamicRuntimeNeverCallsPlanner', (() => {
@@ -93,7 +94,8 @@ function sourceGuards() {
     /GROUP_POLICY_FIELDS=\['maxResponders','recentSpeakerWindow'\]/.test(read('assets/js/social.js'))
     && /PARTICIPATION_POLICY_FIELDS = Object\.freeze\(\['maxResponders', 'recentSpeakerWindow'\]\)/.test(core));
   ok('SG9.noNewStoreOrQueuePersistence',
-    /DB_VER=24/.test(read('assets/js/core.js')) && code.indexOf('dynamicParticipation') < 0
+    /DB_SCHEMA=window\.IBWebCoreDbSchema/.test(read('assets/js/core.js'))
+    && /var DB_VERSION=24/.test(dbSchema) && code.indexOf('dynamicParticipation') < 0
     && code.indexOf('sessionStorage') < 0 && comm.indexOf('queueStore') < 0);
   ok('SG10.noDynamicCanonicalMetadata', count(code, 'extraMetadata:{groupTurnId') === 1
     && code.indexOf('dynamicRuntime') < 0 && code.indexOf('admissionIndex') < 0

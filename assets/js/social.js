@@ -4,6 +4,8 @@
    PROVIDERS 唯一 canonical 来源已迁至 assets/js/provider-directory.js（window.PROVIDERS_DIR）。
    social.js 不再维护第二份 provider metadata 字面量，仅作 window.PROVIDERS 兼容暴露。 */
 const PROVIDERS=(window.PROVIDERS_DIR&&window.PROVIDERS_DIR.PROVIDERS)||{};
+function _apiUiText(key,fallback){return window.IBI18n&&typeof window.IBI18n.t==='function'?window.IBI18n.t(key):fallback}
+function _apiSetEditorTitle(key,fallback){var title=document.getElementById('api-editor-title');if(title)title.textContent=_apiUiText(key,fallback)}
 /* Local OpenAI-compatible runtimes such as Ollama and LM Studio normally do
    not use a credential.  Treat that narrow, loopback-only case as ready while
    keeping the normal API-key requirement for every network endpoint. */
@@ -1025,7 +1027,7 @@ function _ibRenderApiList(c,configs,statusMap,pending){
     const keyBtn=needsKey?'<button type="button" class="ib-api-key-btn" onclick="event.stopPropagation();_ibOpenApiKeyModal(\''+id+'\',\''+(status==='ready'?'replace':'add')+'\')">'+(status==='ready'?'更换 API Key':'添加 API Key')+'</button>':'';
     const avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
     const avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
-    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
+    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><button type="button" class="btn ib-expression-manage" data-expression-role-id="'+esc(id)+'" aria-label="管理 '+esc(a.nickname||a.model||'角色')+' 的表情包">表情包</button>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
   }).join('');
 }
 async function renderApiList(){
@@ -1256,7 +1258,7 @@ function addNewApi(){
   var _bb=document.getElementById('api-bio');if(_bb)_bb.value='';
   var _sb=document.getElementById('api-signature');if(_sb)_sb.value='';
   _renderApiBannerPreview('');
-  document.getElementById('api-editor-title').textContent='添加API';
+  _apiSetEditorTitle('api.newRole','添加API');
   document.getElementById('api-editor').style.display='block';
   var _dw0=document.getElementById('api-daywrap');if(_dw0)_dw0.style.display='none';
   document.getElementById('api-ai-name').value='';
@@ -1460,7 +1462,7 @@ function editApi(id){
   const cfg=apiConfigs.find(a=>a.id===id);
   if(!cfg)return;
   editingApiId=id;
-  document.getElementById('api-editor-title').textContent='编辑API';
+  _apiSetEditorTitle('api.editRole','编辑API');
   /* 私密事实小节按当前 writer context 刷新（owner = 正在编辑的这个角色）。 */
   _dscSync();
   document.getElementById('api-editor').style.display='block';
@@ -2018,19 +2020,33 @@ function _apiArchToggleUI(){
   const add=document.getElementById('api-add-actions');
   if(!t||!b)return;
   if(_apiArchView){
-    t.innerHTML='已归档的API <span class="section-meta">（最多20个API）</span>';
+    t.replaceChildren();
+    var archivedTitle=document.createElement('span');archivedTitle.textContent=_apiUiText('api.archivedLibrary','已归档的 API');
+    var archivedCount=document.createElement('span');archivedCount.className='section-meta';archivedCount.textContent=_apiUiText('api.archivedLimit','（最多 20 个角色）');
+    t.appendChild(archivedTitle);t.appendChild(document.createTextNode(' '));t.appendChild(archivedCount);
     b.classList.add('arch-return');
-    b.innerHTML=_ARCH_RETURN_SVG+'Return';
-    b.title='返回API管理区';
+    b.innerHTML=_ARCH_RETURN_SVG+_apiUiText('api.returnToLibrary','Return');
+    b.title=_apiUiText('api.returnToLibraryTitle','返回角色库');
     if(add)add.style.display='none';
   }else{
-    t.innerHTML='角色库 <span class="section-meta">（数量不限）</span>';
+    t.replaceChildren();
+    var libraryTitle=document.createElement('span');libraryTitle.textContent=_apiUiText('api.roleLibrary','角色库');
+    var libraryCount=document.createElement('span');libraryCount.className='section-meta';libraryCount.textContent=_apiUiText('api.unlimitedRoles','（数量不限）');
+    t.appendChild(libraryTitle);t.appendChild(document.createTextNode(' '));t.appendChild(libraryCount);
     b.classList.remove('arch-return');
-    b.innerHTML=_ARCH_CLOCK_SVG+'Archived';
-    b.title='Archived：已归档的API档案区';
+    b.innerHTML=_ARCH_CLOCK_SVG+_apiUiText('api.archived','Archived');
+    b.title=_apiUiText('api.archivedTitle','查看已归档的角色配置');
     if(add)add.style.display='';
   }
 }
+document.addEventListener('ib:locale-changed',function(){
+  _apiArchToggleUI();
+  const editor=document.getElementById('api-editor');
+  if(editor&&editor.style.display!=='none'){
+    const exists=Array.isArray(apiConfigs)&&apiConfigs.some(function(cfg){return cfg&&cfg.id===editingApiId});
+    _apiSetEditorTitle(exists?'api.editRole':'api.newRole',exists?'编辑API':'添加API');
+  }
+});
 function toggleApiArchiveView(){
   _apiArchView=!_apiArchView;
   if(_apiArchView)cancelApiEdit();
@@ -2089,7 +2105,7 @@ async function loadApiSettingsUI(){_apiArchView=false;_apiArchToggleUI();renderA
   /* Image Router 配置区：与 API 配置列表同页，进来即刷新（绑定下拉 / 当前路由状态） */
   try{if(typeof window.loadImageRouterSettingsUI==='function')await window.loadImageRouterSettingsUI()}catch(e){}
   /* Sync memory budget hint in the Memory page dashboard */
-  getMemorySettings().then(function(s){var hint=document.getElementById('mem-deck-tok-hint');if(hint)hint.textContent='每次注入上限约 '+s.budget+' 字符'})
+  getMemorySettings().then(function(s){var hint=document.getElementById('mem-deck-tok-hint');if(hint)hint.textContent=window.IBI18n&&window.IBI18n.t?window.IBI18n.t('memory.injectLimit',{chars:s.budget}):'每次注入上限约 '+s.budget+' 字符'})
 }
 
 /* FRIENDS LIST */
@@ -2097,7 +2113,12 @@ async function loadFriendsList(){
   if(_chatArchMode)return renderArchFriendsList();
   await loadApiConfigs();
   const c=document.getElementById('friends-list');
-  if(!apiConfigs.length){c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">去 API 页面添加API</div>';return}
+  if(!apiConfigs.length){
+    c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">去 API 页面添加API</div>';
+    _chatRenderConversationSelector([],[],[],false);
+    _chatUpdateConversationHeader([],[],[],false);
+    return;
+  }
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of apiConfigs){
@@ -2136,13 +2157,216 @@ async function loadFriendsList(){
       return '<div class="friend-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectGroup(\''+g.id+'\')"><span class="friend-dot" style="background:var(--accent-light)"></span><span>'+esc(g.name)+'</span><span class="del-btn" onclick="event.stopPropagation();deleteGroup(\''+g.id+'\')" title="删除群聊" style="margin-left:auto;font-size:var(--fs-meta);cursor:pointer;opacity:0.5">✕</span></div>';
     }).join('');
   }
+  _chatRenderConversationSelector(apiConfigs,groups,allThreads,false);
+  _chatUpdateConversationHeader(apiConfigs,groups,allThreads,false);
+  if(!activeFriendId&&currentPage==='chat')_chatRenderEmptyState(document.getElementById('chat-full-messages'),'unselected','选择一段对话','从列表中选择角色、群聊或话题。');
+}
+
+function _chatContextOptionValue(kind,friendId,threadId){
+  return JSON.stringify({kind:String(kind||''),friendId:String(friendId||''),threadId:String(threadId||'')});
+}
+function _chatCurrentContextOptionValue(archived){
+  if(!activeFriendId)return '';
+  const fid=String(activeFriendId);
+  if(archived)return _chatContextOptionValue(activeThreadId?'archived-thread':'archived-role',fid,activeThreadId||'');
+  if(fid.startsWith('group_'))return _chatContextOptionValue('group',fid,'');
+  return _chatContextOptionValue(activeThreadId?'thread':'role',fid,activeThreadId||'');
+}
+function _chatRoleLabel(config){
+  return String(config&&config.nickname||'').trim()||'AI';
+}
+function _chatSetConversationHeader(title,supporting){
+  const titleEl=document.getElementById('chat-context-title');
+  const supportingEl=document.getElementById('chat-context-supporting');
+  if(titleEl){titleEl.removeAttribute('data-i18n');titleEl.textContent=String(title||'Chat')}
+  if(supportingEl){
+    supportingEl.removeAttribute('data-i18n');
+    const text=String(supporting||'').trim();
+    supportingEl.textContent=text;
+    supportingEl.hidden=!text;
+  }
+}
+function _chatRenderConversationSelector(roles,groups,threads,archived){
+  const select=document.getElementById('chat-conversation-select');
+  const picker=document.getElementById('chat-conversation-picker');
+  if(!select||!picker)return;
+  roles=Array.isArray(roles)?roles:[];
+  groups=Array.isArray(groups)?groups:[];
+  threads=Array.isArray(threads)?threads:[];
+  select.replaceChildren();
+  const empty=document.createElement('option');
+  empty.value='';
+  empty.textContent='选择一段对话';
+  select.appendChild(empty);
+  let optionCount=0;
+  function addGroup(label,items){
+    if(!items.length)return;
+    const optgroup=document.createElement('optgroup');
+    optgroup.label=label;
+    items.forEach(function(item){
+      const option=document.createElement('option');
+      option.value=_chatContextOptionValue(item.kind,item.friendId,item.threadId);
+      option.textContent=item.label;
+      optgroup.appendChild(option);
+      optionCount++;
+    });
+    select.appendChild(optgroup);
+  }
+  const roleItems=[];
+  roles.forEach(function(config){
+    const roleId=String(config&&config.id||'');
+    if(!roleId)return;
+    const name=_chatRoleLabel(config);
+    roleItems.push({kind:archived?'archived-role':'role',friendId:roleId,label:name});
+    threads.filter(function(thread){return String(thread&&thread.friendId||'')===roleId;}).sort(function(a,b){return Number(a.created||0)-Number(b.created||0)}).forEach(function(thread){
+      roleItems.push({kind:archived?'archived-thread':'thread',friendId:roleId,threadId:String(thread.id||''),label:name+' · '+(String(thread.name||'').trim()||'话题')});
+    });
+  });
+  addGroup(archived?'归档对话':'角色对话',roleItems);
+  if(!archived){
+    addGroup('群聊',groups.filter(function(group){return group&&group.id;}).map(function(group){
+      return {kind:'group',friendId:String(group.id),label:String(group.name||'群聊')};
+    }));
+  }
+  picker.hidden=optionCount===0;
+  if(picker.parentElement)picker.parentElement.hidden=optionCount===0;
+  const current=_chatCurrentContextOptionValue(!!archived);
+  select.value=current;
+  if(select.value!==current)select.value='';
+  if(typeof window._chatSyncComposerBusy==='function')window._chatSyncComposerBusy();
+}
+function _chatUpdateConversationHeader(roles,groups,threads,archived){
+  roles=Array.isArray(roles)?roles:[];
+  groups=Array.isArray(groups)?groups:[];
+  threads=Array.isArray(threads)?threads:[];
+  if(!activeFriendId){
+    const hasChoices=roles.length>0||groups.length>0;
+    _chatSetConversationHeader(archived?'Archived':(hasChoices?'选择对话':'Chat'),archived?'只读历史':(hasChoices?'从列表中选择角色或群聊。':''));
+    return;
+  }
+  const friendId=String(activeFriendId);
+  if(!archived&&friendId.startsWith('group_')){
+    const group=groups.find(function(item){return String(item&&item.id||'')===friendId;});
+    _chatSetConversationHeader(group?String(group.name||'群聊'):'群聊',group?'群聊':'');
+    return;
+  }
+  const config=roles.find(function(item){return String(item&&item.id||'')===friendId;});
+  const name=_chatRoleLabel(config);
+  if(activeThreadId){
+    const thread=threads.find(function(item){return String(item&&item.id||'')===String(activeThreadId);});
+    _chatSetConversationHeader(name,((archived?'归档 · 只读 · ':'')+'话题 · '+(thread?String(thread.name||'话题'):'话题')));
+    return;
+  }
+  _chatSetConversationHeader(name,archived?'归档 · 只读':'');
+}
+function handleChatConversationSelect(rawValue){
+  let choice;
+  try{choice=JSON.parse(String(rawValue||''))}catch(e){return false}
+  if(!choice||!choice.friendId)return false;
+  if(choice.kind==='role')return selectFriend(choice.friendId);
+  if(choice.kind==='thread')return selectThread(choice.friendId,choice.threadId);
+  if(choice.kind==='group')return selectGroup(choice.friendId);
+  if(choice.kind==='archived-role')return selectArchFriend(choice.friendId);
+  if(choice.kind==='archived-thread')return selectArchThread(choice.friendId,choice.threadId);
+  return false;
+}
+function _chatRenderEmptyState(container,state,title,supporting){
+  if(!container)return null;
+  container._ibWin=null;
+  const root=document.createElement('div');
+  root.className='chat-empty-state';
+  root.dataset.state=String(state||'empty');
+  root.setAttribute('role','status');
+  const heading=document.createElement('p');
+  heading.className='chat-empty-state__title';
+  heading.textContent=String(title||'');
+  root.appendChild(heading);
+  if(supporting){
+    const note=document.createElement('p');
+    note.className='chat-empty-state__supporting';
+    note.textContent=String(supporting);
+    root.appendChild(note);
+  }
+  container.replaceChildren(root);
+  return root;
+}
+function _chatRenderHistoryUnavailable(container,error,retry){
+  if(!container)return null;
+  container._ibWin=null;
+  const root=document.createElement('div');
+  root.className='ib-primitives chat-empty-state chat-history-unavailable';
+  root.dataset.state='unavailable';
+  const status=document.createElement('div');
+  status.className='ib-inline-status';
+  status.dataset.status='degraded';
+  status.setAttribute('role','status');
+  const marker=document.createElement('span');
+  marker.className='ib-inline-status__marker';
+  marker.setAttribute('aria-hidden','true');
+  const message=document.createElement('span');
+  message.className='ib-inline-status__text';
+  message.textContent='无法加载对话记录';
+  status.appendChild(marker);
+  status.appendChild(message);
+  root.appendChild(status);
+  const note=document.createElement('p');
+  note.className='chat-empty-state__supporting';
+  note.textContent='历史内容暂时不可用。可以重试读取，不会发送新消息。';
+  root.appendChild(note);
+  const actions=document.createElement('div');
+  actions.className='chat-empty-state__actions';
+  const retryButton=document.createElement('button');
+  retryButton.type='button';
+  retryButton.className='btn btn-primary';
+  retryButton.textContent='重试';
+  retryButton.addEventListener('click',async function(){
+    if(retryButton.disabled)return;
+    retryButton.disabled=true;
+    retryButton.setAttribute('aria-busy','true');
+    try{
+      const result=await (typeof retry==='function'?retry():false);
+      if(result===false){retryButton.disabled=false;retryButton.removeAttribute('aria-busy')}
+    }catch(e){retryButton.disabled=false;retryButton.removeAttribute('aria-busy')}
+  });
+  actions.appendChild(retryButton);
+  if(window.IBERR&&typeof IBERR.present==='function'&&typeof IBERR.show==='function'){
+    const detailsButton=document.createElement('button');
+    detailsButton.type='button';
+    detailsButton.className='btn';
+    detailsButton.dataset.variant='text';
+    detailsButton.textContent='查看详情';
+    detailsButton.addEventListener('click',function(){
+      const model=IBERR.present(error,{stage:'chat_history',friendId:String(activeFriendId||'')});
+      if(model){
+        model.title='无法读取对话记录';
+        model.message='这段历史记录暂时无法显示。';
+        model.suggestion='可以重试读取；技术详情只在这里展开。';
+        model.retryable=false;
+        IBERR.show(model);
+      }
+    });
+    actions.appendChild(detailsButton);
+  }
+  root.appendChild(actions);
+  container.replaceChildren(root);
+  return root;
+}
+
+function _ibStopChatVoiceContext(){
+  try{if(window._vmSt&&window._vmSt.purpose==='chat'&&typeof window._vmCancelCapture==='function')window._vmCancelCapture('role-switch')}catch(e){}
+  try{var root=document.getElementById('page-chat');if(window.IB&&window.IB.bridge&&typeof window.IB.bridge.stopVoicePlayback==='function')window.IB.bridge.stopVoicePlayback(root)}catch(e){}
+  try{if(typeof window._vmStopAudio==='function')window._vmStopAudio()}catch(e){}
+  try{var api=window.IB&&window.IB.voiceCall,call=api&&typeof api.getCurrent==='function'?api.getCurrent():null,modal=document.getElementById('voice-call-modal');if(call)call.hangup();else if(modal&&!modal.hidden&&typeof window.hangupVoiceCall==='function')window.hangupVoiceCall()}catch(e){}
+  try{var header=document.getElementById('chat-header-name');if(header){delete header.dataset.voiceStatus;delete header.dataset.voiceRoleId;if(window.IBExpressionPacks&&typeof window.IBExpressionPacks.clearRoleState==='function')window.IBExpressionPacks.clearRoleState(header)}}catch(e){}
 }
 
 async function selectFriend(id){
   if(_chatSelectMode)exitChatSelectMode();
+  if(String(activeFriendId||'')!==String(id||'')||activeThreadId!==null)_ibStopChatVoiceContext();
   activeFriendId=id;
   activeThreadId=null;/* 回到主对话 */
   _siteCtxLastHash='';/* 换人后首轮重新注入完整上下文 */
+  _chatSetConversationHeader(_chatRoleLabel(apiConfigs.find(a=>a.id===id)),'');
   _clearUnread(id);
   loadFriendsList();
   renderChatCalendar();
@@ -2154,22 +2378,22 @@ async function selectFriend(id){
   const memMgrBtn=document.getElementById('chat-mem-mgr-btn');
   if(memMgrBtn)memMgrBtn.style.display='none';
   /* Load chat for this friend — exclude thread messages */
-  const friendMsgs=(await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created));
   const container=document.getElementById('chat-full-messages');
-  if(!friendMsgs.length){
-    const cfg=apiConfigs.find(a=>a.id===id);
-    container.innerHTML='<div class="chat-msg system">与 '+esc(cfg?.nickname||'AI')+' 的对话</div>';
-  }else{
-    _renderAllChat(container,friendMsgs,true);
-  }
+  let friendMsgs;
+  try{friendMsgs=(await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created))}
+  catch(error){_chatRenderHistoryUnavailable(container,error,()=>selectFriend(id));return false}
+  if(!friendMsgs.length)_chatRenderEmptyState(container,'new','还没有消息','写下第一条消息开始对话。');
+  else _renderAllChat(container,friendMsgs,true);
   /* Update mini chat header too */
   const cfg=apiConfigs.find(a=>a.id===id);
   if(cfg){
     document.getElementById('chat-header-name').textContent=cfg.nickname||cfg.model;
     document.getElementById('chat-mini-title').textContent=cfg.nickname||cfg.model;
   }
+  try{if(window.IBExpressionPacks&&typeof window.IBExpressionPacks.applyChatGreeting==='function')window.IBExpressionPacks.applyChatGreeting(id)}catch(expressionError){}
   /* 打开聊天时自动检查/生成摘要 */
   setTimeout(()=>autoSummaryOnOpen(id,null),300);
+  return true;
 }
 
 function _roleSearchText(a){
@@ -2793,6 +3017,7 @@ function pickGroupUtilityCfg(group,fallbackCfgs){
 
 async function selectGroup(gid){
   if(_chatSelectMode)exitChatSelectMode();
+  if(String(activeFriendId||'')!==String(gid||'')||activeThreadId!==null)_ibStopChatVoiceContext();
   activeFriendId=gid;
   activeThreadId=null;
   _clearUnread(gid);
@@ -2813,19 +3038,19 @@ async function selectGroup(gid){
       memSel.style.display='';
     }else{memSel.style.display='none'}
   }
-  if(!group)return;
-  const gMsgs=(await dbGetByIndex('chatMessages','byFriend',gid)).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created));
+  if(!group){_chatRenderEmptyState(document.getElementById('chat-full-messages'),'unavailable','群聊不可用','这个群聊已不存在，请从列表中重新选择。');return false}
+  _chatSetConversationHeader(String(group.name||'群聊'),'群聊');
+  let gMsgs;
+  try{gMsgs=(await dbGetByIndex('chatMessages','byFriend',gid)).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created))}
+  catch(error){_chatRenderHistoryUnavailable(document.getElementById('chat-full-messages'),error,()=>selectGroup(gid));return false}
   const container=document.getElementById('chat-full-messages');
-  if(!gMsgs.length){
-    const memberNames=group.members.filter(m=>m.status!=='removed').map(m=>{const c=apiConfigs.find(a=>a.id===m.characterId);if(c){const nm=esc(c.nickname||c.model);return m.status==='muted'?nm+'（静默）':nm}const ac=archivedConfigs.find(a=>a.id===m.characterId);if(ac)return '<span style="opacity:0.5">'+esc(ac.nickname||ac.model)+'（已归档）</span>';return '?'}).join('、');
-    container.innerHTML='<div class="chat-msg system">群聊 "'+esc(group.name)+'"<br><span style="font-size:var(--fs-meta)">成员：'+memberNames+'</span></div>';
-  }else{
-    _renderAllChat(container,gMsgs,true);
-  }
+  if(!gMsgs.length)_chatRenderEmptyState(container,'new','群聊还没有消息','发一条消息开始群聊。');
+  else _renderAllChat(container,gMsgs,true);
   document.getElementById('chat-header-name').textContent=group.name;
   document.getElementById('chat-mini-title').textContent=group.name;
   /* 打开群聊时自动检查/生成摘要 */
   setTimeout(()=>autoSummaryOnOpen(gid,null),300);
+  return true;
 }
 
 async function deleteGroup(gid){
@@ -2876,6 +3101,7 @@ async function deleteThread(tid){
 }
 async function selectThread(friendId,threadId){
   if(_chatSelectMode)exitChatSelectMode();
+  if(String(activeFriendId||'')!==String(friendId||'')||String(activeThreadId||'')!==String(threadId||''))_ibStopChatVoiceContext();
   activeFriendId=friendId;
   activeThreadId=threadId;
   _clearUnread(friendId);
@@ -2885,24 +3111,25 @@ async function selectThread(friendId,threadId){
   if(memBtn)memBtn.style.display='';
   const memSel=document.getElementById('chat-mem-member-select');
   if(memSel)memSel.style.display='none';
-  const allMsgs=(await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId);
-  allMsgs.sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created));
+  let allMsgs;
+  try{allMsgs=(await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId);allMsgs.sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created))}
+  catch(error){_chatRenderHistoryUnavailable(document.getElementById('chat-full-messages'),error,()=>selectThread(friendId,threadId));return false}
   const container=document.getElementById('chat-full-messages');
   const threads=await loadThreads(friendId);
   const thread=threads.find(t=>t.id===threadId);
   const threadName=thread?thread.name:'话题';
   const cfg=apiConfigs.find(a=>a.id===friendId);
-  if(!allMsgs.length){
-    container.innerHTML='<div class="chat-msg system">'+esc(threadName)+'</div>';
-  }else{
-    _renderAllChat(container,allMsgs,true);
-  }
+  _chatSetConversationHeader(_chatRoleLabel(cfg),'话题 · '+String(threadName||'话题'));
+  if(!allMsgs.length)_chatRenderEmptyState(container,'new','话题还没有消息','写下第一条消息开始对话。');
+  else _renderAllChat(container,allMsgs,true);
   if(cfg){
     document.getElementById('chat-header-name').textContent=(cfg.nickname||cfg.model)+' · '+threadName;
     document.getElementById('chat-mini-title').textContent=(cfg.nickname||cfg.model)+' · '+threadName;
   }
+  try{if(window.IBExpressionPacks&&typeof window.IBExpressionPacks.applyChatGreeting==='function')window.IBExpressionPacks.applyChatGreeting(friendId)}catch(expressionError){}
   /* 打开话题频道时自动检查/生成摘要 */
   setTimeout(()=>autoSummaryOnOpen(friendId,threadId),300);
+  return true;
 }
 
 function searchChat(q){
@@ -2935,12 +3162,13 @@ function enterChatArchive(){
   if(_chatSelectMode)exitChatSelectMode();
   _chatArchMode=true;
   activeFriendId=null;activeThreadId=null;
+  _chatSetConversationHeader('Archived','只读历史');
   /* 标题块 */
   const t=document.getElementById('chat-intro-title');if(t)t.textContent='Archived';
   const s=document.getElementById('chat-intro-sub');if(s)s.textContent='Preserved conversations';
   const d=document.getElementById('chat-intro-desc');if(d)d.innerHTML='已离线好友的历史对话存档。可搜索与按日期浏览，所有记录为只读状态。<br>归档好友可随时前往 API Settings 恢复至API管理区。记忆库中的关联记忆不受归档影响。';
   const b=document.getElementById('chat-arch-toggle');
-  if(b){b.classList.add('arch-return');b.classList.remove('arch-clock');b.innerHTML=_ARCH_RETURN_SVG+'Return';b.title='返回Chat'}
+  if(b){b.classList.add('arch-return');b.classList.remove('arch-clock');b.removeAttribute('data-icon-only');b.setAttribute('aria-label','返回 Chat');b.innerHTML=_ARCH_RETURN_SVG+'Return';b.title='返回Chat'}
   /* 侧栏 */
   const h=document.getElementById('chat-friends-title');if(h)h.textContent='离线好友';
   const g=document.getElementById('chat-groups-section');if(g)g.style.display='none';
@@ -2964,11 +3192,12 @@ function exitChatArchive(quiet){
   if(!_chatArchMode)return;
   _chatArchMode=false;
   activeFriendId=null;activeThreadId=null;
+  _chatSetConversationHeader('Chat','选择一段对话继续');
   const t=document.getElementById('chat-intro-title');if(t)t.textContent='Chat';
   const s=document.getElementById('chat-intro-sub');if(s)s.textContent='Real-time AI dialogue';
   const d=document.getElementById('chat-intro-desc');if(d)d.innerHTML='支持多个 API 端口的实时对话站。可在浮动面板与全屏模式之间自由切换。<br>好友列表由 API 配置自动生成。支持群聊、开启话题频道、处理附件与生成记忆。';
   const b=document.getElementById('chat-arch-toggle');
-  if(b){b.classList.remove('arch-return');b.classList.add('arch-clock');b.innerHTML=_ARCH_CLOCK_SVG;b.title='Archived（离线好友的聊天记录）'}
+  if(b){b.classList.remove('arch-return');b.classList.add('arch-clock');b.setAttribute('data-icon-only','true');b.setAttribute('aria-label','查看归档');b.innerHTML=_ARCH_CLOCK_SVG;b.title='Archived（离线好友的聊天记录）'}
   const h=document.getElementById('chat-friends-title');if(h)h.textContent='好友列表';
   const g=document.getElementById('chat-groups-section');if(g)g.style.display='';
   const selBtn=document.getElementById('chat-select-toggle');
@@ -2985,8 +3214,13 @@ function exitChatArchive(quiet){
 }
 async function renderArchFriendsList(){
   await loadApiConfigs();
-  const c=document.getElementById('friends-list');if(!c)return;
-  if(!archivedConfigs.length){c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">暂无离线好友</div>';return}
+  const c=document.getElementById('friends-list');
+  if(!archivedConfigs.length){
+    if(c)c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">暂无离线好友</div>';
+    _chatRenderConversationSelector([],[],[],true);
+    _chatUpdateConversationHeader([],[],[],true);
+    return;
+  }
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of archivedConfigs){
@@ -3010,38 +3244,46 @@ async function renderArchFriendsList(){
       html+='</div>';
     }
   }
-  c.innerHTML=html;
+  if(c)c.innerHTML=html;
+  _chatRenderConversationSelector(archivedConfigs,[],allThreads,true);
+  _chatUpdateConversationHeader(archivedConfigs,[],allThreads,true);
 }
 async function selectArchFriend(id){
+  if(String(activeFriendId||'')!==String(id||'')||activeThreadId!==null)_ibStopChatVoiceContext();
   activeFriendId=id;
   activeThreadId=null;
   renderArchFriendsList();
   renderChatCalendar();
-  const friendMsgs=(await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created));
   const container=document.getElementById('chat-full-messages');
   container.classList.add('chat-arch-ro');
   const cfg=archivedConfigs.find(a=>a.id===id);
-  if(!friendMsgs.length){
-    container.innerHTML='<div class="chat-msg system">与 '+esc(cfg?(cfg.nickname||cfg.model):'AI')+' 的对话</div>';
-  }else{
-    _renderAllChat(container,friendMsgs,true);
-  }
+  _chatSetConversationHeader(_chatRoleLabel(cfg),'归档 · 只读');
+  let friendMsgs;
+  try{friendMsgs=(await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created))}
+  catch(error){_chatRenderHistoryUnavailable(container,error,()=>selectArchFriend(id));return false}
+  if(!friendMsgs.length)_chatRenderEmptyState(container,'new','归档对话没有消息','这段归档历史目前为空。');
+  else _renderAllChat(container,friendMsgs,true);
+  _chatSetConversationHeader(_chatRoleLabel(cfg),'归档 · 只读');
+  return true;
 }
 async function selectArchThread(friendId,threadId){
+  if(String(activeFriendId||'')!==String(friendId||'')||String(activeThreadId||'')!==String(threadId||''))_ibStopChatVoiceContext();
   activeFriendId=friendId;
   activeThreadId=threadId;
   renderArchFriendsList();
   renderChatCalendar();
-  const allMsgs=(await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created));
   const container=document.getElementById('chat-full-messages');
   container.classList.add('chat-arch-ro');
+  let allMsgs;
+  try{allMsgs=(await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId).sort((a,b)=>(a.timestamp||a.created)-(b.timestamp||b.created))}
+  catch(error){_chatRenderHistoryUnavailable(container,error,()=>selectArchThread(friendId,threadId));return false}
   const threads=await loadThreads(friendId);
   const thread=threads.find(t=>t.id===threadId);
-  if(!allMsgs.length){
-    container.innerHTML='<div class="chat-msg system">'+esc(thread?thread.name:'话题')+'</div>';
-  }else{
-    _renderAllChat(container,allMsgs,true);
-  }
+  _chatSetConversationHeader(_chatRoleLabel(archivedConfigs.find(a=>a.id===friendId)),(thread?String(thread.name||'话题'):'话题')+' · 归档只读');
+  if(!allMsgs.length)_chatRenderEmptyState(container,'new','归档话题没有消息','这段归档历史目前为空。');
+  else _renderAllChat(container,allMsgs,true);
+  _chatSetConversationHeader(_chatRoleLabel(archivedConfigs.find(a=>a.id===friendId)),(thread?String(thread.name||'话题'):'话题')+' · 归档只读');
+  return true;
 }
 
 /* ===== CHAT CALENDAR ===== */
@@ -3241,6 +3483,7 @@ window.confirmApiRestore=confirmApiRestore;
 window.loadApiSettingsUI=loadApiSettingsUI;
 window.loadFriendsList=loadFriendsList;
 window.selectFriend=selectFriend;
+window.handleChatConversationSelect=handleChatConversationSelect;
 window.createGroup=createGroup;
 window.filterGroupRolePicker=filterGroupRolePicker;
 window._renderGroupMentionList=_renderGroupMentionList;
@@ -3334,6 +3577,7 @@ ibSocialLive('_calMonth', function(){return _calMonth}, function(v){_calMonth=v}
 ibSocialLive('_calChatDays', function(){return _calChatDays}, function(v){_calChatDays=v});
 ibSocialLive('_calEarliest', function(){return _calEarliest}, function(v){_calEarliest=v});
 NS.expose('social', {
+  handleChatConversationSelect: handleChatConversationSelect,
   _ibIsLoopbackEndpoint: _ibIsLoopbackEndpoint,
   _ibApiHasCredential: _ibApiHasCredential,
   _ibApiReady: _ibApiReady,

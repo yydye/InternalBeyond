@@ -29,13 +29,15 @@ for (const f of ['reasoning_content', 'threadId', 'senderName', 'images', 'files
 }
 check('字段表含 legacy 字段（只读，不参与渲染决策）',
   CORE.LEGACY_FIELDS.indexOf('upstreamRaw') >= 0 && CORE.LEGACY_FIELDS.indexOf('thinkingSources') >= 0);
-check('store / db 名称与 core.js:3-4 一致',
+const DB_SCHEMA_SOURCE = require('fs').readFileSync(path.join(ROOT, 'assets', 'js', 'webcore-db-schema.js'), 'utf8');
+const DB_SCHEMA_VERSION = Number((/DB_VERSION\s*=\s*(\d+)/.exec(DB_SCHEMA_SOURCE) || [])[1]);
+check('store / db 名称与共享 IndexedDB schema 一致',
   CORE.STORE_NAME === 'chatMessages' && CORE.DB_NAME === 'InternalBeyondDB'
   /* Phase 4B-1.2：DB_VER 合法前进到 24（+ disclosureFacts，属**另一个**阶段），
      因此这里不再把 23 写死。写死有两个问题：每次合法升版都误报，而且它
-     **测不到**这行断言声称的东西 —— chat-core.js:22 的契约是"与 core.js:3
-     同步"。真正的性质是**两个文件必须报同一个版本号**，下面直接测它。 */
-  && CORE.DB_VER === Number((/DB_VER=(\d+)/.exec(require('fs').readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8')) || [])[1])
+     **测不到**这行断言声称的东西 —— core.js 现在把数据库名和版本委托给
+     webcore-db-schema.js。真正的性质是两个消费者必须使用同一个 schema 版本。 */
+  && CORE.DB_VER === DB_SCHEMA_VERSION
   && Number.isInteger(CORE.DB_VER) && CORE.DB_VER >= 23,
   { STORE_NAME: CORE.STORE_NAME, DB_NAME: CORE.DB_NAME, DB_VER: CORE.DB_VER });
 check('schema 版本已声明（供未来 migration）', Number.isInteger(CORE.SCHEMA_VERSION) && CORE.SCHEMA_VERSION >= 1);

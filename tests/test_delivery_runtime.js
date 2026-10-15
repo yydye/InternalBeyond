@@ -647,7 +647,7 @@ function contractGuards() {
   ok('GUARD.layer.adapterIsOnlyDeliverer', /async function _ibDeliverUnit\(queue,unit,index\)/.test(commSrc)
     && (sliceFunction(commSrc, 'async function _ibDeliverUnit(').match(/dbPut\('chatMessages'/g) || []).length === 1
     && !/dbPut|chatMessages/.test(stripComments(rtSrc)));
-  ok('GUARD.layer.singleTypingAuthority', /function _ibTypingOn\(friendId,threadId,name,mode\)/.test(commSrc)
+  ok('GUARD.layer.singleTypingAuthority', /function _ibTypingOn\(friendId,threadId,name,mode(?:,roleId)?\)/.test(commSrc)
     && (commSrc.match(/className='chat-typing';/g) || []).length === 2, (commSrc.match(/className='chat-typing';/g) || []).length);
   ok('GUARD.layer.conversationIdentityFromChatCore', /conversationIdOf\(friendId,threadId\)/.test(commSrc));
   ok('GUARD.interrupt.hookedOnUserSend', /_ibDeliveryAbort\(_targetFriend,_targetThread,'user_interrupt'\)/.test(commSrc));
@@ -675,6 +675,10 @@ function fakeDom() {
     const el = {
       tagName: String(tag || 'div').toUpperCase(), className: '', id: '', innerHTML: '',
       textContent: '', style: {}, dataset: {}, children: [], parentNode: null,
+      attributes: Object.create(null),
+      setAttribute: function (name, value) { el.attributes[String(name)] = String(value); },
+      getAttribute: function (name) { return Object.prototype.hasOwnProperty.call(el.attributes, String(name)) ? el.attributes[String(name)] : null; },
+      removeAttribute: function (name) { delete el.attributes[String(name)]; },
       appendChild: function (c) { c.parentNode = el; el.children.push(c); return c; },
       removeChild: function (c) { el.children = el.children.filter(x => x !== c); c.parentNode = null; },
       remove: function () { if (el.parentNode) el.parentNode.removeChild(el); },
@@ -719,7 +723,7 @@ function adapterSandbox(active, thread) {
   const broadcasts = [];
   const api = new Function(
     'window', 'document', 'currentPage', 'activeFriendId', 'activeThreadId', 'esc',
-    '_getActiveAiName', 'dbPut', 'appendChatBubble', '_showStreamingUI', '_ibAppBroadcast',
+    '_ibPrepareExpressionMessage', '_getActiveAiName', 'dbPut', 'appendChatBubble', '_showStreamingUI', '_ibAppBroadcast',
     'setTimeout', 'clearTimeout', 'Date',
     'var _ibTypingReg=Object.create(null);var _ibDeliveryRuntimeSingleton=null;\n'
     + block + '\n'
@@ -733,6 +737,7 @@ function adapterSandbox(active, thread) {
     { IBChatCore: { conversationIdOf: (f, t) => 'dm:' + f + (t ? ('|' + t) : ''), isGroupFriendId: f => String(f).indexOf('group_') === 0 },
       IBDeliveryRuntime: { createDeliveryRuntime: () => shared } },
     dom, 'chat', active, thread, s => String(s == null ? '' : s),
+    message => message,
     () => 'AI',
     async (s, row) => { if (!store.has(row.id)) store.set(row.id, row); },
     (role, text, senderName, reasoning, msgId) => { bubbles.push({ role: role, text: text, msgId: msgId, at: clock.now() }); },
@@ -775,6 +780,10 @@ async function desktopAdapter() {
       const els = s.dom.containers['chat-full-messages'].querySelectorAll('chat-typing');
       return els.length === 1 && els[0].dataset.ibTypingMode === 'typing' && String(els[0].innerHTML).indexOf('正在输入') >= 0;
     })(), JSON.stringify(s.dom.containers['chat-full-messages'].querySelectorAll('chat-typing').map(e => e.innerHTML)));
+    ok('ADAPTER.typing.announcesOneStateNotTimer', (() => {
+      const el=s.dom.containers['chat-full-messages'].querySelector('chat-typing');
+      return !!el&&el.getAttribute('role')==='status'&&el.getAttribute('aria-live')==='polite'&&el.getAttribute('aria-atomic')==='true';
+    })());
     ok('ADAPTER.typing.singletonRegistered', Object.keys(s.reg()).length === 1);
     ok('ADAPTER.typing.deliveryNotYetPersisted', s.store.size === 1);
     s.clock.advance(300);
