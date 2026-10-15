@@ -7,6 +7,8 @@ const fs = require('fs');
 const path = require('path');
 const direct = require(path.join(__dirname, '..', 'assets', 'js', 'middle-brain-direct.js'));
 const configCore = require(path.join(__dirname, '..', 'assets', 'js', 'middle-brain-config-core.js'));
+const modelCore = require(path.join(__dirname, '..', 'assets', 'js', 'ib-model-core.js'));
+global.IBModelCore = modelCore;
 
 class FakeStorage {
   constructor() { this.map = new Map(); }
@@ -115,12 +117,16 @@ async function main() {
   let capturedPrompt = null;
   let capturedOptions = null;
   const sendStorage = new FakeStorage();
+  modelCore.turnTraceReset();
+  let modelAttempts = 0;
   const result = await direct.send('请解释这段关系', {
     storage: sendStorage,
     dependencies,
     modelCall: async (prompt, options) => {
       capturedPrompt = prompt;
       capturedOptions = options;
+      modelAttempts++;
+      if (modelAttempts === 1) return { ok: false, error: 'http', status: 503 };
       return { ok: true, content: '这是一个只读观察。' };
     }
   });
@@ -128,8 +134,18 @@ async function main() {
   check('send.direct-system-prompt', capturedPrompt.system === direct.DIRECT_CHAT_SYSTEM_PROMPT);
   check('send.canonical-consumer', capturedOptions.consumer === 'middle_brain.direct');
   check('send.plain-text-mode', capturedOptions.jsonMode === false);
+  check('send.transient-retry-same-route', modelAttempts === 2);
   check('send.history-independent', direct.readTranscript({ storage: sendStorage }).map(row => row.role).join(',') === 'user,assistant');
   check('send.no-world-write', storage.keys().length === 1 && scanWrites === 0);
+  const directTrace = modelCore.turnTraceRecent(5).find(row => row.consumer === 'middle_brain.direct');
+  check('send.trace-end-to-end', !!directTrace && directTrace.events.some(event => event.eventType === 'input')
+    && directTrace.events.some(event => event.eventType === 'context')
+    && directTrace.events.some(event => event.eventType === 'memory')
+    && directTrace.events.some(event => event.eventType === 'model_call_retry')
+    && directTrace.events.some(event => event.eventType === 'tool_execution')
+    && directTrace.events.some(event => event.eventType === 'result'));
+  check('send.trace-retry-status-safe', !!directTrace && directTrace.events.some(event => event.eventType === 'model_call_retry'
+    && event.errorCategory === 'provider' && event.httpStatus === 503 && event.retryCount === 1));
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'InternalBeyond.html'), 'utf8');
   check('route.script-mounted-after-bootstrap', html.indexOf('assets/js/home-node-bootstrap.js') < html.indexOf('assets/js/middle-brain-direct.js'));

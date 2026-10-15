@@ -299,6 +299,31 @@ const legacyDsUsage = legacyOpenAIUsage(dsWire);
 warn('usage.deepseek.cached', coreDsUsage && (coreDsUsage.cache_read != null || coreDsUsage.prompt_cache_hit_tokens != null),
   'core 未暴露缓存命中字段（现实现 cr=' + legacyDsUsage.cr + '）');
 
+/* —— R2：有界 turn trace 事件与脱敏摘要 —— */
+console.log('\n[C] turn trace event contract');
+IBModelCore.turnTraceReset();
+const traceId = IBModelCore.turnTraceBegin({ consumer: 'chat', characterId: 'trace-role', threadId: 'thread-1', turnId: 'turn-1' });
+['input', 'context', 'memory', 'middle_brain', 'model_call_started', 'model_call_finished', 'tool_execution'].forEach(function (eventType, index) {
+  IBModelCore.turnTraceEvent(traceId, eventType, {
+    inputMessages: 3, inputChars: 42, contextMessages: 5, contextChars: 220,
+    memoryState: 'present', memoryChars: 80, memoryItems: 2, mbSource: 'local', mbInjected: true,
+    provider: 'custom', model: 'trace-model', format: 'openai', attempt: 1, latencyMs: 12,
+    errorCategory: '', toolName: 'bridge.echo', toolStatus: 'succeeded',
+    prompt: 'MUST_NOT_BE_STORED', apiKey: 'MUST_NOT_BE_STORED', sequenceHint: index
+  });
+});
+const finishedTrace = IBModelCore.turnTraceFinish(traceId, 'completed', { resultChars: 18, assistantMessages: 1 });
+check('trace.recordsRequiredPhases', finishedTrace && finishedTrace.events.map(function (e) { return e.eventType; }).join(',')
+  === 'input,context,memory,middle_brain,model_call_started,model_call_finished,tool_execution,result');
+check('trace.workRunEventShape', finishedTrace && finishedTrace.events.every(function (e, i) {
+  return e.sequence === i + 1 && e.version === i + 1 && typeof e.eventType === 'string' && Number(e.createdAt) > 0;
+}));
+check('trace.readableAndBounded', IBModelCore.turnTraceRecent(5).some(function (t) { return t.traceId === traceId; })
+  && IBModelCore.turnTraceRecent(5).length <= 5);
+check('trace.dropsUnapprovedPromptAndCredentialFields', JSON.stringify(finishedTrace).indexOf('MUST_NOT_BE_STORED') < 0
+  && JSON.stringify(finishedTrace).indexOf('apiKey') < 0);
+IBModelCore.turnTraceReset();
+
 /* —— 汇总 —— */
 console.log('\n' + '─'.repeat(72));
 if (divergences.length) {

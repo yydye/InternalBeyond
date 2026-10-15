@@ -79,6 +79,20 @@ function startProvider() {
       /* 脚本耗尽后重复**最后一步**：这样"模型一直索要工具"可以用单步脚本表达，
          不必靠省略一步来隐式兜底（省略会让"下一步是什么"取决于实现细节）。 */
       const step = script[Math.min(idx, script.length - 1)] || script[script.length - 1] || { kind: 'text', text: '好的。' };
+      if (step.kind === 'delay-text') {
+        await new Promise(resolveDelay => setTimeout(resolveDelay, Number(step.delayMs) || 0));
+        if (res.destroyed) return;
+        res.writeHead(200, headers);
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: step.text || '延迟后恢复。' }, finish_reason: 'stop' }] }));
+        return;
+      }
+      if (step.kind === 'http-error') {
+        const errorHeaders = Object.assign({}, headers);
+        if (step.retryAfter) errorHeaders['Retry-After'] = String(step.retryAfter);
+        res.writeHead(Number(step.status) || 500, errorHeaders);
+        res.end(JSON.stringify({ error: { message: 'scripted transient failure' } }));
+        return;
+      }
       /* 真实的流式链路：客户端带 stream:true 时端点必须回 SSE，
          否则测的是"回落成非流式的假路径"而不是流式 FC。 */
       if (body && body.stream === true && step.kind !== 'stream-tool') {
@@ -87,7 +101,7 @@ function startProvider() {
           ? { choices: [{ delta: { role: 'assistant', tool_calls: step.calls.map((c, k) => ({ index: k, id: 'sc_' + idx + '_' + k, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } })) } }] }
           : { choices: [{ delta: { role: 'assistant', content: step.text || '好的。' } }] };
         res.write('data: ' + JSON.stringify(payload) + '\n\n');
-        res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: step.kind === 'tool' ? 'tool_calls' : 'stop' }] }) + '\n\n');
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: step.kind === 'tool' ? 'tool_calls' : (step.kind === 'truncated-text' ? 'length' : 'stop') }] }) + '\n\n');
         res.write('data: [DONE]\n\n');
         res.end();
         return;
@@ -99,6 +113,11 @@ function startProvider() {
           choices: [{ message: { role: 'assistant', content: step.text || null, tool_calls: step.calls.map((c, k) => ({ id: 'call_' + idx + '_' + k, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } })) }, finish_reason: 'tool_calls' }],
           usage: { prompt_tokens: 10, completion_tokens: 5 }
         }));
+        return;
+      }
+      if (step.kind === 'truncated-text') {
+        res.writeHead(200, headers);
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: step.text || '续写起始内容。' }, finish_reason: 'length' }] }));
         return;
       }
       if (step.kind === 'stream-tool') {
@@ -225,6 +244,7 @@ let SCRIPT = [{ kind: 'text', text: '好的。' }];
       SCRIPT = opt.script;
       toolHits = 0; toolFail = !!opt.toolFail; toolDelayMs = opt.toolDelayMs || 0;
       providerLog.length = 0;
+      const traceId = await evaluate(cdp, `IBModelCore.turnTraceBegin({consumer:'test-p11-3d',threadId:'provider-retry-test'})`);
       /* 逐场景设定额度：**走生产读法**（localStorage → IBFC.guardPolicy → guard），
          并且在**同一个页面回合内**设定 + 执行 —— 分两次 Runtime.evaluate 会让
          "设定"与"执行"之间出现一个可被 _syncGuardPolicy 重建 guard 的窗口
@@ -238,13 +258,22 @@ let SCRIPT = [{ kind: 'text', text: '好的。' }];
         }catch(e){}
         IBFC._tdPolicyJson=null;   /* 按新的设置重建 guard（活动周期中不会被重建，见 _syncGuardPolicy） */
         IBFC._tdLast=null; IBFC._tdReason=''; IBFC._tdTrace=[];
+        var originalFetch=window.fetch,networkPending=${opt.networkErrorOnce === true};
+        if(networkPending)window.fetch=function(input,options){
+          var requestUrl=String(typeof input==='string'?input:(input&&input.url)||input||'');
+          if(networkPending&&requestUrl.indexOf(${JSON.stringify(apiBase)})===0){networkPending=false;return Promise.reject(new TypeError('Failed to fetch'));}
+          return originalFetch.apply(this,arguments);
+        };
         var cfg=apiConfigs.find(function(a){return a.id==='p3d'});
         var msgs=[{role:'system',content:${JSON.stringify(opt.system || SYS_TOOLS)}},{role:'user',content:'请帮我处理一下'}];
         var out='';
-        var r=await callApiChat(cfg,msgs,{_ibConsumer:'test-p11-3d',wantMeta:true,maxTokens:512,timeoutMs:20000,
-          onChunk:function(t){out+=t;}});
+        var r;
+        try{r=await callApiChat(cfg,msgs,{_ibConsumer:'test-p11-3d',_ibTraceId:${JSON.stringify(traceId)},wantMeta:true,maxTokens:512,timeoutMs:${opt.timeoutMs || 20000},
+          autoContinue:${opt.autoContinue === true},maxContinues:${opt.maxContinues || 0},
+          onChunk:function(t){out+=t;}})}finally{window.fetch=originalFetch;}
         var snap=IBFC._tdLast||null;
-        return {policy:(snap&&snap.policy)||null, text:(r&&r.text)||'', chunked:out,
+        var trace=IBModelCore.turnTraceFinish(${JSON.stringify(traceId)},'completed',{resultChars:String((r&&r.text)||'').length,assistantMessages:1});
+        return {policy:(snap&&snap.policy)||null, text:(r&&r.text)||'', chunked:out, turnTrace:trace,
           breaker:IBFC.breakerReason(), snapshot:snap, trace:(IBFC._tdTrace||[])};
       })()`);
     }
@@ -252,6 +281,38 @@ let SCRIPT = [{ kind: 'text', text: '好的。' }];
 
     /* ================================================================ */
     section('N · 正常路径：不该被拦的一次都不拦');
+
+    section('S · Provider 瞬态恢复：保持原 Provider 路由，退避后有限重试');
+
+    await check('S1 HTTP 429 + Retry-After：等待后同路由恢复', async () => {
+      const r = await runScenario({ script: [
+        { kind: 'http-error', status: 429, retryAfter: '0.1' },
+        { kind: 'text', text: '限流后恢复。' }
+      ] });
+      assert.equal(roundTrips(), 2, '429 只触发一次重试');
+      assert.ok(r.text.indexOf('限流后恢复') >= 0, '成功响应返回');
+      assert.ok(r.turnTrace.events.some(e => e.eventType === 'model_call_retry' && e.errorCategory === 'rate_limit' && e.httpStatus === 429), 'trace 记录 429 重试');
+    });
+
+    await check('S2 HTTP 503：同路由指数退避后恢复', async () => {
+      const r = await runScenario({ script: [
+        { kind: 'http-error', status: 503 },
+        { kind: 'text', text: '服务恢复。' }
+      ] });
+      assert.equal(roundTrips(), 2, '503 只触发一次重试');
+      assert.ok(r.text.indexOf('服务恢复') >= 0, '成功响应返回');
+      assert.ok(r.turnTrace.events.some(e => e.eventType === 'model_call_retry' && e.errorCategory === 'provider' && e.httpStatus === 503), 'trace 记录 503 重试');
+    });
+
+    await check('S4 timeout：未收到响应时只重试一次', async () => {
+      const r = await runScenario({ timeoutMs: 250, script: [
+        { kind: 'delay-text', delayMs: 500, text: '超时后恢复。' },
+        { kind: 'text', text: '超时后恢复。' }
+      ] });
+      assert.equal(roundTrips(), 2, 'timeout 只触发一次重试');
+      assert.ok(r.text.indexOf('超时后恢复') >= 0, '第二次响应成功');
+      assert.ok(r.turnTrace.events.some(e => e.eventType === 'model_call_retry' && e.errorCategory === 'timeout'), 'trace 记录 timeout retry');
+    });
 
     await check('N1 无工具调用：回合正常结束，工具执行 0 次', async () => {
       const r = await runScenario({ script: [{ kind: 'text', text: '今天天气不错。' }] });
@@ -688,6 +749,27 @@ let SCRIPT = [{ kind: 'text', text: '好的。' }];
       assert.equal(toolHits, r.snapshot.toolCalls, '工具执行数与前台周期记录一致：hits=' + toolHits + ' tools=' + r.snapshot.toolCalls);
       assert.equal(r.snapshot.tripped, true, '前台回合由轮预算正常收口：' + r.snapshot.breakerReason);
       return { note: 'tools=' + r.snapshot.toolCalls + ' rounds=' + r.snapshot.rounds + ' hits=' + toolHits };
+    });
+
+    await check('S3 network error：连接失败后有限重试', async () => {
+      const r = await runScenario({ networkErrorOnce: true, script: [
+        { kind: 'text', text: '网络恢复。' }
+      ] });
+      assert.equal(roundTrips(), 1, '拒绝的 fetch 没有到达 provider；重试后成功发出一次请求');
+      assert.ok(r.text.indexOf('网络恢复') >= 0, '成功响应返回');
+      assert.ok(r.turnTrace.events.some(e => e.eventType === 'model_call_retry' && e.errorCategory === 'network'),
+        'trace 记录 network retry: ' + JSON.stringify(r.turnTrace.events.filter(e => /^model_call_/.test(e.eventType))));
+    });
+
+    await check('S5 autoContinue 后续 round 的 503 也在该 round 内有限重试', async () => {
+      const r = await runScenario({ autoContinue: true, maxContinues: 1, script: [
+        { kind: 'truncated-text', text: '前一轮内容。' },
+        { kind: 'http-error', status: 503 },
+        { kind: 'text', text: '续写恢复。' }
+      ] });
+      assert.equal(roundTrips(), 3, '首轮 + 续写 503 + 一次续写重试');
+      assert.ok(r.text.indexOf('前一轮内容') >= 0 && r.text.indexOf('续写恢复') >= 0, '保留前文并完成续写');
+      assert.ok(r.turnTrace.events.some(e => e.eventType === 'model_call_retry' && e.errorCategory === 'provider' && e.httpStatus === 503), '记录续写 round 的 503 重试');
     });
 
   } finally {

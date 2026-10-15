@@ -82,7 +82,14 @@ const api = http.createServer(async (req, res) => {
     var f=(window.IB&&window.IB.chat&&window.IB.chat.buildChatContext)||window.buildChatContext;
     return await f({id:'seam_role',systemPrompt:'SEAM_IDENTITY',nickname:'',relationship:''},${JSON.stringify(opts)});
   })()`);
-  const setMb = cfg => evaluate(cdp, `(async function(){await saveMiddleBrainConfig(${JSON.stringify(cfg)});return true})()`);
+  const setMb = cfg => {
+    const normalized = Object.assign({ credentialRef: '', apiKey: '' }, cfg || {});
+    if (String(normalized.apiKey || '').trim()) {
+      normalized.credentialRef = 'synthetic-seam-middle-brain';
+      normalized.apiKey = '';
+    }
+    return evaluate(cdp, `(async function(){await saveMiddleBrainConfig(${JSON.stringify(normalized)});return true})()`);
+  };
   const readSeam = () => evaluate(cdp, `(function(){return {calls:window.__seam.calls,src:window.__seam.last?window.__seam.last.source:null,hasSnapshot:!!(window.__seam.opts[0]&&window.__seam.opts[0].contextSnapshot)}})()`);
   const resetSeam = () => evaluate(cdp, `(function(){window.__seam={calls:0,opts:[],last:null};return true})()`);
 
@@ -93,8 +100,24 @@ const api = http.createServer(async (req, res) => {
     const tab = await (await fetch('http://127.0.0.1:' + debugPort + '/json/new?about:blank', { method: 'PUT' })).json();
     cdp = await Cdp.connect(tab.webSocketDebuggerUrl);
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
+    /* This is an isolated browser fixture with no Home Node process. Keep its
+       Memory seed on the explicitly local mirror path; never weaken production's
+       canonical fail-closed guard to make test setup succeed. */
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: "try { localStorage.setItem('ib_home_node_mode', 'mirror'); } catch (_) {}"
+    });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && !!(window.IB&&window.IB.middleBrain) && typeof IB.middleBrain.middleBrainExecute==='function'", 20000), 'page + facade + execution seam mounted');
+    check('fixture.isolatedMemoryMode', await evaluate(cdp, "window.ibHomeNodeMode && window.ibHomeNodeMode()==='mirror'"));
+    await evaluate(cdp, `(function(){
+      window.IB.host=window.IB.host||{};
+      window.IB.host.credentialResolver={
+        available:true,
+        resolve:async function(ref){return ref==='synthetic-seam-middle-brain'
+          ?{ok:true,apiKey:'synthetic-seam-key'}:{ok:false,error:'credential-unavailable'}}
+      };
+      return true;
+    })()`);
 
     /* 探针：包住 canonical 执行缝（记录调用次数/opts/返回值），生产路径不改。 */
     await evaluate(cdp, `(function(){
@@ -120,16 +143,10 @@ const api = http.createServer(async (req, res) => {
       window.__seamDialogue=function(){var o=window.__seam.opts[window.__seam.opts.length-1];return (o&&o.dialogue)||[]};
       return true})()`);
 
-    /* 种子数据：给 seam_role 一条可见记忆（否则 organize 结果为空 → Astra 层直接返回空结果，
-       不会发起网络请求，无法覆盖 astra 注入路径）。
-
-       M1-C.2d Wave 2：`memories` 写入已走 canonical authority（写先到 Home Node，
-       fail closed）。本用例不启动 Home Node，因此夹具走**未包装的原始驱动**
-       `IB.homeNodeOriginalDb` —— 它正是"直接写本地镜像"的既有接缝。
-       夹具是"预置的本地状态"，不是一次 canonical 写入，不该依赖外部服务。 */
+    /* Only seed the local Middle Brain setting. The current user message is
+       sufficient dialogue evidence for the Astra seam; Memory is outside this
+       test and has its own authority suite. */
     await evaluate(cdp, `(async function(){
-      var ORIG=(window.IB&&window.IB.homeNodeOriginalDb)||{put:dbPut};
-      await ORIG.put('memories',{id:'seam_mem',kind:'episodic',createdBy:'seam_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'SEAM_MEMORY_TITLE',content:'SEAM_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('apiSettings',{id:'summarySettings',enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
       return true})()`);
 
@@ -183,11 +200,9 @@ const api = http.createServer(async (req, res) => {
     ctx = await buildCtx({ userMessage: 'SEAM_USER_MESSAGE' });
     seam = await readSeam();
     check('B3.astraNotReadyFallsLocal', seam.calls === 1 && seam.src === 'local', JSON.stringify(seam));
-    /* P11-3 · local 语义闭合：Astra 不可用（无 apiKey）时本地处理结果必须进入最终角色请求，
-       并且是**替换**原四块（不是追加）。【记忆】是本地 pipeline 的分类段头（原块头是
-       【记忆（系统参考，勿提及此段）】），它出现即证明 payload 来自本地处理结果。 */
+    /* P11-3 · local 语义闭合：Astra 不可用时，本地结果替换旧四块并保留当前 dialogue。 */
     check('B4.localInjectedReplacing', String(ctx.tail).includes('Middle Brain 压缩后的上下文')
-      && String(ctx.tail).includes('【记忆】') && String(ctx.tail).includes('SEAM_MEMORY_MARKER')
+      && String(ctx.tail).includes('SEAM_USER_MESSAGE')
       && !String(ctx.tail).includes('SEAM_MB_COMPRESSED'), String(ctx.tail).slice(0, 200));
 
     await setMb({ enabled: true, endpoint: ep, model: 'gpt-6-astra', apiKey: 'sk-x', admissionEnabled: false }); await resetSeam();
@@ -195,6 +210,12 @@ const api = http.createServer(async (req, res) => {
     seam = await readSeam();
     check('B5.astraInjected', seam.calls === 1 && seam.src === 'astra' && String(ctx.tail).includes('SEAM_MB_COMPRESSED'), JSON.stringify(seam));
     check('B6.astraRequestHit', astraReqs.some(r => r.url.includes('/v1/responses')), String(astraReqs.length));
+    const directWorkModeRequestCount = astraReqs.length;
+    const directWorkModeAstra = await evaluate(cdp, `(async function(){
+      return await IB.__middleBrainContracts.astra.middleBrainModelCall({system:'test',messages:[{role:'user',content:'PROJECT_SENTINEL'}]},{consumer:'middle_brain.work_mode.plan',jsonMode:true});
+    })()`);
+    check('B7.astraWorkModeNeedsInternalConsentGate', directWorkModeAstra.error === 'consent-denied'
+      && astraReqs.length === directWorkModeRequestCount);
 
     /* ── C. 调用方边界 ── */
     check('C1.seamCalledOncePerTurn', seam.calls === 1, 'calls=' + seam.calls);
@@ -222,6 +243,36 @@ const api = http.createServer(async (req, res) => {
     check('D2.facadeMissingDegrades', !degraded.err && !String(degraded.tail || '').includes('SEAM_MB_COMPRESSED'), JSON.stringify(degraded).slice(0, 160));
     await evaluate(cdp, `(function(){IB.middleBrain=window.__mbFacadeOrig;return true})()`);
     check('D3.facadeRestored', await evaluate(cdp, `(function(){return window._middleBrain===IB.middleBrain && typeof IB.middleBrain.middleBrainExecute==='function'})()`));
+
+    const workModeInput = {
+      projectRef: 'proj_seam',
+      files: [{ fileId: 'pf_seam', path: 'src/index.js', size: 42 }]
+    };
+    const unconsentedCount = astraReqs.length;
+    const unconsentedPlan = await evaluate(cdp, `(async function(){
+      return await IB.workModeCognition.plan(${JSON.stringify(workModeInput)});
+    })()`);
+    check('WM1.noConsentDefaultDeny', unconsentedPlan.error === 'consent-denied' && astraReqs.length === unconsentedCount);
+
+    await evaluate(cdp, `(function(){
+      window.__workModeConsentCalls=[];
+      IB.homeNode.workRuns.checkConsent=async function(runId,consentId,input){
+        window.__workModeConsentCalls.push({runId:runId,consentId:consentId,input:input});
+        return {ok:false,error:'consent-revoked'};
+      };
+      return true})()`);
+    const deniedPlan = await evaluate(cdp, `(async function(){
+      return await IB.workModeCognition.plan(${JSON.stringify(workModeInput)},{authorization:{runId:'wr_12345678-1234-1234-1234-123456789012',consentId:'wrc_12345678-1234-1234-1234-123456789012'}});
+    })()`);
+    check('WM2.revokedConsentStopsBeforeAstra', deniedPlan.error === 'consent-denied'
+      && astraReqs.length === unconsentedCount
+      && (await evaluate(cdp, `(function(){return window.__workModeConsentCalls.length===1&&window.__workModeConsentCalls[0].input.fileIds[0]==='pf_seam'})()`)));
+    await evaluate(cdp, `(function(){IB.homeNode.workRuns.checkConsent=async function(){return {ok:true}};return true})()`);
+    const consentedPlan = await evaluate(cdp, `(async function(){
+      return await IB.workModeCognition.plan(${JSON.stringify(workModeInput)},{authorization:{runId:'wr_12345678-1234-1234-1234-123456789012',consentId:'wrc_12345678-1234-1234-1234-123456789012'}});
+    })()`);
+    check('WM3.explicitConsentReachesOnlyMockAstra', consentedPlan.error === 'invalid-plan-response'
+      && astraReqs.length === unconsentedCount + 1);
 
     console.log('\nMiddle Brain canonical execution seam (P11-1C): ' + failures + ' failed');
     process.exitCode = failures ? 1 : 0;

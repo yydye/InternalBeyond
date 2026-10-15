@@ -136,13 +136,28 @@ function loadSandbox(opts) {
   if (opts.mbConfig !== undefined) store.apiSettings.middle_brain = JSON.parse(JSON.stringify(opts.mbConfig));
   if (opts.uiPref !== undefined) store.apiSettings.middle_brain_ui = JSON.parse(JSON.stringify(opts.uiPref));
   const dbWrites = [];
+  const syntheticVault = new Map();
+  const vaultWrites = [];
   const dom = createDom();
   const providerDir = require(path.join(ROOT, 'assets', 'js', 'provider-directory.js'));
   const body = readUtf8('assets/js/middle-brain-config.js') + '\n;return self.IB.__middleBrainContracts;';
   const factory = new Function('self', 'module', 'document', 'dbGet', 'dbPut', 'require', body);
   /* M1-C.2i：canonical 执行配置语义（core）与 PROVIDERS_DIR 同一约定 ——
      浏览器里它由 <script> 挂在 window 上；沙箱里由这里显式提供**同一个模块实例**。 */
-  const self = { PROVIDERS_DIR: providerDir, IBMiddleBrainConfigCore: require(path.join(ROOT, 'assets', 'js', 'middle-brain-config-core.js')) };
+  const self = {
+    PROVIDERS_DIR: providerDir,
+    IBMiddleBrainConfigCore: require(path.join(ROOT, 'assets', 'js', 'middle-brain-config-core.js')),
+    /* Middle Brain secrets are written through the existing Credential Authority.
+       This deterministic in-memory Vault seam keeps the harness isolated and lets
+       the contract prove the secret leaves apiSettings after a successful save. */
+    _ibWriteVaultCredential: async (bindingId, config, secret) => {
+      const ref = String(bindingId || '');
+      if (!ref || !String(secret || '')) throw new Error('synthetic-vault-input-invalid');
+      syntheticVault.set(ref, String(secret));
+      vaultWrites.push({ bindingId: ref, provider: String(config && config.provider || ''), endpoint: String(config && config.endpoint || ''), model: String(config && config.model || '') });
+      return ref;
+    }
+  };
   const MBC = factory(
     self, undefined, dom.doc,
     async (s, k) => (s === 'apiSettings' ? store.apiSettings[k] : undefined),
@@ -152,7 +167,7 @@ function loadSandbox(opts) {
     },
     require
   );
-  return { MBC, store, dbWrites, dom };
+  return { MBC, store, dbWrites, dom, syntheticVault, vaultWrites };
 }
 
 const CFG_INCOMPLETE = { enabled: false, endpoint: '', model: 'gpt-6-astra', apiKey: '' };
@@ -271,7 +286,11 @@ async function booted(opts) {
     JSON.stringify(apiKeyBefore) + ' -> ' + JSON.stringify(s8.dom.byId.get('mb-apikey').value));
   s8.MBC.config.saveMiddleBrainConfigUI();
   await settle();
-  check('F2.apiKeyPersistsOnSave', s8.store.apiSettings.middle_brain.apiKey === 'sk-collapse', '保存后 API Key 丢失');
+  check('F2.apiKeyIsStoredInVaultAndRedactedFromSettings', s8.store.apiSettings.middle_brain.apiKey === ''
+    && s8.store.apiSettings.middle_brain.credentialRef === 'middle_brain'
+    && s8.syntheticVault.get('middle_brain') === 'sk-collapse'
+    && s8.vaultWrites.length === 1,
+    JSON.stringify({ apiKey: s8.store.apiSettings.middle_brain.apiKey, credentialRef: s8.store.apiSettings.middle_brain.credentialRef, vaultWrites: s8.vaultWrites.length }));
 
   /* ═══════════════ G. 刷新后 collapsed 恢复 ═══════════════ */
   const s9 = await booted({ mbConfig: CFG_COMPLETE });

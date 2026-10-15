@@ -170,7 +170,6 @@ const api = http.createServer(async (req, res) => {
     check('B9.mbReachedModelRequest', bReq.indexOf(MB_MARK) >= 0, 'role 模型请求体里没有 Astra 压缩块');
     check('B10.messagesChanged', field(tb, 'messagesChanged') === 'true', tb);
     check('B11.replyDelivered', await evaluate(cdp, "(function(){var m=document.getElementById('chat-messages');return !!m&&m.textContent.indexOf('TRACE_MOCK_REPLY')>=0})()"));
-
     /* ── C. 反向对照：enabled=false（绝不注入）────────────────────────── */
     await evaluate(cdp, '(async function(){await saveMiddleBrainConfig({enabled:false});return true})()');
     const bodiesBeforeC = chatBodies.length;

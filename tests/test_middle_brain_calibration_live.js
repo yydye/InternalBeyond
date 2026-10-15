@@ -820,6 +820,31 @@ const mockApi = http.createServer(async (req, res) => {
 
     /* detect-only 是默认：--rewrite / --verify 才打开（只写进一次性临时 profile）。
        这里写的不是生产配置：本页面的 profile 是 os.tmpdir() 下的 mkdtemp 目录。 */
+    /* Offline calibration seeds a synthetic config before the measurement window.
+       The real Vault writer correctly routes through Active, but the harness blocks
+       that transport. Keep the setup isolated with an in-memory-only writer so this
+       pre-window config seed cannot touch a real Vault or masquerade as a product call. */
+    await evaluate(cdp, `(function(){
+      var vault = Object.create(null);
+      window.__ibCalibrationSyntheticVault = vault;
+      window._ibWriteVaultCredential = async function(bindingId, config, secret) {
+        var id = String(bindingId || ''), key = String(secret || '');
+        if (!id || !key) throw new Error('synthetic-calibration-vault-input-invalid');
+        vault[id] = { provider: String(config && config.provider || ''), endpoint: String(config && config.endpoint || ''), model: String(config && config.model || ''), secretPresent: true };
+        return id;
+      };
+      window.IB = window.IB || {};
+      window.IB.host = window.IB.host || {};
+      window.IB.host.credentialResolver = {
+        available: true,
+        resolve: async function(ref) {
+          return String(ref || '') === 'middle_brain'
+            ? { ok: true, apiKey: 'synthetic-calibration-vault-key' }
+            : { ok: false, error: 'credential-unavailable' };
+        }
+      };
+      return true;
+    })()`);
     await setMb({ enabled: true, endpoint, model, apiKey, reasoningEffort: 'medium', speed: 'standard',
       characterIntegrityEnabled: true, characterIntegritySensitivity: 'conservative',
       characterIntegrityRewrite: OBSERVE_REWRITE, characterIntegrityVerify: OBSERVE_REWRITE && OBSERVE_VERIFY });

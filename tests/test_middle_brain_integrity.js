@@ -99,7 +99,17 @@ const api = http.createServer(async (req, res) => {
     '--remote-debugging-port=' + debugPort, '--user-data-dir=' + profile, 'about:blank'], { stdio: 'ignore', windowsHide: true });
   let cdp;
 
-  const setMb = cfg => evaluate(cdp, `(async function(){await saveMiddleBrainConfig(${JSON.stringify(cfg)});return true})()`);
+  /* This CDP test uses an isolated Chrome profile and a local mock endpoint.
+     Keep its fake legacy apiKey in that profile's IndexedDB so the runtime-ready
+     predicate can be exercised without calling /credentials or touching the
+     installed Active Messages Vault. Production saves still go through Vault. */
+  const setMb = cfg => evaluate(cdp, `(async function(){
+    var id='middle_brain';
+    var current=await dbGet('apiSettings',id)||{};
+    var next=Object.assign({},current,${JSON.stringify(cfg)},{id:id,credentialRef:'',providerConfigId:''});
+    await dbPut('apiSettings',next);
+    return true;
+  })()`);
   const resetMock = () => { mock.judge = 0; mock.rewrite = 0; mock.compress = 0; mock.char = 0; mock.lastJudgePrompt = ''; mock.lastRewritePrompt = ''; mock.judgeFailAfterFirst = false; };
   /* 直接调用生成后执行缝（等价于 production 调用点）。
      P11-2B：门面回 {reply, outcome}。`finalize()` 只取文本适配器（= 桌面/Home Node

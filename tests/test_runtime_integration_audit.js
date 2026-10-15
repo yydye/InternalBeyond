@@ -232,7 +232,9 @@ async function check(name, fn) {
       context.dbGetAll = async () => [{ ...cfg, model: 'old-model' }];
       context._apiFallbackPut = row => { fallback = [row]; return 'persistent'; };
       context._apiFallbackRead = () => fallback;
-      vm.runInContext(fragment('assets/js/social.js', 'async function _persistApiConfig(cfg){', '/* 保存提示语')
+      vm.runInContext(fragment('assets/js/social.js', 'function _ibApiConfigRuntimeCopy(cfg){', 'function _ibApiConfigStorageCopy(cfg){')
+        + fragment('assets/js/social.js', 'function _ibApiConfigStorageCopy(cfg){', 'function _ibApiHasCredential(cfg){')
+        + fragment('assets/js/social.js', 'async function _persistApiConfig(cfg){', '/* 保存提示语')
         + fragment('assets/js/social.js', 'async function loadApiConfigs(){', 'async function renderApiList(){'), context);
       await context._persistApiConfig({ ...cfg, model: 'new-model' });
       await context.loadApiConfigs();

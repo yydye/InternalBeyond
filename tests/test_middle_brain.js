@@ -32,18 +32,21 @@ async function main(){
     cdp=await Cdp.c(tab.webSocketDebuggerUrl); await cdp.send('Runtime.enable');
     check('page.ready',await wait(cdp,"typeof window._middleBrain==='object' && typeof window.getMiddleBrainConfig==='function' && typeof window.PROVIDERS==='object'",20000));
     await ev(cdp,"window.confirm=function(){return true;}");
+    /* This config-only test has no Home Node process. Use a per-page synthetic
+       Vault seam; never send the test key to a real service or persist it. */
+    await ev(cdp,"window.__testVault=new Map();window._ibWriteVaultCredential=async function(id,cfg,key){window.__testVault.set(String(id),{provider:String(cfg&&cfg.provider||'openai'),key:String(key||'')});return String(id);};");
     /* ① 角色 Provider 不提供 Astra */
     check('roleProvider.noAstra',await ev(cdp,"!(function(){var s=document.getElementById('api-provider');for(var i=0;i<s.options.length;i++){if(s.options[i].value==='astra'||/astra/i.test(s.options[i].text))return true}return false})()"));
     check('roleRegistry.noAstra',await ev(cdp,"!window.PROVIDERS.astra"));
     /* ② 默认配置 */
     check('mb.defaults',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();return c&&c.enabled===false&&c.provider==='astra'&&String(c.endpoint).indexOf('/v1/responses')>=0&&c.model==='gpt-6-astra'})()"));
     /* ③ 保存并持久化（表单 → saveMiddleBrainConfigUI → apiSettings['middle_brain']） */
-    await ev(cdp,"(function(){document.getElementById('mb-enabled-toggle').checked=true;document.getElementById('mb-endpoint').value='https://api.astra.example.com/v1/chat/completions';document.getElementById('mb-model').value='gpt-6-astra';document.getElementById('mb-apikey').value='sk-test-123';})()");
+    await ev(cdp,"(function(){document.getElementById('mb-enabled-toggle').checked=true;document.getElementById('mb-endpoint').value='https://api.astra.example.com/v1/chat/completions';document.getElementById('mb-model').value='gpt-6-astra';document.getElementById('mb-apikey').value='test-only-synthetic-key';})()");
     await ev(cdp,"saveMiddleBrainConfigUI()");
-    check('mb.persisted',await wait(cdp,"(async function(){var c=await dbGet('apiSettings','middle_brain');return !!(c&&c.enabled===true&&c.apiKey==='sk-test-123'&&c.endpoint.indexOf('astra')>=0)})()",6000));
+    check('mb.persistedAsVaultReference',await wait(cdp,"(async function(){var c=await dbGet('apiSettings','middle_brain');var v=window.__testVault.get('middle_brain');return !!(c&&c.enabled===true&&c.credentialRef==='middle_brain'&&!c.apiKey&&c.endpoint.indexOf('astra')>=0&&v&&v.key==='test-only-synthetic-key')})()",6000));
     /* ④ 就绪判定 */
     check('mb.readyEnabled',await ev(cdp,"(async function(){return await isMiddleBrainEnabled()===true && await middleBrainReady()===true})()"));
-    check('mb.readyMissingKey',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();c.apiKey='';await saveMiddleBrainConfig(c);return await middleBrainReady()===false})()"));
+    check('mb.readyMissingBinding',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();window.__testVault.clear();c.apiKey='';c.credentialRef='';await saveMiddleBrainConfig(c);return await middleBrainReady()===false})()"));
     /* ⑤ 归一（复用 AstraAdapter / 内置回落） */
     check('mb.buildRequest',await ev(cdp,"(async function(){var r=await buildMiddleBrainRequest({endpoint:'https://x/v1/chat/completions',model:'gpt-6-astra'},{system:'S',messages:[{role:'user',content:'u'}]},{maxTokens:128});return r.body.messages[0].role==='system'&&r.body.messages[1].content==='u'&&r.body.model==='gpt-6-astra'})()"));
     check('mb.parseResponse',await ev(cdp,"(async function(){var r=await parseMiddleBrainResponse({choices:[{message:{content:'你好',reasoning_content:'想'},finish_reason:'length'}],usage:{prompt_tokens:1,completion_tokens:2}},{});return r.content==='你好'&&r.reasoning==='想'&&r.truncated===true})()"));
@@ -53,7 +56,14 @@ async function main(){
     check('mb.sysPromptNotPersisted',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();return c&&typeof c.systemPrompt==='undefined'})()"));
     check('mb.buildInjectsSysPrompt',await ev(cdp,"(async function(){var r=await buildMiddleBrainRequest({endpoint:'https://x/v1/chat/completions',model:'gpt-6-astra'},{messages:[{role:'user',content:'u'}]},{maxTokens:64});return String(r.body.messages[0].content).indexOf('Middle Brain')>=0&&r.body.messages[0].role==='system'})()"));
     check('mb.buildRespectsExplicitSys',await ev(cdp,"(async function(){var r=await buildMiddleBrainRequest({endpoint:'https://x/v1/chat/completions',model:'gpt-6-astra'},{system:'显式系统',messages:[{role:'user',content:'u'}]},{maxTokens:64});return r.body.messages[0].content==='显式系统'})()"));
-  } finally { if(cdp)cdp.close(); try{browser.kill()}catch(e){} }
+  } finally {
+    if(cdp)cdp.close();
+    try{browser.kill()}catch(e){}
+    try {
+      if(browser.exitCode===null) await Promise.race([new Promise(resolve=>browser.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);
+    } catch(e){}
+    try{fs.rmSync(profile,{recursive:true,force:true})}catch(e){}
+  }
   console.log(failures===0?'\nMiddleware Brain config CDP passed ✔':'\nMiddleware Brain config CDP FAILED ✘');
   process.exit(failures?1:0);
 }

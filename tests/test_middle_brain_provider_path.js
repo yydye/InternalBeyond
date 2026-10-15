@@ -17,23 +17,31 @@ const MOCK_PORT_MIN = 24100, MOCK_PORT_MAX = 24250;
 function startMock() {
   return new Promise((resolve, reject) => {
     const seen = [];
+    let responseScript = [];
     const server = http.createServer((req, res) => {
       const cors = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'authorization, content-type'
+        'Access-Control-Allow-Headers': 'authorization, content-type',
+        'Access-Control-Expose-Headers': 'Retry-After'
       };
       if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
       let body = '';
       req.on('data', c => body += c);
       req.on('end', () => {
         seen.push({ url: req.url, method: req.method, auth: req.headers.authorization || '', body });
-        res.writeHead(200, Object.assign({ 'Content-Type': 'application/json' }, cors));
-        res.end(JSON.stringify({ choices: [{ message: { content: 'pong' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+        const scripted = responseScript.shift() || {};
+        const status = Number(scripted.status) || 200;
+        const headers = Object.assign({ 'Content-Type': 'application/json' }, cors);
+        if (scripted.retryAfter) headers['Retry-After'] = String(scripted.retryAfter);
+        res.writeHead(status, headers);
+        res.end(status >= 400 ? JSON.stringify({ error: { message: 'scripted transient failure' } })
+          : JSON.stringify({ choices: [{ message: { content: 'pong' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
       });
     });
     server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port }));
+    server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port,
+      script: function (steps) { responseScript = Array.isArray(steps) ? steps.slice() : []; } }));
   });
 }
 
@@ -76,6 +84,15 @@ async function main() {
     check('bound.usedBoundModel', typeof seen.body === 'string' && /"mock-model"/.test(seen.body), String(seen.body).slice(0, 120));
     check('bound.resolverSecretUsed', seen.auth === 'Bearer resolved-runtime-secret');
     check('bound.noPersistedPlainKey', await evaluate(cdp, "(async function(){var c=await IB.middleBrain.getMiddleBrainConfig();return c.apiKey==='' && c.providerConfigId==='reachable_provider'})()"));
+
+    mock.script([{ status: 429, retryAfter: '0.1' }, { status: 200 }]);
+    const direct = await evaluate(cdp, "IB.middleBrainDirect.send('transient retry probe', { timeoutMs: 6000 })");
+    const directPosts = mock.seen.filter(s => s.method === 'POST').slice(1);
+    const turnTrace = await evaluate(cdp, "(function(){var all=IBModelCore.turnTraceRecent(10).filter(function(t){return t.consumer==='middle_brain.direct'});return all.length?all[all.length-1]:null})()");
+    check('direct.retry429.sameProviderRoute', !!(direct && direct.ok === true) && directPosts.length === 2
+      && directPosts[0].url === '/v1/chat/completions' && directPosts[1].url === '/v1/chat/completions', JSON.stringify({ direct: direct && direct.ok, posts: directPosts.length }));
+    check('direct.turnTrace.recordsRetryAndResult', !!turnTrace && turnTrace.events.some(e => e.eventType === 'model_call_retry'
+      && e.errorCategory === 'rate_limit' && e.httpStatus === 429) && turnTrace.events.some(e => e.eventType === 'result'), JSON.stringify(turnTrace && turnTrace.events.map(e => e.eventType)));
 
     /* Negative control: unbound -> default unreachable endpoint -> no longer ok (path differs). */
     await evaluate(cdp, "IB.middleBrain.saveMiddleBrainConfig({ providerConfigId:'', credentialRef:'' })");

@@ -296,7 +296,7 @@ const hitsOf = p => toolPaths.filter(u => String(u).indexOf(p) === 0).length;
     assert.equal(setup.bgCfgOk, true, '后台回合的第二个 API 配置就绪');
     assert.equal(setup.fc.preparedActive, true, 'FC 必须真的激活，否则周期不会被开启，测的就不是生产形状');
     assert.equal(setup.guardFrozen, true, 'guard 实例是冻结的（因此任何"在 guard 上挂计数器"的仪器都是无效仪器）');
-    assert.equal(setup.execToolOpLen, 3, '_ibExecToolOp 已是三参签名（ictx 已接线）');
+    assert.equal(setup.execToolOpLen, 5, '_ibExecToolOp 保留五参签名（ictx / actorId / scope 均已接线）');
     assert.equal(setup.hostEntryDelegates, true, 'window.sendChatMessage 仍把调用委托给生产宿主入口（bridge 包装不吞调用）');
 
 
@@ -406,9 +406,12 @@ const hitsOf = p => toolPaths.filter(u => String(u).indexOf(p) === 0).length;
               FC 才会真的激活（否则测的是一条不激活工具的路径）。 */
         var input=document.getElementById('chat-input');
         input.value=${JSON.stringify(opt.userText || '请帮我处理一下这个文件')};
+        var _forceNoFc=${opt.forceNoFc ? 'true' : 'false'},_originalPrepare=IBFC.prepare;
+        if(_forceNoFc)IBFC.prepare=function(messages,flavor,options){return _originalPrepare.call(IBFC,messages,'xml',options)};
         var t0=Date.now();
         var sendRes=null, sendErr='';
         try{ sendRes=await sendChatMessage(); }catch(e){ sendErr=String(e&&e.message||e); }
+        finally{if(_forceNoFc)IBFC.prepare=_originalPrepare;}
         R.turnErr=sendErr;
         R.sendOk=!!(sendRes&&sendRes.ok!==false);
         R.turnMs=Date.now()-t0;
@@ -576,6 +579,26 @@ const hitsOf = p => toolPaths.filter(u => String(u).indexOf(p) === 0).length;
       assert.ok(B.R.warns.join(' ').indexOf('no-active-cycle') < 0, '全程没有 no-active-cycle，warns=' + JSON.stringify(B.R.warns));
       assert.equal(B.R.stale, null, '本场景未做 stale 探针');
       return { note: 'before=' + beforeCount(B) + ' settle=' + settleCount(B) + ' cycles=1' };
+    });
+
+    await check('B3 无原生 FC 的 XML-only Chat 也先建立预算周期，缺失 guard 不再放行', async () => {
+      const B3 = await driveTurn({
+        rounds: 3,
+        forceNoFc: true,
+        userText: '请帮我处理一下这个文件',
+        script: [
+          { kind: 'text', text: xmlTool('check_status', { key: 'xml-no-fc' }) + '\n已经处理好了。' },
+          { kind: 'text', text: '收尾完成。' }
+        ]
+      });
+      assert.equal(B3.R.turnErr, '', '宿主回合没有抛错：' + B3.R.turnErr);
+      assert.equal(toolHits, 1, 'XML 工具仍执行一次');
+      assert.ok(B3.R.foreground, '该回合有自己的 canonical guard 快照');
+      assert.equal(B3.R.foreground.toolCalls, 1, '执行已计入预算账本');
+      assert.equal(cyclesOpened(B3), 1, 'XML-only 宿主回合只开一个预算周期');
+      assert.ok(B3.R.calls.some(c => c.kind === 'before' && c.name === 'check_status'), '执行前经过 beforeCall');
+      assert.ok(B3.R.calls.some(c => c.kind === 'settle' && c.name === 'check_status'), '执行后经过 settleCall');
+      return { note: 'native FC off · toolCalls=' + B3.R.foreground.toolCalls + ' · cycles=1' };
     });
 
     /* ================================================================

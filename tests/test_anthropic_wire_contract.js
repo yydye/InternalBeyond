@@ -57,8 +57,9 @@ const hasAssistantTail = body => roles(body).slice(-1)[0] === 'assistant';
 /* ══════════════════════════════════════════════════════════════════
    0. Browser builder：逐字抽取 communication.js 的真实函数并在沙箱执行
    ══════════════════════════════════════════════════════════════════ */
-function carve(src, fnName) {
-  const start = src.indexOf('function ' + fnName + '(');
+function carve(src, fnName, lastDefinition) {
+  const marker = 'function ' + fnName + '(';
+  const start = lastDefinition ? src.lastIndexOf(marker) : src.indexOf(marker);
   if (start < 0) throw new Error('carve: 未找到 function ' + fnName);
   let depth = 0, i = start, seen = false;
   for (; i < src.length; i++) {
@@ -79,12 +80,15 @@ const BROWSER_FNS = [
   /* P21：思考深度消费缝（canonical 读取 + provider 边界翻译 + usage 只读回填）；
      沙箱里 window.IB 缺失 → 读回 'auto' = 与上线前逐字节一致，正是本套件要锁定的行为。 */
   '_mbReasoningEffortForRequest', '_ibApplyReasoningEffort', '_ibNoteReasoningUsage',
-  '_callApiChatOnce', 'callApi'
+  '_callApiWithRuntimeCredential', '_callApiChatOnce', '_callApiChatOnceWithRuntimeCredential', 'callApi'
 ];
-const browserCode = BROWSER_FNS.map(n => carve(commText, n)).join('\n');
+const browserCode = BROWSER_FNS.map(n => carve(commText, n, n === '_callApiChatOnceWithRuntimeCredential')).join('\n');
 const browserSource = new Function(
   'window', 'PROVIDERS', 'console', '_ibApiPost', '_tkRecord', '_ibCacheAudit',
-  'var _lastApiReasoning="";var _lastApiFinish="";' + browserCode +
+  /* This contract isolates provider wire serialization. Credential acquisition
+     is tested at the shared Vault boundary; inject only its execution seam here. */
+  'var _lastApiReasoning="";var _lastApiFinish="";'
+    + 'async function _ibWithRuntimeApiCredential(cfg,run){return run(cfg);}' + browserCode +
   ';return { callApi: callApi, chatOnce: _callApiChatOnce, wire: _ibAnthropicWire };'
 );
 
@@ -568,7 +572,7 @@ section('6. Browser builder：communication.js 真实函数（沙箱执行）');
 
   const allJs = (function walk(dir, acc) {
     fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
-      if (e.name === 'node_modules' || e.name === '.git' || e.name === 'logs' || e.name === 'dist') return;
+      if (['node_modules', '.git', '.dsh-tmp', 'logs', 'dist', 'target', 'tmp', 'Economy-v1-release'].includes(e.name)) return;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p, acc);
       else if (/\.js$/.test(e.name) && !/^test_/.test(e.name)) acc.push(p);
