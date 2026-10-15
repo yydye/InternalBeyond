@@ -107,6 +107,8 @@ function createChatStore(deps) {
   const dbFile = deps.dbFile || path.join(dataDir, DEFAULT_DB_FILENAME);
   const clock = deps.clock || (() => Date.now());
   const logger = deps.logger || (() => {});
+  const onCanonicalUserMessage = typeof deps.onCanonicalUserMessage === 'function' ? deps.onCanonicalUserMessage : null;
+  const canonicalUserMessageFacts = new WeakSet();
   const sqlite = deps.sqlite || loadSqlite();
 
   let db = null;
@@ -601,6 +603,47 @@ function createChatStore(deps) {
     return rowToMessage(row);
   }
 
+  /* A one-way, session-only fact projection made only after a new user row has
+     committed. It carries the server change-log time and a bounded text excerpt;
+     no caller-supplied body/metadata object is forwarded to the observer. */
+  function publishCanonicalUserMessageFact(writeResult) {
+    if (!onCanonicalUserMessage || !writeResult || writeResult.ok !== true
+      || writeResult.outcome !== 'created' || !writeResult.id || writeResult.revision == null) return;
+    let row = null, change = null;
+    try {
+      row = db.prepare(SQL.selectMessage).get(String(writeResult.id));
+      change = db.prepare('SELECT at FROM change_log WHERE revision=?').get(intOf(writeResult.revision));
+    } catch (_) { return; }
+    if (!row || row.deleted_at != null || String(row.role) !== 'user' || !change) return;
+    const message = rowToMessage(row);
+    const statementText = String(message && message.content || '').slice(0, 400);
+    if (!statementText.trim()) return;
+    const occurredAt = intOf(change.at);
+    if (!(occurredAt > 0)) return;
+    const fact = Object.freeze({
+      sourceMessageId: String(row.id),
+      role: 'user',
+      characterId: String(row.friend_id || ''),
+      conversationId: String(row.conversation_id || ''),
+      threadId: String(row.thread_id || ''),
+      occurredAt: occurredAt,
+      statementText: statementText
+    });
+    canonicalUserMessageFacts.add(fact);
+    try {
+      const pending = onCanonicalUserMessage(fact);
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch((error) => {
+          try { logger('canonical-user-message-observer-failed', { messageId: fact.sourceMessageId, error: String((error && error.message) || error).slice(0, 160) }); } catch (_) {}
+        });
+      }
+    } catch (error) {
+      /* Observation is downstream of the committed chat fact and cannot undo it. */
+      try { logger('canonical-user-message-observer-failed', { messageId: fact.sourceMessageId, error: String((error && error.message) || error).slice(0, 160) }); } catch (_) {}
+    }
+  }
+  function isCanonicalUserMessageFact(value) { return !!value && canonicalUserMessageFacts.has(value); }
+
   /* listMessages({conversationId|friendId, threadId, before, after, limit})
        · 排序恒为 sort_key 升序 = (timestamp ASC, id ASC)，同一毫秒内也稳定；
        · before：一个 message id（或毫秒时间戳）—— 返回严格早于它的最后一页（倒序取再反转）；
@@ -824,13 +867,15 @@ function createChatStore(deps) {
         };
       }
     }
-    return withTransaction(() => {
+    const result = withTransaction(() => {
       const plan = evaluateWrite(message);
       if (!plan.ok) return plan;
       const result = writeOne(plan, { existingPolicy: options.existingPolicy });
       if (requestId && options.idempotent !== false) rememberRequest(requestId, 'message', result.id);
       return result;
     });
+    publishCanonicalUserMessageFact(result);
+    return result;
   }
 
   /* 批量写（迁移专用）：一个事务内完成一批，任一记录非法 → 整批拒绝并且不做任何写入。
@@ -985,6 +1030,7 @@ function createChatStore(deps) {
     isOpen: isOpen,
     meta: meta,
     getMessage: getMessage,
+    isCanonicalUserMessageFact: isCanonicalUserMessageFact,
     listMessages: listMessages,
     putMessage: putMessage,
     putMessages: putMessages,
