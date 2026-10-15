@@ -1,0 +1,77 @@
+﻿/* Role expression packs use the existing semantic surface and content tokens. */
+.ib-expression-manage{flex:0 0 auto;min-height:44px;padding:5px 10px;font-size:var(--fs-meta)}
+.ib-expression-dialog{position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;
+  padding:var(--space-4);background:var(--surface-dialog-scrim);backdrop-filter:var(--glass-filter-sm);-webkit-backdrop-filter:var(--glass-filter-sm)}
+.ib-expression-dialog[hidden]{display:none}
+.ib-expression-panel{display:flex;flex-direction:column;gap:var(--space-3);width:min(640px,100%);max-height:min(88dvh,760px);overflow:auto;
+  padding:var(--space-5);color:var(--content-primary);background:var(--glass-bg-modal);border:1px solid var(--glass-border-floating);
+  border-radius:var(--radius-panel);box-shadow:var(--glass-shadow-modal)}
+.ib-expression-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);padding-bottom:var(--space-2);border-bottom:1px solid var(--border-soft)}
+.ib-expression-eyebrow{font-family:var(--font-ui);font-size:var(--fs-meta);letter-spacing:.12em;color:var(--content-muted)}
+.ib-expression-head h2{margin:3px 0;font-family:var(--font-display);font-size:1.25rem;font-weight:400}
+.ib-expression-head p{margin:0;color:var(--content-secondary);font-size:var(--fs-meta)}
+.ib-expression-close{min-height:44px}
+.ib-expression-pack-row,.ib-expression-add-row{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.ib-expression-pack-row label,.ib-expression-create label{color:var(--content-secondary);font-size:var(--fs-meta);white-space:nowrap}
+.ib-expression-pack-row select,.ib-expression-add-row input{flex:1;min-width:140px;min-height:44px;padding:7px 10px;color:var(--content-primary);
+  background:var(--surface-input);border:1px solid var(--border-soft);border-radius:var(--radius-control);font:inherit}
+.ib-expression-pack-row select:focus-visible,.ib-expression-add-row input:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.ib-expression-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:var(--space-2);min-height:92px;max-height:32vh;overflow:auto;padding:1px}
+.ib-expression-defaults{display:grid;gap:var(--space-2);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.ib-expression-defaults h3{margin:0;font-family:var(--font-display);font-size:1rem;font-weight:400;color:var(--content-primary)}
+.ib-expression-defaults p{margin:2px 0 0;color:var(--content-muted);font-size:var(--fs-meta)}
+.ib-expression-default-grid{display:grid;grid-template-columns:minmax(120px,.38fr) minmax(180px,1fr);align-items:center;gap:var(--space-2)}
+.ib-expression-default-grid label{color:var(--content-secondary);font-size:var(--fs-meta)}
+.ib-expression-default-grid select{width:100%;min-width:0;min-height:44px;padding:7px 10px;color:var(--content-primary);
+  background:var(--surface-input);border:1px solid var(--border-soft);border-radius:var(--radius-control);font:inherit}
+.ib-expression-default-grid select:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.ib-expression-runtime-settings{display:grid;gap:var(--space-2);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.ib-expression-runtime-settings h3{margin:0;font-family:var(--font-display);font-size:1rem;font-weight:400;color:var(--content-primary)}
+.ib-expression-runtime-settings p{margin:2px 0 0;color:var(--content-muted);font-size:var(--fs-meta)}
+.ib-expression-setting{display:flex;align-items:center;gap:var(--space-2);min-height:44px;color:var(--content-secondary);font-size:var(--fs-meta);cursor:pointer}
+.ib-expression-setting input{width:18px;height:18px;accent-color:var(--status-info)}
+.ib-expression-state{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin-inline-start:var(--space-2)}
+.ib-expression-state img{display:block;width:42px;height:42px;max-width:min(42px,16vw);object-fit:contain;border-radius:var(--radius-control)}
+.ib-expression-item{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0;padding:9px;
+  background:var(--glass-bg-surface);border:1px solid var(--border-soft);border-radius:var(--radius-control)}
+.ib-expression-item img{width:76px;height:76px;object-fit:contain;border-radius:var(--radius-control)}
+.ib-expression-item-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--content-primary);font-size:var(--fs-meta)}
+.ib-expression-remove{min-height:44px;padding:4px 9px;font-size:var(--fs-meta)}
+.ib-expression-upload,.ib-expression-create{display:grid;gap:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--border-soft)}
+.ib-expression-upload-title{font-family:var(--font-display);color:var(--content-primary);font-size:.98rem}
+.ib-expression-hint,.ib-expression-empty{margin:0;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.ib-expression-status{min-height:1.2em;margin:0;color:var(--content-secondary);font-size:var(--fs-meta)}
+.ib-expression-status.is-error{color:var(--status-warning)}
+.ib-expression-dialog button:disabled{opacity:.5;cursor:not-allowed}
+.ib-expression-message-display{display:flex;align-items:flex-end;gap:var(--space-2);margin-top:var(--space-2)}
+.ib-expression-message-image{display:block;max-width:min(180px,55vw);max-height:180px;object-fit:contain;border-radius:var(--radius-control);transform-origin:50% 80%}
+.ib-expression-message-display[data-action="transition"] .ib-expression-message-image{animation:ib-expression-enter .28s cubic-bezier(0.4,0,0.2,1) both}
+.ib-expression-message-display[data-action="blink"] .ib-expression-message-image,.ib-expression-state[data-action="blink"] img{animation:ib-expression-blink .62s cubic-bezier(0.4,0,0.2,1) both}
+.ib-expression-message-display[data-action="sway"] .ib-expression-message-image,.ib-expression-state[data-action="sway"] img{animation:ib-expression-sway .72s cubic-bezier(0.4,0,0.2,1) both}
+@keyframes ib-expression-enter{from{opacity:.55;transform:translateY(3px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes ib-expression-blink{0%,100%{transform:scaleY(1)}38%{transform:scaleY(.94)}52%{transform:scaleY(1)}}
+@keyframes ib-expression-sway{0%,100%{transform:rotate(0)}35%{transform:rotate(-1.2deg)}70%{transform:rotate(.8deg)}}
+.ib-expression-message-caption{color:var(--content-muted);font-size:var(--fs-meta)}
+.ib-expression-message-tools{position:relative;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;margin-top:4px}
+.ib-expression-message-trigger,.ib-expression-clear,.ib-expression-open-manager{min-width:44px;min-height:44px;padding:4px 10px;font-size:var(--fs-meta)}
+.ib-expression-message-picker{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;max-width:min(420px,76vw);padding:var(--space-2);
+  background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);border-radius:var(--radius-control);box-shadow:var(--glass-shadow-floating)}
+.ib-expression-message-picker[hidden]{display:none}
+.ib-expression-choice{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:64px;min-height:68px;
+  padding:4px 6px;color:var(--content-secondary);background:var(--glass-bg-surface);border:1px solid var(--border-soft);
+  border-radius:var(--radius-control);font:inherit;cursor:pointer}
+.ib-expression-choice:hover{background:var(--surface-hover);color:var(--content-primary)}
+.ib-expression-choice:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.ib-expression-choice img{width:44px;height:44px;object-fit:contain}
+.ib-expression-choice span{max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-meta)}
+@media(max-width:640px){
+  .ib-expression-dialog{align-items:flex-end;padding:0}
+  .ib-expression-panel{width:100%;max-height:90dvh;padding:var(--space-4);border-radius:var(--radius-panel) var(--radius-panel) 0 0}
+  .ib-expression-pack-row>*{flex:1;min-height:44px}
+  .ib-expression-default-grid{grid-template-columns:1fr;gap:4px}
+  .ib-expression-default-grid select{margin-bottom:var(--space-1)}
+  .ib-expression-message-picker{max-width:86vw}
+}
+@media(prefers-reduced-motion:reduce){
+  .ib-expression-message-display[data-action] .ib-expression-message-image,.ib-expression-state[data-action] img{animation:none!important;transition:none!important}
+}
