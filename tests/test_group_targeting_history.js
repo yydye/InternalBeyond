@@ -90,7 +90,7 @@ function sourceGuards() {
   ok('R7.frozenContractsUnchanged',
     /PARTICIPATION_PLAN_VERSION = 3/.test(core) && /'group-rule-v1'/.test(core)
     && JSON.stringify(Core.PARTICIPATION_REASONS.SKIP) === JSON.stringify(['muted-not-mentioned', 'removed', 'budget-limit'])
-    && /DB_VER=24/.test(read('assets/js/core.js')));
+    && require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
   ok('R8.errorVocabularyClosed', JSON.stringify(Core.TARGETING_ERRORS)
     === JSON.stringify(['bad-target-list', 'bad-target-id', 'duplicate-target-id']));
 }

@@ -94,7 +94,7 @@ function staticGuards() {
 
   ok('S.noNewArchitecture', ['BlogManager', 'ConversationManager', 'ScopeManager', 'QueueManager', 'EventBus']
     .every(n => wsCode.indexOf(n) < 0 && stripComments(comm).indexOf(n) < 0));
-  ok('S.dbVer24', /DB_VER\s*=\s*24/.test(read('assets/js/core.js')));
+  ok('S.dbVer24', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
   ok('S.noSchemaTouch', !/createObjectStore/.test(wsCode));
 
   /* C16 · P24 未触碰 */

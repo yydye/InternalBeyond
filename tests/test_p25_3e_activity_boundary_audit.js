@@ -343,9 +343,9 @@ check('A14.m1ActivityRuntimeUnchanged',
 
 /* ── A15 no DB migration ──────────────────────────────────────────── */
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('A15.noDbMigration',
-  COREJS.indexOf('DB_NAME=\'InternalBeyondDB\',DB_VER=24') >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && storeList.indexOf("'activities'") >= 0 && storeList.indexOf("'favorites'") >= 0
   && storeList.indexOf('activityQueue') < 0 && storeList.indexOf('activitySessions') < 0,
   storeList.slice(-120));

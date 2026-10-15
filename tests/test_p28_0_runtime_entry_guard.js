@@ -33,7 +33,7 @@ const DY = stripComments(read('assets/js/active-diary/diary.js'));
 const MO = stripComments(read('assets/js/moments.js'));
 const COMM = stripComments(read('assets/js/communication.js'));
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 /* R1 真实存在的 ModelPort 运行时 */
 check('R1.agentRuntimeIsRealAndLoaded',
   exists('assets/js/agent-runtime.js')
@@ -96,11 +96,14 @@ check('R8.middleBrainBoundaryPreserved',
   COMM.indexOf('middleBrainFinalizeReply') >= 0
   && exists('assets/js/middle-brain.js')
   && !/middleBrain/.test(RT));
-/* R9 DB 未变 */
-check('R9.dbUnchanged',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+/* R9 browser DB remains frozen; the bounded Work Run ledger is Home Node-owned. */
+check('R9.webCoreDbUnchangedAndRunLedgerScoped',
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && ['agentRuntime', 'agentRuntimeState', 'runtimeQueue', 'consumers', 'agentSessions']
-    .every(s => storeList.indexOf("'" + s + "'") < 0));
+    .every(s => storeList.indexOf("'" + s + "'") < 0)
+  && exists('services/home-node/work-run-store.js')
+  && /DB_FILENAME = 'home-node\.db'/.test(read('services/home-node/work-run-store.js'))
+  && HTML.indexOf('work-run-store.js') < 0);
 /* R10 无 Event Bus / Manager 新增 */
 check('R10.noBusNoManager',
   !/AgentRuntimeManager|ConsumerManager|ConsumerRegistry|EventConsumerBus|WakeManager|ActivationManager|AgentScheduler|AgentQueue/

@@ -35,7 +35,7 @@ const RT_CODE = stripComments(RT);
 const CINEMA = stripComments(read('apps/ib-app-cinema.js'));
 const COREAD = stripComments(read('assets/js/activity/coread.js'));
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 
 console.log('== P27-1 · Activity Lifecycle Closure Guard ==');
 
@@ -102,7 +102,7 @@ check('L6.pointerNotAuthorityNotSession',
 
 /* ── L7 无迁移：DB_VER / store / 字段 ─────────────────────────────── */
 check('L7.noMigration',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && storeList.indexOf("'activities'") >= 0
   && ['activitySessions', 'activityEvents', 'activityLifecycle', 'sessionEvents']
     .every(s => storeList.indexOf("'" + s + "'") < 0)

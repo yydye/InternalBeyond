@@ -139,7 +139,7 @@ function sourceGuards() {
   ok('I5.noNewStore', code.indexOf('createObjectStore') < 0
     && withdraw.indexOf('localStorage') < 0 && pat.indexOf('localStorage') < 0
     && withdraw.indexOf('dbPut(') < 0   /* 撤回自身的写点仍在既有的 _chatWithdrawMsg 里 */
-    && /DB_VER\s*=\s*24/.test(read('assets/js/core.js')));
+    && require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
   ok('I5.noNewPersistedIdentityField', code.indexOf('identityDegraded:') < 0 && code.indexOf('"identityDegraded"') < 0);
 }
 

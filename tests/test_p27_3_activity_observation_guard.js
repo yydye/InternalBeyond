@@ -19,7 +19,7 @@ const RT = read('assets/js/activity/activity-runtime.js');
 const RT_CODE = stripComments(RT);
 const HTML = read('InternalBeyond.html');
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 let passed = 0, failed = 0;
 const failures = [];
 function check(name, cond, extra) {
@@ -105,7 +105,7 @@ function makeHarness(opts) {
     && RT_CODE.split('getObservation(activityId,opts)').length === 2);
   /* O10 DB_VER 仍 24、无 observation store */
   check('O10.dbUnchanged',
-    COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+    require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
     && ['observations', 'observationCache', 'observers', 'snapshots', 'observeQueue']
       .every(s => storeList.indexOf("'" + s + "'") < 0));
   /* O11 只加载预期的 P26 core（domain-event + observation + session（P27-4 起）） */

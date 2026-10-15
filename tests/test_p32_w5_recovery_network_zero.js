@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const policy = require('./p32-w5-recovery-network-policy.js');
+const { extractFunction } = require('./helpers/rust-source.js');
 
 const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
@@ -87,9 +88,9 @@ check('dry-run uses only the read-only checkpoint command; write commands stay a
   assert.match(adapter, /var PRODUCTION_APPLY_ENABLED=false/);
   assert.match(adapter, /if\(!this\.db\)await this\.prepareProductionTarget\(\)/);
   const rust = read('src-tauri/src/lib.rs');
-  const readHandler = rust.slice(rust.indexOf('fn read_recovery_checkpoint'), rust.indexOf('#[tauri::command]', rust.indexOf('fn read_recovery_checkpoint')));
+  const readHandler = extractFunction(rust, 'read_recovery_checkpoint');
   assert.match(readHandler, /fs::read\(path\)/);
-  assert.doesNotMatch(readHandler, /create_dir_all|write_all|remove_file|OpenOptions::new/);
+  assert.doesNotMatch(readHandler, /(?:create_dir_all|write_all|remove_file|OpenOptions::new)\s*\(/);
 });
 
 check('production dry-run harness blocks external API types and audits local IPC separately', () => {

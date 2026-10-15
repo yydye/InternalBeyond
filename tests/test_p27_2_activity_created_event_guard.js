@@ -18,7 +18,7 @@ const RT = read('assets/js/activity/activity-runtime.js');
 const RT_CODE = stripComments(RT);
 const HTML = read('InternalBeyond.html');
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 let passed = 0, failed = 0;
 const failures = [];
 function check(name, cond, extra) {
@@ -95,7 +95,7 @@ function makeHarness(opts) {
   check('E6.noEventBusNoManagerNoStore',
     !/\bEventBus\b|EventRouter|ActivityEventManager|ActivityEventEmitter/.test(RT_CODE)
     && HTML.indexOf('event-bus') < 0
-    && COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+    && require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
     && ['domainEvents', 'events', 'eventStore', 'eventHistory', 'eventQueue']
       .every(s => storeList.indexOf("'" + s + "'") < 0));
   /* E7 接线形状：seam 在 canonical 写入之后；不复制契约；只此一个事件 */

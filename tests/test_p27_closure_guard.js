@@ -16,7 +16,7 @@ const RT = read('assets/js/activity/activity-runtime.js');
 const RT_CODE = stripComments(RT);
 const HTML = read('InternalBeyond.html');
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 let passed = 0, failed = 0;
 const failures = [];
 function check(name, cond, extra) {
@@ -27,7 +27,11 @@ console.log('== P27-C · Activity Production Integration Closure Guard ==');
 const PROD_JS = (function walk(dir, acc) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) { if (e.name !== 'node_modules') walk(full, acc); }
+    if (e.isDirectory()) {
+      /* The production scan must not traverse repository metadata or ignored
+         build/test scratch; none of these directories are shipped producers. */
+      if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(full, acc);
+    }
     else if (/\.js$/i.test(e.name)) acc.push(path.relative(ROOT, full).replace(/\\/g, '/'));
   }
   return acc;
@@ -86,7 +90,7 @@ check('C6.feedbackWakeUnwired',
   && !/IBFeedback|IBWakeRequest|IBWakeRuntime|IBActivationIntent|IBActivationRuntime/.test(RT_CODE));
 /* C7 DB_VER = 24 且无新 store */
 check('C7.dbUnchanged',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && ['events', 'domainEvents', 'observations', 'sessions', 'sessionIdentity', 'resources',
     'resourceClaims', 'feedback', 'wakeRequests', 'activationIntents', 'observationCache',
     'activityEvents', 'observeQueue'].every(s => storeList.indexOf("'" + s + "'") < 0));

@@ -119,7 +119,7 @@ function staticGuards() {
     && /_wsArchiveCollisionNeedsUniquePath/.test(ws)
     && !/old\.lastModifiedBy==='User'\|\|old\.lastModifiedBy==='你'\|\|old\.lastModifiedBy==='导入'/.test(ws));
 
-  ok('A15.dbVer24', /DB_VER\s*=\s*24/.test(read('assets/js/core.js')));
+  ok('A15.dbVer24', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
   ok('A15.noSchemaTouch', !/createObjectStore/.test(wsCode + opsCode + commCode + stripComments(run)));
 
   const coreSrc = read('assets/js/group-runtime-core.js');

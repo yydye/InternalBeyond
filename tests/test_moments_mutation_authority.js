@@ -285,7 +285,7 @@ async function main() {
   check('MA21.p23Unchanged', sha256('assets/js/communication.js') === FROZEN_SHA256['assets/js/communication.js']);
   check('MA22.p24Unchanged', sha256('assets/js/group-runtime-core.js') === FROZEN_SHA256['assets/js/group-runtime-core.js']);
   check('MA23.dbSchemaUnchanged',
-    /DB_VER=24/.test(read('assets/js/core.js'))
+    require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
     && /MOMENTS_SCHEMA_VERSION = 1/.test(read('services/home-node/moments-store.js'))
     && sha256('services/home-node/moments-store.js') === FROZEN_SHA256['services/home-node/moments-store.js']);
   check('MA24.noNewStore', !/createObjectStore|duplicateStore|mutationLog/.test(stripComments(MOMENTS_SRC) + stripComments(MUT_SRC)));

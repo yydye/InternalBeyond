@@ -68,7 +68,7 @@ function staticContractChecks() {
     && /copied\.lastModifiedById=cur\.lastModifiedById/.test(files));
   ok('F21.displayLabelRemainsUIField',
     /f\.lastModifiedBy==='你'\?'User':f\.lastModifiedBy/.test(files));
-  ok('F22.dbVer24', /const DB_NAME='InternalBeyondDB',DB_VER=24/.test(core));
+  ok('F22.dbVer24', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
   ok('F25.routingHasNoDisplayIdentityComparison',
     !/lastModifiedBy\s*!?==/.test(ws));
   ok('F25.routingUsesCanonicalValidity',

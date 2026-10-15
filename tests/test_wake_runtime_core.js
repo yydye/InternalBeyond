@@ -227,9 +227,9 @@ const FROZEN = {
 const changed = Object.keys(FROZEN).filter(f => !(sha(f).startsWith(FROZEN[f][0]) && sha(f).endsWith(FROZEN[f][1])));
 check('G1.foundationGuardsUnchanged', changed.length === 0, changed);
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('G2.dbUnchanged',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && ['wakeRuntime', 'wakeState', 'activationHistory', 'wakeDatabase', 'wakeRequests', 'wakeHistory',
     'attentionQueue', 'agentWake', 'signals'].every(s => storeList.indexOf("'" + s + "'") < 0),
   storeList.slice(-140));

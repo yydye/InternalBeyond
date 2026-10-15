@@ -33,9 +33,10 @@ const HTML = read('InternalBeyond.html');
 const COREJS = read('assets/js/core.js');
 
 /* ── A1 canonical storage：store + pointer + DB_VER ─────────────────── */
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('A1.canonicalStorage',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
+  && require('./helpers/db-schema-authority.js').isWiredBeforeCore(HTML, COREJS)
   && storeList.indexOf("'activities'") >= 0
   && RT.indexOf("var ACT_STORE='activities'") >= 0
   && RT.indexOf("var CUR_KEY='ib_activity_current_v1'") >= 0

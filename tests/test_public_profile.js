@@ -26,6 +26,7 @@ const SRC_ROLE_DM = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'ut
 const SRC_SOCIAL = fs.readFileSync(path.join(ROOT, 'assets/js/social.js'), 'utf8');
 const SRC_HTML = fs.readFileSync(path.join(ROOT, 'InternalBeyond.html'), 'utf8');
 const SRC_CORE_JS = fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8');
+const SRC_DB_SCHEMA = fs.readFileSync(path.join(ROOT, 'assets/js/webcore-db-schema.js'), 'utf8');
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -452,18 +453,19 @@ console.log('\n══ E · 接线（唯一真源 / 无第二份实现 / 无 DB �
 /* ── 18. 无 DB 迁移 ─────────────────────────────────────────────── */
 {
   check('18a. publicProfile 是既有 apiConfigs 行上的可选嵌套字段（**不是**新 store ⇒ 本阶段零 schema 迁移）',
-    /* Phase 4B-1.2 让 DB_VER 前进到 24（disclosureFacts，属另一个阶段）。
-       写死 23 会在每次合法升版时误报，而且它并不是本阶段要保护的性质 ——
-       本阶段真正的承诺是"公开资料没有自己的 store"。18b / 18c 证明清单与
-       索引都没变，这里补上"版本只增不减"与"没有 publicProfile 表"。 */
+    /* 当前工作树由 webcore-db-schema.js 持有 schema authority；不再从 core.js
+       搜旧 DB_VER 常量。公开资料只属于 apiConfigs DTO，不拥有独立 object store。 */
     (function () {
-      const v = Number((/DB_VER=(\d+)/.exec(SRC_CORE_JS) || [])[1]);
-      return Number.isInteger(v) && v >= 23 && !/createObjectStore\(\s*['"]publicProfile/.test(SRC_CORE_JS);
-    })(), (SRC_CORE_JS.match(/DB_VER=\d+/) || [])[0]);
+      const v = Number((/var DB_VERSION\s*=\s*(\d+)/.exec(SRC_DB_SCHEMA) || [])[1]);
+      const stores = (/(?:var|const) STORE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(SRC_DB_SCHEMA) || [])[1] || '';
+      return SRC_CORE_JS.indexOf('DB_SCHEMA=window.IBWebCoreDbSchema') >= 0 &&
+        Number.isInteger(v) && v >= 23 && !/['"]publicProfiles?['"]/.test(stores);
+    })(), SRC_DB_SCHEMA.match(/var DB_VERSION=\d+/) && SRC_DB_SCHEMA.match(/var DB_VERSION=\d+/)[0]);
   check('18b. 没有新增 objectStore / index（openDB 的 store 清单未因本阶段变化）',
-    SRC_CORE_JS.includes("'understandings','threads'") && !SRC_CORE_JS.includes('publicProfiles'));
+    SRC_DB_SCHEMA.indexOf("'apiConfigs'") >= 0 && SRC_DB_SCHEMA.indexOf("'chatMessages'") >= 0 &&
+      !/['"]publicProfiles?['"]/.test(SRC_DB_SCHEMA) && !/\['[^']*publicProfile[^']*'/.test(SRC_DB_SCHEMA));
   check('18c. publicProfile 不是 apiConfigs 的键路径依赖（无需索引）',
-    !/createIndex\([^)]*publicProfile/.test(SRC_CORE_JS));
+    !/createIndex\([^)]*publicProfile/.test(SRC_DB_SCHEMA));
   /* 反例：旧角色与"清空公开资料"的角色必须得到同一个投影。 */
   const oldChar = { nickname: '阮·梅' };
   const cleared = { nickname: '阮·梅', publicProfile: null };

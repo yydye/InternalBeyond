@@ -80,8 +80,8 @@ check('不升 DB_VER（向导状态只写 apiSettings 的私有 key，不建 sto
      由上一行（不新增角色相关 store）与下一行（只用 apiSettings 两个私有 key）
      证明；这里只保留"版本只增不减"。 */
   (function () {
-    const v = Number((/DB_VER=(\d+)/.exec(fs.readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8')) || [])[1]);
-    return Number.isInteger(v) && v >= 23;
+    const schema = require('./helpers/db-schema-authority.js');
+    return schema.isVersion('InternalBeyondDB', 24);
   })());
 check('向导状态只用 apiSettings 两个私有 key', /DONE_KEY\s*=\s*'ibSetupV1Done'/.test(jsSrc) && /DRAFT_KEY\s*=\s*'ibSetupV1Draft'/.test(jsSrc));
 check('不使用 localStorage / sessionStorage', jsSrc.indexOf('localStorage') === -1 && jsSrc.indexOf('sessionStorage') === -1);

@@ -22,7 +22,7 @@ const HTML = htmlNoComments();
 const RT = strip(read('assets/js/agent-runtime.js'));
 const COMM = strip(read('assets/js/communication.js'));
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 /* F1 IB.runtime 仍是生产加载的**共享模型执行缝** */
 check('F1.sharedModelSeamLoaded',
   exists('assets/js/agent-runtime.js') && HTML.indexOf('assets/js/agent-runtime.js') >= 0
@@ -74,12 +74,17 @@ check('F8.noManagerNoBus',
   !/AgentRuntimeManager|ConsumerManager|ConsumerRegistry|EventConsumerBus|WakeManager|ActivationManager|AgentScheduler|AgentQueue/
     .test(HTML + RT + COMM)
   && !/\bEventBus\b/.test(RT + COMM));
-/* F9 无 runtime / session / wake store */
-check('F9.noRuntimeStores',
+/* F9 no browser/global runtime stores; Work Mode Run facts belong to Home Node only. */
+check('F9.noGlobalOrBrowserRuntimeStores',
   ['agentRuntime', 'agentRuntimeState', 'runtimeQueue', 'consumers', 'agentSessions',
-    'wakeRequests', 'wakeQueue', 'agentPlan'].every(s => storeList.indexOf("'" + s + "'") < 0));
+    'wakeRequests', 'wakeQueue', 'agentPlan', 'work_runs', 'work_run_events',
+    'work_run_idempotency'].every(s => storeList.indexOf("'" + s + "'") < 0)
+  && exists('services/home-node/work-run-store.js')
+  && /DB_FILENAME = 'home-node\.db'/.test(read('services/home-node/work-run-store.js'))
+  && read('docs/P28-1-AGENT-RUNTIME-BOUNDARY-FREEZE.md').indexOf('P28-WM-P1') >= 0
+  && HTML.indexOf('work-run-store.js') < 0);
 /* F10 DB_VER = 24 */
-check('F10.dbVersionFrozen', COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0);
+check('F10.dbVersionFrozen', require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24));
 /* F11 P23 交付所有权仍在 P23 */
 check('F11.p23DeliveryOwnershipIntact',
   ['assets/js/delivery-planner.js', 'assets/js/delivery-runtime.js',

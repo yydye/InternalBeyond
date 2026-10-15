@@ -437,7 +437,7 @@ async function runProductionChecks() {
     && RL_RAW.indexOf("const RL_MEM_STORE='roleLetterMemories';") >= 0
     && RL_RAW.indexOf('RL_STATE_KEY=') >= 0 && RL_RAW.indexOf('RL_PAIR_KEY=') >= 0
     && RL_RAW.indexOf('RL_REPLYQ_KEY=') >= 0 && RL_RAW.indexOf('RL_PREFS_KEY=') >= 0
-    && CORE_SRC.indexOf('DB_VER=24') >= 0
+    && require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
     && rt7.puts.every(p => ['roleLetters', 'roleLetterMemories'].indexOf(p.store) >= 0)
     && mem7.source === 'role_letter' && String(mem7.owner) === 'a'
     && rt7.sharedMemories().length === 0,

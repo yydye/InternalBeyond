@@ -320,9 +320,9 @@ check('G7.frozenStackUnchanged', g7Bad.length === 0, g7Bad);
 
 /* ── G8 DB 未变（无事件类 store）────────────────────────────────────── */
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('G8.noDbChange',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && ['events', 'domainEvents', 'eventLog', 'subscriptions', 'observers'].every(s => storeList.indexOf("'" + s + "'") < 0),
   storeList.slice(-140));
 

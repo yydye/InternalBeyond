@@ -234,9 +234,9 @@ check('G8b.activityRuntimeLegacyPartitionsUnchanged',
 
 /* ── G9 DB 未变（无 resource/lease/lock store）────────────────────── */
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('G9.noDbChange',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && ['resources', 'resourceLeases', 'locks', 'leases', 'arbitration'].every(s => storeList.indexOf("'" + s + "'") < 0),
   storeList.slice(-140));
 

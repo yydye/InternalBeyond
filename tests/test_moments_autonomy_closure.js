@@ -479,7 +479,7 @@ async function main() {
   check('CL43.p24Unchanged', sha256('assets/js/group-runtime-core.js') === FROZEN_SHA256['assets/js/group-runtime-core.js']);
   check('CL44.autonomyCoreUnchanged', sha256('assets/js/autonomy-core.js') === FROZEN_SHA256['assets/js/autonomy-core.js']);
   check('CL45.dbVersionUnchangedByClosure',
-    /DB_VER=24/.test(read('assets/js/core.js'))
+    require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
     && /MOMENTS_SCHEMA_VERSION = 1/.test(read('services/home-node/moments-store.js')));
   check('CL46.noNewStore',
     !/createObjectStore/.test(stripComments(read('assets/js/moments.js')))

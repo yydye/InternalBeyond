@@ -146,6 +146,8 @@ const GROUPS = [
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
       ['test_frontend_structure.js'],
+      ['test_startup_animation.js'],
+      ['test_tauri_service_supervisor.js'],
       /* P36 · grouped sidebar, original page ids/hash routing and secret/Tauri route compatibility. */
       ['test_navigation_shell.js'],
       /* P37-FIX · Welcome/Home ownership, Home-only lazy aggregation, bounded projections, and routing boundaries. */
@@ -262,11 +264,21 @@ const GROUPS = [
          conversation identity 派生与逆函数 / message id 形状保真 /
          幂等 requestId→messageId 确定性 / payload 往返不丢未知字段。纯 Node。 */
       ['test_chat_core_contract.js'],
+      /* P3.1：canonical message quote candidates / exact source and sender validation /
+         same-conversation fail-closed behavior / streamed control-frame hiding. Pure Node. */
+      ['test_message_quote_core.js'],
+      ['test_message_quote_store.js'],
       /* P23 Phase 1：Voice API Source（canonical source 引用 / 旧 voice 配置不回归 /
          endpoint 由 Bridge 唯一解析 / credential 绝不进入角色记录与 wire payload）。
          P23 Phase 1：Native Voice Message（assistant 一级语音消息的 create / persist /
          hydrate / render decision / play / duration / transcript / provenance / 失败边界）。 */
       ['test_voice_source.js'],
+      /* Voicebox Library v2: strict Manifest/Profile packages, Provider compatibility,
+         fixed HTTPS asset paths, and size/SHA-256 verification; pure Node, no network. */
+      ['test_voicebox_library_core.js'],
+      ['test_voice_library_catalog.js'],
+      ['test_voicebox_runtime_control.js'],
+      /* Voicebox v2.2 process control stays in the existing Bridge and is tested with a fake child plus a loopback route harness. */
       ['test_native_voice_message.js'],
       /* P23 Phase 1.1（Closure Fix）：Voice 播放取源路径（引用型必须走 ibBridgeLoadAudio，
          绝不允许裸 new Audio(相对 /tts 路径)）+ Voice message 生命周期（撤回/续写/编辑/
@@ -309,33 +321,41 @@ const GROUPS = [
          以及 stale mirror 不得被 +delta 伪装成 canonical（Strategy D 被禁）。
          纯 Node、零浏览器、零真实网络（HTTP 面由 test_home_node_production_memory_assembly 覆盖）。 */
       ['test_memory_activation_authority.js'],
-      /* P21-R2-B：Turn Signal / Early Exit + Deterministic Query Construction。
-         两个新模块（assets/js/memory-recall/turn-signal.js 与 recall-query.js）是
-         **implemented but unwired** 的纯函数：零 IO / 零时钟 / 零随机 / 零 LLM，
-         lexicalTerms 依赖注入复用 memory-retrieval-core.js 的 extractKeywords
-         （不复制第二套 n-gram 实现）。
+      /* P21-R2-B + R2-C：Turn Signal / Early Exit + Deterministic Query Construction。
+         两个模块是零 IO / 零时钟 / 零随机 / 零 LLM 的纯函数，生产 Host 只经
+         memory-recall-orchestrator 消费；lexicalTerms 复用 memory-retrieval-core.js
+         的 extractKeywords（不复制第二套 n-gram 实现）。
          early-exit 部分钉住 R2-B 冻结的优先级（host-forced → coldStart →
          explicit recall → semantic payload → early exit）以及"绝不按长度判断"、
          "只做 normalized exact match（不 substring）"两条纪律；
          query 部分钉住归一化 / boilerplate 去噪（保护引号段）/ entities /
-         temporal hints / aliases / 有界输入 / 确定性；wiring guard 证明生产面
-         零引用，并把 R2-A 的 141 条契约断言作为子进程回归跑一遍。
+         temporal hints / aliases / 有界输入 / 确定性；wiring guard 证明 Host
+         不得旁路 orchestrator，并把 Recall contract 断言作为子进程回归跑一遍。
          纯 Node、零浏览器、零网络。 */
       ['test_memory_recall_early_exit.js'],
       ['test_memory_recall_query.js'],
       ['test_memory_recall_wiring_guard.js'],
-      /* P21-R2-C：Orchestrator Skeleton + Hard Gate + Recall Trace + Legacy Parity。
-         C1（接线，行为等价）：桌面 selectMemoryContext 与 Home Node retrieve
-         改为经 memory-recall-orchestrator；两个 Host 都**不传 turn**，因此
-         内部走 legacy path 直接委托同一份 memory-retrieval-core。
-         C2（新语义，Host 暂不启用）：early exit / deterministic query /
+      /* P21-R2-C/D：Orchestrator + Hard Gate + Recall Trace + Legacy Parity。
+         Desktop 与 Home Node 都经 memory-recall-orchestrator，并传递当前 turn；
+         production Recall 因此执行 early exit / deterministic query /
          visibility pre-filter / relevanceScore / Hard Gate(relevanceScore>0) /
-         RecallTrace（脱敏、零日志出口）。
-         legacy_parity 是本轮的**硬门**：29 组 fixture 下
+         RecallTrace（脱敏、零日志出口）。legacy_parity 仍把兼容调用钉在核心上：
+         29 组 fixture 下
          deepStrictEqual(orchestrator.result, core.buildMemoryContext)，
          逐字节比对 text / selected / count / chars / reason。
          纯 Node、零浏览器、零网络。 */
       ['test_memory_recall_scoring.js'],
+      /* Memory v2 Phase A · isolated selector and V1/V2 Golden fixtures. */
+      ['test_memory_v2_recall_selector.js'],
+      /* Memory v2 Final Dev Validation · bilingual Query→Hard Gate→V1/V2 scenarios. */
+      ['test_memory_v2_final_recall_scenarios.js'],
+      /* Memory v2 Phase B/C.1 · real Home Node wrapper/orchestrator shadow,
+         isolated fake Memory store, no Provider, writes, or body telemetry. */
+      ['test_memory_v2_recall_shadow.js'],
+      /* Memory v2 Phase C.2 mechanics · opt-in selector/version rollback only;
+         synthetic fixtures here validate the switch, never relevance quality. */
+      ['test_memory_v2_selector_switch.js'],
+      ['test_dev_memory_cors.js'],
       ['test_memory_recall_trace.js'],
       ['test_memory_recall_orchestrator.js'],
       ['test_memory_recall_legacy_parity.js'],
@@ -404,6 +424,10 @@ const GROUPS = [
          hydrate 后成功的编辑仍在、失败的编辑被 canonical 覆盖。
          纯 Node、零浏览器、零网络（store 走本地 SQLite，不经 HTTP）。 */
       ['test_memory_content_authority.js'],
+      ['test_memory_ui_authority_convergence.js'],
+      ['test_chat_explicit_memory_routing.js'],
+      ['test_chat_implicit_memory_admission.js'],
+      ['test_chat_reference_resolution.js'],
       /* P21-R4-A.5：canonical content **retry** + authority downgrade。
          把 home-node-bootstrap 的 `withRetry` / `throwWriteError` / `isMemoryStore` /
          `window.dbPut` / `window.dbDelete` **原样抽出**在隔离 vm 里执行，统计真正的
@@ -441,18 +465,41 @@ const GROUPS = [
          只多一个内部 meta 键。failure 一律 fail open。
          纯 Node、零浏览器、零网络。 */
       ['test_metamemory_shadow.js'],
-      /* P21-R4-C：MemoryInterpretation **SHADOW**（模型就绪，生产**不调用**）。
-         FACTS MAY REMAIN STABLE · MEANING MAY CHANGE —— 解释层永远不改写 canonical。
-         纯核心（同步、零网络/DB/时钟/随机/持久化）负责结构化数据信封与严格输出校验；
-         独立 runner（异步、单次调用、AUTO_RETRY=NONE、有界超时 + AbortSignal、永不抛出）
-         是唯一会发起模型调用的文件，且**没有任何生产调用方** ——
-         recall 调用链是 async 且被 chat 回合 await 的，模型调用不可能同步，
-         因此宁可交付 model-ready 也不牺牲首 token 延迟（contract §24.9(c)）。
-         测试全部使用 deterministic fake model port：真实 provider 调用 = 0。
-         覆盖 prompt 注入隔离、输出 schema 校验、部分输出策略、失败/超时/取消、
-         单次批量调用预算、current-state 差分（同事实不同解释）、consumer=0、OFF parity。
-         纯 Node、零浏览器、零网络。 */
+      /* P21-R4-C：MemoryInterpretation 纯核心 / legacy shadow contract。
+         这里的“不接生产”结论只针对独立 shadow runner；Home Node 的 runtime
+         provider seam 与 per-character policy 由 R4-C runtime suites 覆盖。
+         测试使用 deterministic fake model port：真实 provider 调用 = 0。 */
       ['test_memory_interpretation_shadow.js'],
+      /* P21-R3 · bounded runtime Association and product-level Recall integration. */
+      ['test_memory_association_core.js'],
+      ['test_memory_association_runtime.js'],
+      ['test_memory_association_product_e2e.js'],
+      /* P21-R4-H · runtime-only ordinal forgetting affects Recall accessibility
+         and detail projection, with resurfacing and fail-open fallback. */
+      ['test_semantic_forgetting_product_e2e.js'],
+      /* P21-R4-N · awareness derives only from selected Recall/H/K/L outputs;
+         ordinal uncertainty guidance is private and failure-fail-open. */
+      ['test_meta_memory_awareness_product_e2e.js'],
+      /* P21-R4-O · bounded current-recollection uncertainty, gated by N and
+         grounded in H plus existing R3/K/L provenance. */
+      ['test_memory_unreliability_product_e2e.js'],
+      /* P21-R4-P · source-separated relationship memory view; explicit joint
+         acknowledgement remains server-authority gated and failure is fail-open. */
+      ['test_shared_memory_product_e2e.js'],
+      /* P21-R4-Q · bounded alternative-history reasoning consumes source-backed
+         Memory/K/L/O and sealed P1/P3 outcomes; no factual or Prediction writes. */
+      ['test_counterfactual_memory_product_e2e.js'],
+      /* P21-R4-K · direct + bounded Association → the existing Interpretation core. */
+      ['test_memory_reinterpretation_core.js'],
+      ['test_memory_reinterpretation_runtime.js'],
+      ['test_memory_reinterpretation_product_e2e.js'],
+      /* P21-R4-L · provenance-carrying, revisionable session Narrative derived from R3/R4-K. */
+      ['test_self_narrative_core.js'],
+      ['test_self_narrative_runtime.js'],
+      ['test_self_narrative_product_e2e.js'],
+      /* P21-R4-M · validated R4-K/R4-L evidence derives bounded posture into
+         the shared response-guidance contract; includes Mobile consumption. */
+      ['test_memory_behavior_modulation_product_e2e.js'],
       /* P21-R4-D：Expectation + Prediction Error **SHADOW**（协议就绪，生产调用者 = 0）。
          PAST EXPERIENCE MAY SHAPE EXPECTATION · EXPECTATION MUST REMAIN A HYPOTHESIS。
          两个纯核心：expectation 派生（分层信封 + 严格校验 + **泛化门**）与
@@ -466,7 +513,9 @@ const GROUPS = [
          模型交互全部使用 deterministic fake port：真实 provider 调用 = 0。
          纯 Node、零浏览器、零网络。 */
       ['test_expectation_shadow.js'],
-      /* P21-R4-E：Counterfactual / Causal Hypothesis **SHADOW**（协议就绪，生产调用者 = 0）。
+      /* P21-R4-E：legacy Counterfactual / Causal Hypothesis **SHADOW**；
+         本测试只覆盖旧纯核心。R4-Q 是有界 transport 的唯一生产调用者，
+         并使用独立的 Q-specific core/schema；这里的生产零接线事实只描述这个旧核心。
          COUNTERFACTUAL = "如果一个条件不同，可能会发生什么？" = **CAUSAL HYPOTHESIS**，
          不是 fact / observation / memory / prediction。
          硬约束：purpose='causal-learning' · epistemicStatus='counterfactual' ·
@@ -598,6 +647,9 @@ const GROUPS = [
              HTML/UI、relationship 一律未触碰；静态扫描零非法路径。
          纯 Node、零浏览器、零网络、零真实模型调用。 */
       ['test_prediction_settlement_core.js'],
+      /* P5-B3-J-R3 · P3 binds calibration eligibility to its deterministic,
+         outcome-time decisive evidence basis; P4 remains a sealed consumer. */
+      ['test_prediction_settlement_calibration_basis.js'],
       /* Prediction Error P4 · **Calibration Ledger**（分区隔离 · 机械计数 · internal audit only）。
          本轮**唯一**新增的 live 能力：只消费 P3 标记 `calibrationCounted === true` 的
          SettlementRecord，按 `predictionType × targetDomain` 分区做机械计数 + ordinal PE bucket。
@@ -632,6 +684,15 @@ const GROUPS = [
              **Calibration → Expectation 写回**、全局精度字段、legacy 结果 key 全部被抓。
          纯 Node、零浏览器、零网络、零真实模型调用。 */
       ['test_prediction_calibration_ledger.js'],
+      /* P5-B3-J-R1 · P4 capability truth is derived from the module-private,
+         same-module BehaviorEffect runtime instance and remains independent of
+         query coverage, sample eligibility, and calibration confidence. */
+      ['test_calibration_capability_truth.js'],
+      /* P5-B3-J · P3 Settlement → P4 Ledger production driver：
+         production E2E is in test_prediction_error_product_e2e; this suite verifies
+         sealed provenance, calibrationCounted-only pass-through, P4-owned dedupe,
+         non-counted skips, partition isolation, and failure isolation. */
+      ['test_calibration_production_driver.js'],
       /* Prediction Error P5-B · **Evidence Matcher**（advisory semantic classifier · 默认关闭）。
          本轮**唯一**新增能力：给 statement evidence 一个严格受限的 semantic relation
          {support|conflict|irrelevant|ambiguous}，用来**只**替换 P3 的
@@ -661,6 +722,13 @@ const GROUPS = [
            · 零 durable 写 / 零 memory 写 / 零 relationship 写 / 无 HTTP 路由 / 不进 HTML。
          纯 Node、零浏览器、零网络、**零真实模型调用**（全部走 mock model port）。 */
       ['test_evidence_matcher.js'],
+      /* P5-B3-L · production admission: explicit opt-in, production P3 seam,
+         canonical P1 statement source, Vault-only credentials, authority isolation. */
+      ['test_evidence_matcher_production_admission.js'],
+      /* P5-B3-L-R1 · only a post-commit canonical chat-store user row may mint
+         the existing low-authority linguistic-evidence P1 projection. */
+      ['test_linguistic_evidence_producer.js'],
+      ['test_linguistic_evidence_product_e2e.js'],
       /* Prediction Error P5-B2 · **BehaviorEffect Attribution Authority**（零模型调用 · session-only）。
          本轮核心 invariant：`ABSENCE_OF_EFFECT_RECORD != KNOWN_NO_EFFECT`
          —— `effects.length === 0` **只有在 coverage === 'complete' 时**才是 known-none。
@@ -690,6 +758,13 @@ const GROUPS = [
              Matcher 强 support ⇒ calibrationCounted = false。
          纯 Node、零浏览器、零网络、零真实模型调用。 */
       ['test_behavior_effect_attribution.js'],
+      /* P21-R4-M0 · external response participation is recorded by the existing
+         attribution owner, and the shared envelope never creates posture. */
+      ['test_behavior_external_participation.js'],
+      /* P21-R4-M0-R2 · release guard for unverified Desktop influence and P4
+         eligibility. A failure keeps R2 blocked; this test is isolated from Vault. */
+      ['test_r4m_desktop_admission.js'],
+      ['test_response_guidance_contract.js'],
       /* Prediction Error P5-B3-B · **OutcomeObservation Production Authority**（零模型调用 · session-only）。
          本轮唯一新增能力：把"后来真正发生的事实"经**唯一** canonical mint 路径转成
          sealed OutcomeObservation。producer 只能观察事实，不能解释结算。
@@ -812,10 +887,8 @@ equest.character.id（caller
          sink 抛错不改写 turn outcome、终局仍记录、inFlight 仍清理、callback 恰好一次；
          pre-turn rejection（未绑定角色 / 缺 userMessage）⇒ 0 RealityEvent；
          group / role-DM scope 逐字保留；两个 live construction site 都注入同一 adapter；
-         execution.js **不** import reality authority。
-         ★ 如实记录 blocker：runtime.turn-execution 不在 P1 冻结的 AUTHORIZED_OBSERVERS，
-           且 outcome-observation-core.js 不在本轮允许修改范围内
-           ⇒ OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO（mechanical loop 未闭合）。 */
+         execution.js **不** import reality authority；P5-B3-D4-R3 post-mint subscriber
+         已接线。G2 event projection 只开放 runtime.turn_terminal family。 */
       ['test_turn_terminal_reality_source.js'],
       /* P5-B3-D4-R1 · **P1 Turn Observer Admission**（owner-approved exact token）。
          AUTHORIZED_OBSERVERS[CANONICAL_RUNTIME] += 'runtime.turn-execution'
@@ -825,29 +898,19 @@ equest.character.id（caller
          scope / timestamp / lineage（evidenceRefs[0]=realityEventId）逐字保留；
          plain object / browser / model-inference / wrong-source-class / wrong-domain-type
          全部无法借该 token 洗权（SOURCE_INSTANCE_TOKEN DOES NOT UPGRADE SOURCE_CLASS）。
-         ★ 如实记录 blocker：runtime.turn_terminal 不在 P1 冻结的 RUNTIME_STATE_TOKENS
-           （12 项闭集）中，directional relation = FORBIDDEN，
-           因此 P3 只能停在 pending（observation-discarded-by-authority-gate）
-           ⇒ P5_B3_D4_STATUS = BLOCKED_BY_PREDICTION_SCHEMA。
-         对照实验：同一 sourceInstance 下 delivery.completed / activity.available /
-         memory.record-written 均 ELIGIBLE —— 唯一差异就是 token 是否属于冻结词表。 */
+         P1 的 D4-R3 post-mint subscriber 已接到 Home Node Reality Feedback Driver；
+         G2 event producer 使用同一 P1 observer，本用例仍只测 observer admission 与 scope。 */
       ['test_turn_observer_admission.js'],
-      /* P5-B3-D4-R2 · **Turn Terminal Directional Admission**（owner-approved token）。
-         RUNTIME_STATE_TOKENS += 'runtime.turn_terminal'（13 项，前 12 项逐字保留）。
-         受控实验（固定 sourceInstance / scope / prediction / observation，只换 token）：
-           before: runtime.turn_terminal → FORBIDDEN/FORBIDDEN/FORBIDDEN
-           after : runtime.turn_terminal → ELIGIBLE/ELIGIBLE/ELIGIBLE（与既有 token 同档）
-         并证明：近似 token 不入表；token 正确但 sourceInstance/source class 错误仍 fail
-         authority（TOKEN_ADMISSION != SOURCE_AUTHORITY）；plain object 无 seal；
-         Reality source allowlist 未被绕过（wrong domain/type 仍拒）；
-         scope 隔离（wrong-scope prediction 不配对）；lineage = evidenceRefs[0]；
-         attribution @ occurredAt；decisive settlement（matched + calibrationCounted）
-         **只在** attribution known-none 时成立 —— contamination gate 未被 token 入表绕过；
-         且 TOKEN_AUTOMATICALLY_SUPPORTS_PREDICTION = NO（换 token 的预测不得 matched）。
-         ★ 如实记录新 blocker：production 无订阅者消费已 mint 的 RealityEvent 去跑
-           pairing + projection（projectForPrediction / candidatePredictions 无 production
-           caller）⇒ MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO。 */
+      /* P5-B3-D4-R2 · generic terminal fact token remains admissible in P1.
+         D5 adds outcome-specific tokens and relation semantics in P3. */
       ['test_turn_terminal_directional_admission.js'],
+      /* P5-B3-D5 · exact TurnTerminal outcome relation, same-turn P2 binding,
+         P1 provenance, P3 support/conflict semantics, terminal opportunity,
+         replay/multi-prediction fanout, BehaviorEffect, P4 ingestion, matcher off. */
+      ['test_turn_terminal_directional_semantics.js'],
+      /* P5-B3-D5-R1 · execution-minted finality proves event opportunity; no
+         manual opportunity / feedback / calibration injection on the E2E path. */
+      ['test_event_opportunity_authority.js'],
       /* P5-B3-D4-R3 · **Production Reality Feedback Driver**（orchestration only）。
          owner = HOME_NODE_RUNTIME_ASSEMBLY；trigger = NEW_CANONICAL_REALITY_EVENT_MINT。
          driver 只编排：pairing→Registry · observation→P1 · settlement→P3；
@@ -903,6 +966,10 @@ equest.character.id（caller
              relationship，零模型调用、零 durable 写、不新增 seam 对、matcher 仍 OFF。
          纯 Node、零浏览器、零网络、零模型调用、零 production 写。 */
       ['test_explicit_user_report_authority.js'],
+      /* P5-B3-K · free text is candidate-only; confirmation is session-scoped,
+         scope-checked, replay-safe, and projects a closed body to the existing report action. */
+      ['test_free_text_report_candidate.js'],
+      ['test_free_text_report_confirmation.js'],
       /* P5-B3-E-R1 · **Subjective Preference Feedback**（结论：主观链 PRODUCTION LIVE）。
          §69 条件 8 "P3 can produce decisive subjective settlement" 现在成立：
            · 机械偏好 relation（**无 Matcher**）：同 target 同 stance ⇒ support；
@@ -921,10 +988,9 @@ equest.character.id（caller
            · zero-pair 合法；wrong scope 不配对；multi-pair ⇒ 1 report / 1 event /
              1 dispatch / N observations；100x replay ⇒ 1 report / 1 mint / 1 dispatch；
              T1 LIKE + T2 DISLIKE ⇒ 两条事实，第一条不被改写；
-           · conflict 的**冻结语义**如实记录：production driver 不提供 opportunity
-             ⇒ directional.conflict 被禁止 ⇒ 状态**不是** missed
-             （reason = directional-conflict-forbidden-cannot-produce-missed）；
-             受控实验（提供权威 opportunity）下互斥立场确实产 missed；
+          · conflict 的历史 blocker 与 P5-B3-I 新 authority 分层登记：driver 仍不提供
+            opportunity；只有后续 sealed RealityEvent 的同 target/scope completed choice
+            witness 才允许 P3 将 conflict 结算为 missed；
            · failure isolation：producer 抛错 ⇒ 显式失败且不铸半点东西；
              RealityEvent mint 失败 ⇒ report 仍是 upstream truth；订阅者抛错 ⇒
              mint 仍成立；feedback 失败 ⇒ report + RealityEvent 都保留；
@@ -932,22 +998,28 @@ equest.character.id（caller
              CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO。
          纯 Node、零浏览器、零网络、零真实模型调用。 */
       ['test_subjective_prediction_feedback.js'],
+      /* P5-B3-I · Subjective Negative Settlement Opportunity Authority：
+         accepted reportId 是 prediction-independent 的 target/scope/time witness，sealed
+         RealityEvent 必须回链该 report action 才能绑定 P3 evidence；
+         forged event、wrong target/scope、no report、support、conflict、BehaviorEffect
+         contamination 与 replay 均过 P3 authority seam；无 opportunity 参数注入。 */
+      ['test_subjective_opportunity_authority.js'],
       /* P5-B3-G1 · **Structured Expectation Projection**（结论：production 建档 LIVE）。
          owner ruling：模型**提议**结构化候选，runtime 校验 + 组装 + 注册；
          TYPE_TABLE 仍是唯一类型权威，生产准入策略只开放 preference。
          机械证明：
-           · expectation schema v2（additive）：可选 structuredPrediction；
+           · expectation schema v3（additive）：可选 preference / terminal-event structured candidates；
              旧输出（无此字段）逐字仍工作；坏候选**不**作废 expectation item；
            · 候选层只做机械归一（trim/lowercase/闭集/**共享** proposition 文法），
              模型给的 predictionId/characterId/conversationId/turnId/createdAt/
              source/settlementState/calibrationCounted/validated **逐名剥掉**并登记；
-           · 生产准入：G1_PRODUCTION_PROJECTION_TYPES = [preference]；
+           · 生产准入：G2_PRODUCTION_PROJECTION_TYPES = [preference,event:runtime.turn_terminal]；
              TYPE_TABLE 支持但未开放的 kind（relational）⇒ production-type-not-enabled；
              stance=maybe ⇒ invalid-preference-stance；target 非法 ⇒ invalid-preference-target；
              kind 越出 TYPE_TABLE ⇒ unsupported-prediction-type（全 fail closed）；
            · 组装是**显式白名单**（绝无 Object.assign(item)）：模型字段只能经
              ALLOWED_ITEM_KEYS 进入 canonical record；
-           · token 由共享 preference-proposition-core 生成（模型不定义 token 文法）；
+           · preference token 由 preference-proposition-core 生成；terminal token 由 P1 生成；
            · 投影有界（沿用既有 MAX_OUTPUT_ITEMS，不新增无界数组）；
            · P2 round-trip：predictionId/type/scope/窗口全部由 runtime 决定；
              100x replay ⇒ 一条逻辑 Prediction；不同 expectationIndex ⇒ 不同 identity；
@@ -958,23 +1030,14 @@ equest.character.id（caller
              provider-specific changes = 0（schema 只活在 prompt + validateResponse）。
          纯 Node、零浏览器、零真实出网、零真实模型调用。 */
       ['test_structured_expectation_projection.js'],
-      /* P5-B3-G1 · **Full Product Positive E2E**（G1 最终验收）。
-         Step 1：真实 production cognition turn（HTTP memory-recall 面）
-                 → provider 返回 structured preference expectation
-                 → runtime 自动投影 + 注册 canonical PredictionRecord
-                 ⇒ TEST_MANUAL_PREDICTION_INSERTS = 0
-         Step 2：再走一个真实回合（消费 L7 行为基调 effect —— 它是"已观察的终止"）
-         Step 3：later 真实 HTTP POST /internal/user-reports/preference
-                 → RealityEvent → 自动 feedback dispatch → paired observation → P3 **matched**
-                 ⇒ TEST_MANUAL_FEEDBACK_CALLS = 0 · MATCHER_CALLS = 0
-         另证明：模型拒绝预测（null）⇒ 回合成功 + 0 Prediction；
-                 非法候选（maybe）⇒ 回合成功 + 0 Prediction + invalid-preference-stance；
-                 未开放 type（relational）⇒ 0 Prediction + production-type-not-enabled；
-                 旧 provider 输出 ⇒ 向后兼容；模型伪造 authority 字段 ⇒ 记录 scope/identity
-                 仍来自 runtime；同回合重放 ⇒ duplicate-turn（不重复注册）。
-         Counts：ProductionExpectations 1 · StructuredCandidates 1 · Predictions 1 ·
-                 ExplicitReports 1 · RealityEvents 1 · Dispatch 1 · Observations 1 ·
-                 Settlements 1 · calibrationCounted true。 */
+      /* P5-B3-G2 · candidate union / P1 terminal grammar / runtime event projection. */
+      ['test_structured_event_prediction_projection.js'],
+      /* P5-B3-G1/G2/K · Full Product E2E: runtime cognition creates P2 records;
+         the G2 branch holds a real D3 execution open until L5 projection binds
+         to the same request's active turn, then runs completed/timeout through
+          terminal Reality → P1/P3 → P4. K submits free-text only after the
+          candidate's explicit action through the existing preference report route.
+          Manual P2/opportunity/feedback/ledger writes remain zero. */
       ['test_prediction_error_product_e2e.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
@@ -1044,6 +1107,10 @@ equest.character.id（caller
          sync 读 res.upserts.length 抛 TypeError。
          逐端点断言解包正确 + 失败响应绝不被解包成成功（mock fetch 驱动真实 remote）。 */
       ['test_home_node_client_envelope.js'],
+      ['test_home_node_work_runs_client.js'],
+      ['test_work_mode_consent_ui.js'],
+      ['test_work_mode_workspace.js'],
+      ['test_work_mode_middle_brain.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -1124,7 +1191,9 @@ equest.character.id（caller
          role invariant / 非 anthropic wire 不变化） */
       ['test_anthropic_wire_contract.js'],
       ['test_installer.js'],
+      ['test_packaging_auto_discovery.js'],
       ['test_installer_mock.js'],
+      ['test_release_source_snapshot.js'],
       ['test_fresh_install_data_loss_guard.js'],
       ['test_recovery_engine.js'],
       ['test_p32_w5_composite_recovery_plan.js'],
@@ -2070,6 +2139,10 @@ equest.character.id（caller
           变异测试证明"canonical writer / pointer 语义变化必被发现"，而"新增无关 getter /
           改 P27 适配器不触发既有分区重签"。本阶段**零 production 变更**。纯 Node、零网络。 */
        ['test_p27_closure_guard.js'],
+       /* P27-C2 v2 candidate contract (additive proposal only): checks the
+          RealityEvent schema consumer against a separate closed source/type
+          table. It does not replace the historical P27-C2 v1 assertion. */
+       ['test_p27_c2_v2_candidate_contract.js'],
        /* P28-0 · Runtime Entry Guard（**READ-ONLY ARCHITECTURE AUDIT / EVIDENCE-FIRST /
           NO PRODUCTION MUTATION / NO NEW FOUNDATION / NO NEW MANAGER / NO EVENT BUS**）：
           冻结 P28-0 审计到的运行时事实 —— R1 `assets/js/agent-runtime.js` 是**真实存在且被 HTML
@@ -2708,6 +2781,7 @@ equest.character.id（caller
     note: 'Bridge / Active 本地服务（随机端口 + 临时数据目录）',
     tests: [
       ['test_bridge.js'],
+      ['test_chat_tool_registration_audit.js'],
       ['test_voice_runtime.js'],
       ['test_voice_streaming.js'],
       ['test_mimo_tts.js'],
@@ -2719,13 +2793,31 @@ equest.character.id（caller
          子进程验证「Voicebox offline 不影响纯文字聊天与旧 TTS 路径」。 */
       ['test_voicebox_provider.js'],
       ['test_active_http.js'],
-      /* M1-A：Home Node canonical chat authority（真实 HTTP + 临时数据目录） */
+      /* M1-A + P28-WM-P3B.3：真实 Home Node HTTP/SQLite Chat 不变量、Work Result 候选确认写入、
+         Consent 哈希绑定、Agent Memory 独立备份/跨安装恢复、store CAS 与只读 Recall。 */
       ['test_home_node_http.js'],
+      ['test_home_node_work_runs.js'],
+      ['test_agent_memory_store.js'],
+      ['test_agent_memory_cross_install.js'],
+      /* Phase 2/3A vertical Runtime uses Mock ModelPort/Middle Brain and Home Node client;
+         this does not claim a real Provider E2E. */
+      ['test_work_mode_runtime.js'],
+      ['test_app_builder_core.js'],
+      ['test_app_draft_store.js'],
       ['test_home_node_service.js'],
+      /* IB Dev Launcher v1: SQLite online backup, IndexedDB snapshot redaction,
+         one-time receiver authentication, and Dev service-directory enforcement. */
+      ['test_ib_dev_launcher.js'],
+      /* Dev/Production boundary: identity-bound writes, strict service-port discovery,
+         dedicated Active channel routing, and synthetic Vault isolation. */
+      ['test_dev_service_isolation.js'],
       /* M1-C.2d Wave 1：**执行缝**（NodeModelPort.runStream → executeCharacterTurn →
          canonical chat store）此前存在但未登记，因此从未随全量套件运行。
          它是当前唯一覆盖 Home Node 执行链真实 SSE 往返的测试。 */
       ['test_home_node_execution.js'],
+      /* P21-R4-M0 · Mobile's server execution consumer validates the shared
+         envelope, renders once, and lets the existing attribution owner verify consumption. */
+      ['test_response_guidance_mobile.js'],
       /* M1-C.2i：Middle Brain 收敛在**生产装配**上的证明。test_middle_brain_convergence.js
          自己 createExecutor，因此它证明"执行器接上执行缝之后行为正确"，不证明生产装配
          真的接上了 —— 本仓库已经因为这类缺口吃过一次亏（canonical memory 只在
@@ -2832,6 +2924,7 @@ equest.character.id（caller
                         拖动阈值、纵向让位、click vs drag、既有 viewer、键盘、
                         展开全部、多 deck 隔离、重渲染身份、390px、主题。 */
       ['test_chat_image_deck.js'],
+      ['test_resource_lifecycle_regressions.js'],
       ['test_chat_image_deck_browser.js'],
       ['test_active_diary_smoke.js'],
       ['test_moments_smoke.js'],

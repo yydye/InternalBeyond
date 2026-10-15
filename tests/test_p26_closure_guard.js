@@ -60,9 +60,10 @@ check('C3.notLoadedInHtml',
 
 /* ── C4 DB_VER 未变、无新增 store ─────────────────────────────────── */
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('C4.dbUnchanged',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
+  && require('./helpers/db-schema-authority.js').isWiredBeforeCore(HTML, COREJS)
   && ['domainEvents', 'events', 'observations', 'sessions', 'resources', 'feedback',
     'feedbackConsumption', 'wakeRequests', 'wakeRuntime', 'activationIntent', 'activationIntents',
     'activationRuntime', 'wakeHistory', 'attentionQueue', 'agentWake', 'signals', 'intentStore']

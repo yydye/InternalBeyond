@@ -225,9 +225,9 @@ check('R15b.activityRuntimeLegacyPartitionsUnchanged',
 
 /* ── R16 DB_VER / store list unchanged ──────────────────────────── */
 const COREJS = read('assets/js/core.js');
-const storeList = (COREJS.match(/\[('posts'[\s\S]*?)\]\.forEach/) || [])[1] || '';
+const storeList = require('./helpers/db-schema-authority.js').storeList;
 check('R16.dbVerAndStoresUnchanged',
-  COREJS.indexOf("DB_NAME='InternalBeyondDB',DB_VER=24") >= 0
+  require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24)
   && storeList.indexOf("'activities'") >= 0 && storeList.indexOf("'disclosureFacts'") >= 0
   && storeList.indexOf("'events'") < 0 && storeList.indexOf("'domainEvents'") < 0
   && storeList.indexOf("'activityEvents'") < 0 && storeList.indexOf("'sessions'") < 0
