@@ -3,7 +3,10 @@
 /* ══════════ ACTIVE MESSAGES ══════════ */
 const ACTIVE_SETTINGS_STORE='active_message_settings';
 const ACTIVE_HISTORY_STORE='active_message_history';
-const ACTIVE_COMPANION_URL='http://127.0.0.1:23114';
+const ACTIVE_DEV_CONFIG=window.__IB_DEV_MODE__===true?window.__IB_DEV_SERVICE_CONFIG__:null;
+const ACTIVE_COMPANION_URL=window.__IB_DEV_MODE__===true
+  ? String(ACTIVE_DEV_CONFIG&&ACTIVE_DEV_CONFIG.activeUrl||'')
+  : 'http://127.0.0.1:23114';
 let _activeTimer=null,_activeTicking=false,_activeCompanionOnline=false,_activeCompanionReady=false,_activeCompanionCheckedAt=0,_activeLastContextSync=0;
 function _recoveryActiveHeld(){
   const guarded=window.__IB_RECOVERY_FIRST_BOOT__===true||window.__IB_RECOVERY_ACTIVE_HOLD__===true||window.__IB_RECOVERY_BOOT_BLOCKED__===true;
@@ -1157,7 +1160,7 @@ async function _understandingAndThreadTick(){
     _understandingWaterline=Date.now()
   }catch(e){console.warn('[Understanding+Thread] tick '+String(e&&e.message||e).slice(0,120))}
 }
-/* ── 后台 AI 调度总开关 + 休眠时段（DIY 设置）──
+/* ── 后台 AI 调度总开关 + 休眠时段（Settings Center · 通用）──
    全局配置存 apiSettings['bgAi'] = { enabled, sleepStart, sleepEnd }。
    - enabled=false → 停止一切"唤醒 AI"的后台服务（主动消息/AI计划/日记/角色信件/记忆），
      朋友圈（moments）作为消耗小的例外仍运行。
@@ -1254,6 +1257,13 @@ async function _activeCompanionRequest(path,opts){
   opts=opts||{};const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),opts.timeout||2500);
   try{
     const headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
+    if(window.__IB_DEV_MODE__===true){
+      const dev=ACTIVE_DEV_CONFIG||{};
+      if(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(ACTIVE_COMPANION_URL)||dev.mode!=='dev'&&dev.mode!=='synthetic'
+        ||!dev.sessionToken||!dev.instanceId)throw new Error('dev-service-config-unavailable');
+      headers['X-IB-Dev-Session']=String(dev.sessionToken);
+      headers['X-IB-Dev-Instance']=String(dev.instanceId);
+    }
     const res=await fetch(ACTIVE_COMPANION_URL+path,{method:opts.method||'GET',headers:headers,body:opts.body==null?undefined:JSON.stringify(opts.body),signal:ac.signal,cache:'no-store'});
     const raw=await res.text();
     if(!res.ok){

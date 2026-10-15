@@ -7,8 +7,13 @@
 'use strict';
 
 function ibBridgeBase(){
+  if(window.__IB_DEV_MODE__===true){
+    var dev=window.__IB_DEV_SERVICE_CONFIG__;
+    return dev&&(dev.mode==='dev'||dev.mode==='synthetic')&&/^https?:\/\/127\.0\.0\.1:\d+$/.test(String(dev.bridgeUrl||''))
+      ? String(dev.bridgeUrl).replace(/\/+$/,'') : '';
+  }
   try{ var v=localStorage.getItem('ib_bridge_http'); if(v) return String(v).replace(/\/+$/,''); }catch(e){}
-  return 'http://127.0.0.1:23115';
+  return 'http://127.0.0.1:' + String(window.__IB_BRIDGE_PORT__ || 23115);
 }
 window.ibBridgeBase = ibBridgeBase;
 
@@ -19,6 +24,7 @@ window.ibBridgeBase = ibBridgeBase;
  * keeps LAN mode compatible without leaking a token into history or logs.
  */
 function ibBridgeToken(){
+  if(window.__IB_DEV_MODE__===true)return '';
   try{
     if(typeof IBNET!=='undefined' && IBNET && typeof IBNET.cfg==='function'){
       return String(IBNET.cfg().token||'').trim();
@@ -29,6 +35,16 @@ function ibBridgeToken(){
 function ibBridgeFetch(input, options){
   var opt=options?Object.assign({},options):{};
   var token=ibBridgeToken();
+  if(window.__IB_DEV_MODE__===true){
+    var dev=window.__IB_DEV_SERVICE_CONFIG__;
+    if(!dev||!dev.sessionToken||!dev.instanceId)return Promise.reject(new Error('dev-service-config-unavailable'));
+    if(typeof Headers==='function'){
+      var devHeaders=new Headers(opt.headers||{});
+      devHeaders.set('X-IB-Dev-Session',String(dev.sessionToken));
+      devHeaders.set('X-IB-Dev-Instance',String(dev.instanceId));
+      opt.headers=devHeaders;
+    }else opt.headers=Object.assign({},opt.headers||{}, {'X-IB-Dev-Session':String(dev.sessionToken),'X-IB-Dev-Instance':String(dev.instanceId)});
+  }
   if(token){
     /* `Headers` is available in modern browsers, but keeping a plain-object
        fallback preserves direct-file use in older embedded WebViews. */
@@ -45,6 +61,11 @@ function ibBridgeFetch(input, options){
 function ibBridgeAssetUrl(pathname){
   return ibBridgeBase()+pathname;
 }
+function ibBridgeReleaseAudio(url, owned){
+  if(owned!==true||typeof url!=='string'||url.indexOf('blob:')!==0)return false;
+  try{URL.revokeObjectURL(url);return true}catch(e){return false}
+}
+window.ibBridgeReleaseAudio=ibBridgeReleaseAudio;
 function ibBridgeLoadImage(img, pathname, fallbackPath){
   if(!img)return;
   /* img/audio HTML elements cannot attach Authorization. Fetching protected
@@ -67,8 +88,20 @@ function ibBridgeLoadAudio(pathname, done, failed){
   ibBridgeFetch(ibBridgeAssetUrl(pathname),{cache:'no-store'}).then(function(r){
     if(!r.ok)throw new Error('asset '+r.status);
     return r.blob();
-  }).then(function(blob){ done(URL.createObjectURL(blob),true); }).catch(function(NS){ if(failed)failed(); });
+  }).then(function(blob){
+    var objectUrl=URL.createObjectURL(blob);
+    try{
+      if(typeof done!=='function')throw new TypeError('audio callback unavailable');
+      done(objectUrl,true);
+    }catch(error){
+      ibBridgeReleaseAudio(objectUrl,true);
+      throw error;
+    }
+  }).catch(function(){ if(failed)failed(); });
 }
+/* Expose the same callback-compatible loader used by Bridge-owned callers.
+   Credentials stay inside ibBridgeFetch; this does not expose the token. */
+window.ibBridgeLoadAudio=ibBridgeLoadAudio;
 /* R19/§3.14：token 读取器必须与它的兄弟一样是**全局**的。
    ibBridgeBase(:13) 与 ibBridgeFetch(:72) 都已发布到 window，但 ibBridgeToken
    一直留在 IIFE 私有作用域里，而 communication/call.js:17 用
@@ -105,7 +138,8 @@ function ibNetDefaults(){
   try{
     if(typeof IBNET==='undefined')return;
     var c=IBNET.cfg();
-    if(!c.url){ c.url='ws://127.0.0.1:23115'; IBNET.save(c); }
+    if(window.__IB_DEV_MODE__===true){var base=ibBridgeBase();if(base)c.url=base.replace(/^http:/,'ws:').replace(/^https:/,'wss:');IBNET.save(c);return;}
+    if(!c.url){ c.url='ws://127.0.0.1:' + String(window.__IB_BRIDGE_PORT__ || 23115); IBNET.save(c); }
   }catch(e){}
 }
 
@@ -190,8 +224,15 @@ function ibAddStickerButtons(){
     var btn=document.createElement('button');
     btn.type='button';btn.className='ib-sticker-btn';btn.textContent='◉';
     btn.title='表情（需 Bridge 已启动）';
+    if(id==='chat-full-input'){
+      btn.classList.add('btn');
+      btn.setAttribute('data-icon-only','true');
+      btn.setAttribute('aria-label','表情');
+    }
     btn.onclick=function(ev){ ev.preventDefault();ev.stopPropagation();ibStickerPop(btn,inp); };
-    inp.parentNode.insertBefore(btn,inp);
+    var composer=inp.closest&&inp.closest('.chat-input-area')||inp.parentNode;
+    var anchor=inp.closest&&inp.closest('.chat-composer-field')||inp;
+    composer.insertBefore(btn,anchor);
   });
 }
 
@@ -729,6 +770,7 @@ function ibLoadStatus(){
 /* ---------- AI 语音气泡 ---------- */
 var _ibTtsAudio=null;
 var _ibTtsQueue=[];var _ibTtsQueueBusy=false;
+var _ibTtsQueueEpoch=0,_ibTtsSessionSeq=0,_ibTtsSession=null;
 var _ibTtsMaxLen=800;/* 单次 TTS 文本最大字符数 */
 /* 统一 wire payload：角色 Voice Profile → /api/tts 请求体的唯一组装点。
    旧五个字段（text/voice/provider/rate/pitch）的取值与回退保持历史行为逐字节一致；
@@ -773,7 +815,7 @@ function ibAttachTts(root){
     btn.onclick=function(ev){ ev.stopPropagation(); ibTtsSpeak(bubble,btn,vc); };
     bubble.appendChild(btn);
     if(vc.autoPlay){
-      setTimeout(function(NS){ try{ if(bubble.isConnected&&btn.isConnected)_ibTtsEnqueue(bubble,btn,vc); }catch(e){} },1200);
+      setTimeout(function(NS){ try{ var page=bubble.closest?bubble.closest('.page'):null;if(page&&!page.classList.contains('active'))return;if(bubble.isConnected&&btn.isConnected)_ibTtsEnqueue(bubble,btn,vc); }catch(e){} },1200);
     }
   });
 }
@@ -801,8 +843,80 @@ function _ibGetCharVoice(bubble){
 
 function ibTtsSpeak(bubble,btn,vc){
   /* 用户手动点击 → 清空队列立即播放 */
-  _ibTtsQueue=[];_ibTtsQueueBusy=false;
-  _ibTtsSpeakImpl(bubble,btn,vc,null);
+  _ibTtsQueue=[];_ibTtsQueueBusy=false;_ibTtsQueueEpoch++;
+  var onStatus=function(state){_ibTtsApplyChatExpression(bubble,state)};
+  var session=_ibTtsStartSession(bubble,btn,onStatus,null);
+  _ibTtsSpeakImpl(bubble,btn,vc,null,onStatus,null,true,null,session);
+}
+
+/* Reuse the same Voice/TTS path for text hosts outside Chat's canonical
+   message renderer. The caller owns its message protocol and UI state. */
+function ibTtsSpeakText(text,voice,bubble,btn,onStatus,control){
+  if(!bubble||typeof bubble.querySelector!=='function'||!btn)return false;
+  if(control&&control.cancelled===true)return false;
+  _ibTtsQueue=[];_ibTtsQueueBusy=false;_ibTtsQueueEpoch++;
+  var session=_ibTtsStartSession(bubble,btn,onStatus,control);
+  _ibTtsSpeakImpl(bubble,btn,voice,null,onStatus,String(text==null?'':text),false,control,session);
+  return true;
+}
+
+function _ibTtsWithin(root,node){return !root||!!(root&&(root===node||(root.contains&&root.contains(node))))}
+function _ibTtsApplyChatExpression(bubble,status){
+  try{
+    if(!bubble||!bubble.classList||!bubble.classList.contains('chat-msg')||!bubble.dataset)return;
+    var raw=String(status||''),presented=(raw==='generating'||raw==='loading'?'thinking':(raw==='playing'?'speaking':(raw==='paused'||raw==='interrupted'?'interrupted':(raw==='failed'?'error':'idle'))));
+    bubble.dataset.voiceStatus=presented;
+    if(!bubble.dataset.msgId)return;
+    var roleId=String(bubble.dataset.senderId||'');
+    if(!roleId||roleId==='_user_'||!window.IBExpressionPacks||typeof window.IBExpressionPacks.decorateMessage!=='function')return;
+    var map={generating:'typingExpression',loading:'typingExpression',playing:'voiceExpression',paused:'neutralExpression',interrupted:'neutralExpression',failed:'errorExpression'};
+    var textHost=bubble.querySelector('.r-text'),options={text:String(textHost&&textHost.textContent||'')};
+    if(map[String(status||'')])options.stateOverride=map[String(status)];
+    window.IBExpressionPacks.decorateMessage(roleId,bubble.dataset.msgId,bubble,options);
+  }catch(e){}
+}
+function _ibTtsNotify(session,state,allowCancelled){
+  if(!session||(!allowCancelled&&(session.cancelled||_ibTtsSession!==session)))return;
+  try{if(typeof session.onStatus==='function')session.onStatus(String(state||''))}catch(e){}
+}
+function _ibTtsCancelSession(session,state){
+  if(!session||session.cancelled||session.completed)return false;
+  session.cancelled=true;
+  if(session.control)session.control.cancelled=true;
+  if(session.abortController)try{session.abortController.abort()}catch(e){}
+  if(session.audio)try{session.audio.pause()}catch(e){}
+  if(session.vmElement&&window._vmPlayingEl===session.vmElement&&typeof window._vmStopAudio==='function')try{window._vmStopAudio()}catch(e){}
+  if(session.fallback&&window.speechSynthesis)try{window.speechSynthesis.cancel()}catch(e){}
+  if(session.bar&&session.bar.classList)session.bar.classList.remove('playing');
+  if(session.button&&session.button.classList)session.button.classList.remove('playing');
+  _ibTtsNotify(session,state||'interrupted',true);
+  if(_ibTtsSession===session)_ibTtsSession=null;
+  return true;
+}
+function _ibTtsStartSession(bubble,btn,onStatus,control){
+  if(_ibTtsSession)_ibTtsCancelSession(_ibTtsSession,'interrupted');
+  try{if(window._vmAudio&&typeof window._vmStopAudio==='function')window._vmStopAudio()}catch(e){}
+  try{Array.prototype.forEach.call(document.querySelectorAll('.ib-tts-bar'),function(bar){if(bar&&bar._au&&!bar._au.paused){bar._au.pause();bar.classList.remove('playing')}})}catch(e){}
+  var session={id:++_ibTtsSessionSeq,bubble:bubble,button:btn||null,onStatus:onStatus||null,control:control||null,
+    cancelled:false,completed:false,audio:null,bar:null,vmElement:null,fallback:false,abortController:null};
+  try{if(typeof AbortController==='function')session.abortController=new AbortController()}catch(e){}
+  _ibTtsSession=session;
+  return session;
+}
+function ibTtsStopVoicePlayback(root){
+  var stopped=false,session=_ibTtsSession;
+  if(session&&_ibTtsWithin(root,session.bubble))stopped=_ibTtsCancelSession(session,'interrupted')||stopped;
+  var before=_ibTtsQueue.length;
+  _ibTtsQueue=_ibTtsQueue.filter(function(item){return !_ibTtsWithin(root,item&&item.bubble)});
+  if(_ibTtsQueue.length!==before){_ibTtsQueueEpoch++;stopped=true;}
+  if(root&&root.querySelectorAll){
+    Array.prototype.forEach.call(root.querySelectorAll('.ib-tts-bar'),function(bar){
+      var audio=bar&&bar._au;
+      if(audio&&!audio.paused&&!audio.ended){try{audio.pause();}catch(e){}bar.classList.remove('playing');stopped=true;}
+    });
+  }
+  if(!_ibTtsQueue.length)_ibTtsQueueBusy=false;
+  return stopped;
 }
 
 function _ibTtsEnqueue(bubble,btn,vc){
@@ -816,54 +930,68 @@ function _ibTtsDequeue(){
   var item=_ibTtsQueue.shift();
   var bubble=item.bubble,btn=item.btn,vc=item.vc;
   if(!bubble||!bubble.isConnected){_ibTtsDequeue();return}
+  var session=_ibTtsStartSession(bubble,btn,function(state){_ibTtsApplyChatExpression(bubble,state)},null);
+  var queueEpoch=_ibTtsQueueEpoch;
   _ibTtsSpeakImpl(bubble,btn,vc,function(){
-    setTimeout(_ibTtsDequeue,800);
-  });
+    if(session.cancelled||queueEpoch!==_ibTtsQueueEpoch)return;
+    session.completed=true;
+    setTimeout(function(){if(queueEpoch===_ibTtsQueueEpoch)_ibTtsDequeue()},800);
+  },function(state){_ibTtsApplyChatExpression(bubble,state)},null,true,null,session);
 }
 
-function _ibTtsSpeakImpl(bubble,btn,vc,done){
+function _ibTtsSpeakImpl(bubble,btn,vc,done,onStatus,textOverride,persistVoice,control,session){
+  var reportStatus=function(state){if(session&&String(state||'')==='playing')session.completed=false;_ibTtsNotify(session,String(state||''));};
+  var isCancelled=function(){return !!((control&&control.cancelled===true)||(session&&(session.cancelled||_ibTtsSession!==session)))};
   var txt=bubble.querySelector('.r-text');
-  var text=txt?String(txt.innerText||txt.textContent||''):'';
+  var text=textOverride==null?(txt?String(txt.innerText||txt.textContent||''):''):String(textOverride);
   text=text.replace(/\[(sticker|music):[^\]]+\]/g,'').trim();
-  if(!text){ if(done)done(); return; }
+  if(!text){ reportStatus('failed');if(done)done();return; }
   text=text.slice(0,_ibTtsMaxLen);
+  if(isCancelled())return;
+  reportStatus('generating');
   var url=bubble.dataset.ibTtsUrl;
   if(url){
-    ibBridgeLoadAudio(url,function(audioUrl,revoke){ _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke); },function(){ ibTtsFallback(text,btn);if(done)done(); });
+    reportStatus('loading');
+    ibBridgeLoadAudio(url,function(audioUrl,revoke){ if(isCancelled()){if(revoke)try{URL.revokeObjectURL(audioUrl)}catch(e){}return} _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke,reportStatus,persistVoice===false,control,session); },function(){ if(isCancelled())return;ibTtsFallback(text,btn,null,reportStatus,session,done); });
     return;
   }
   if(btn)btn.classList.add('playing');
   var vcSafe=vc||_ibGetCharVoice(bubble)||{};
-  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ibTtsPayload(vcSafe,text))}).then(function(r){return r.json()}).then(async function(j){
+  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ibTtsPayload(vcSafe,text)),signal:session&&session.abortController?session.abortController.signal:undefined}).then(function(r){return r.json()}).then(async function(j){
+    if(isCancelled())return;
     if(j&&j.ok){
       bubble.dataset.ibTtsUrl=j.url;
       /* P23 Phase 1：语音合成成功 ⇒ 把这条 assistant 消息升级为**一级 voice message**
          （transcript + 音源 + duration + provenance）。失败不写、不伪装、不动 content。 */
       var owned=null;
-      try{ owned=await _ibPersistAiVoice(bubble,j,text); }catch(e){ owned=null }
+      if(persistVoice!==false){ try{ owned=await _ibPersistAiVoice(bubble,j,text); }catch(e){ owned=null } }
+      if(isCancelled())return;
       if(owned&&owned.el){
         /* 原生 voice message 已落地：由**气泡自己**控制播放（永久 UI），
            绝不再创建 live 播放条 —— 同一消息只允许存在一个语音 UI。 */
         if(btn)btn.remove();
-        _vmTogglePlay(owned.el,owned.voice,done||null);
+        if(session)session.vmElement=owned.el;
+        _vmTogglePlay(owned.el,owned.voice,function(){if(session)session.completed=true;if(done)done();},reportStatus);
         return;
       }
       /* 记录不适合换气泡（富文本 / 落库失败）⇒ 保持既有的临时播放条路径（旧行为逐字不变）。 */
-      ibBridgeLoadAudio(j.url,function(audioUrl,revoke){ _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke); },function(){ if(btn)btn.classList.remove('playing');ibTtsFallback(text,btn);if(done)done(); });
+      reportStatus('loading');
+      ibBridgeLoadAudio(j.url,function(audioUrl,revoke){ if(isCancelled()){if(revoke)try{URL.revokeObjectURL(audioUrl)}catch(e){}return} _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke,reportStatus,persistVoice===false,control,session); },function(){ if(isCancelled())return;if(btn)btn.classList.remove('playing');ibTtsFallback(text,btn,{message:'音频加载失败'},reportStatus,session,done); });
     }else{
       if(btn)btn.classList.remove('playing');
       /* P23 Phase 1.1：本地运行时（Voicebox）失败 ⇒ **明确失败**，绝不代读 ——
          用系统语音念出来等于静默切换到另一个 provider，掩盖本地运行时的故障。
          其它来源保持历史行为（Bridge TTS 失败时降级到浏览器自带语音）。 */
-      if(_ibTtsLocalRuntimeSource(vcSafe)){ ibErrLocal('tts',{message:String((j&&j.error)||'语音生成失败')},ibRetryBtn(btn),{reason:'local_runtime'}); }
-      else ibTtsFallback(text,btn,{message:String((j&&j.error)||'语音生成失败')});
-      if(done)done();
+      if(_ibTtsLocalRuntimeSource(vcSafe)){ reportStatus('failed');ibErrLocal('tts',{message:String((j&&j.error)||'语音生成失败')},ibRetryBtn(btn),{reason:'local_runtime'}); }
+      else ibTtsFallback(text,btn,{message:String((j&&j.error)||'语音生成失败')},reportStatus,session,done);
+      if(_ibTtsLocalRuntimeSource(vcSafe)&&done)done();
     }
   }).catch(function(NS){
+    if(isCancelled())return;
     if(btn)btn.classList.remove('playing');
-    if(_ibTtsLocalRuntimeSource(vcSafe)){ ibErrLocal('tts',NS,ibRetryBtn(btn),{reason:'local_runtime'}); }
-    else ibTtsFallback(text,btn,NS);
-    if(done)done();
+    if(_ibTtsLocalRuntimeSource(vcSafe)){ reportStatus('failed');ibErrLocal('tts',NS,ibRetryBtn(btn),{reason:'local_runtime'}); }
+    else ibTtsFallback(text,btn,NS,reportStatus,session,done);
+    if(_ibTtsLocalRuntimeSource(vcSafe)&&done)done();
   });
 }
 /* 该角色的语音来源是否是不可替代的**本地运行时**（目前只有 Voicebox）。
@@ -1002,25 +1130,39 @@ function _ibSwapLiveVoiceBubble(msgId,voice){
   return { el:bar, voice:voice };
 }
 
-function _ibTtsPlayQ(bubble,btn,url,done,revokeUrl){
+function _ibTtsPlayQ(bubble,btn,url,done,revokeUrl,onStatus,preserveButton,control,session){
+  if((control&&control.cancelled===true)||(session&&(session.cancelled||_ibTtsSession!==session))){if(revokeUrl)try{URL.revokeObjectURL(url)}catch(e){}return}
+  var reportStatus=function(state){try{if(typeof onStatus==='function')onStatus(String(state||''))}catch(e){}};
   var old=bubble.querySelector('.ib-tts-bar');
   if(old){ try{if(old._ibObjectUrl)URL.revokeObjectURL(old._ibObjectUrl)}catch(e){} old.remove(); }
   var bar=ibTtsBar(url,'');
   if(revokeUrl)bar._ibObjectUrl=url;
   bar.classList.add('ib-tts-bar');
-  if(btn)btn.remove();
+  if(session){session.bar=bar;session.audio=bar._au;}
+  if(btn&&preserveButton!==true)btn.remove();
   bubble.appendChild(bar);
+  var audio=bar._au;
+  if(onStatus&&audio&&typeof audio.addEventListener==='function'){
+    audio.addEventListener('playing',function(){reportStatus('playing')});
+    audio.addEventListener('pause',function(){reportStatus(audio.ended?'ended':'paused')});
+    audio.addEventListener('ended',function(){reportStatus('ended')});
+    audio.addEventListener('error',function(){reportStatus('failed')});
+  }
   var origEnd=bar._au.onended;
   bar._au.onended=function(){
     bar.classList.remove('playing');
     if(origEnd)origEnd();
-    if(done)done();
+    reportStatus('ended');
+    if(session)session.completed=true;
+    if(done&&(!session||!session.cancelled))done();
   };
   bar._au.onerror=function(){
     bar.classList.remove('playing');
-    if(done)done();
+    reportStatus('failed');
+    if(session)session.completed=true;
+    if(done&&(!session||!session.cancelled))done();
   };
-  bar._au.play().then(function(NS){ bar.classList.add('playing'); }).catch(function(NS){ if(done)done(); });
+  bar._au.play().then(function(NS){ if((control&&control.cancelled===true)||(session&&(session.cancelled||_ibTtsSession!==session))){try{bar._au.pause()}catch(e){}return}bar.classList.add('playing');reportStatus('playing'); }).catch(function(NS){ if((control&&control.cancelled===true)||(session&&(session.cancelled||_ibTtsSession!==session)))return;reportStatus('failed');if(session)session.completed=true;if(done)done(); });
 }
 
 function ibTtsBar(url,text){
@@ -1049,22 +1191,30 @@ function ibTtsBar(url,text){
   return el;
 }
 
-function ibTtsFallback(text,btn,err){
+function ibTtsFallback(text,btn,err,onStatus,session,onComplete){
   try{
+    if(session&&(session.cancelled||_ibTtsSession!==session))return;
     if(typeof speechSynthesis!=='undefined'&&speechSynthesis){
       speechSynthesis.cancel();
       var u=new SpeechSynthesisUtterance(text);
       u.lang='zh-CN';u.rate=1;
+      if(session){session.fallback=true;session.utterance=u;}
+      var reportStatus=function(state){try{if(typeof onStatus==='function')onStatus(String(state||''))}catch(e){}};
+      var finish=function(state){if(session&&(session.cancelled||_ibTtsSession!==session))return;reportStatus(state);if(session)session.completed=true;if(onComplete)onComplete();};
+      u.onstart=function(){if(session&&(session.cancelled||_ibTtsSession!==session))return;reportStatus('playing')};
+      u.onend=function(){finish('ended')};
+      u.onerror=function(){finish('failed')};
       if(btn){
         btn.classList.add('playing');
-        u.onend=function(){ btn.classList.remove('playing'); };
-        u.onerror=function(){ btn.classList.remove('playing'); };
+        var onEnd=u.onend,onError=u.onerror;
+        u.onend=function(){btn.classList.remove('playing');if(onEnd)onEnd()};
+        u.onerror=function(){btn.classList.remove('playing');if(onError)onError()};
       }
       speechSynthesis.speak(u);
       /* P3：普通提示只说「语音生成失败，不影响文字聊天」，Bridge 原始原因进详情 */
       ibErrLocal('tts',err,ibRetryBtn(btn));
-    }else ibErrLocal('tts',err,ibRetryBtn(btn));
-  }catch(e){ ibErrLocal('tts',e,ibRetryBtn(btn)); }
+    }else{try{if(typeof onStatus==='function')onStatus('failed')}catch(e){}if(session)session.completed=true;if(onComplete)onComplete();ibErrLocal('tts',err,ibRetryBtn(btn));}
+  }catch(e){ try{if(typeof onStatus==='function')onStatus('failed')}catch(ignored){}if(session)session.completed=true;if(onComplete)onComplete();ibErrLocal('tts',e,ibRetryBtn(btn)); }
 }
 
 /* ---------- VoiceClone Reference Audio（第三阶段 B1：文件基础设施） ----------
@@ -1315,6 +1465,8 @@ else setTimeout(ibBoot,0);
 NS.expose('bridge', {
   mounted: true,
   ttsPayload: _ibTtsPayload,
+  speakText: ibTtsSpeakText,
+  stopVoicePlayback: ibTtsStopVoicePlayback,
   /* P23 Phase 2D：delivery-time voice 物化需要这两个**同一实现**的助手 ——
      inline 体积上限判定（INLINE_MAX_BYTES）与真实时长探测都住在它们里面，
      绝不在别处复制第二份（本阶段只把它们从私有提升为可复用，行为一字未改）。 */

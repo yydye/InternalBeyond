@@ -751,6 +751,8 @@ function createEconomyCommandClient(options) {
   options = options || {};
   const base = String(options.base || '').replace(/\/+$/, '');
   const token = String(options.token || '');
+  const requestHeaders = options.requestHeaders && typeof options.requestHeaders === 'object'
+    ? Object.freeze(Object.assign({}, options.requestHeaders)) : Object.freeze({});
   const timeoutMs = Math.max(250, Math.min(30000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS));
   const requested = Number(options.maxAttempts) || DEFAULT_MAX_ATTEMPTS;
   const maxAttempts = Math.max(1, Math.min(HARD_MAX_ATTEMPTS, Math.floor(requested)));
@@ -839,11 +841,11 @@ function createEconomyCommandClient(options) {
       try {
         const init = {
           method: 'POST',
-          headers: {
+          headers: Object.assign({}, requestHeaders, {
             'Content-Type': 'application/json',
             'X-IB-Protocol': '1',
             'X-IB-Economy-Channel-Source': token
-          },
+          }),
           cache: 'no-store',
           body: body
         };

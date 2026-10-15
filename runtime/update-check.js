@@ -111,6 +111,9 @@ const NETWORK_KINDS = transport.NETWORK_KINDS;
  */
 function updateDir() {
   if (process.env.IB_UPDATE_DIR) return path.resolve(String(process.env.IB_UPDATE_DIR));
+  if (process.env.IB_DEV_MODE === '1' && process.env.IB_DEV_SANDBOX_ROOT) {
+    return path.resolve(process.env.IB_DEV_SANDBOX_ROOT);
+  }
   if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
     return path.join(process.env.LOCALAPPDATA, 'InternalBeyond');
   }
