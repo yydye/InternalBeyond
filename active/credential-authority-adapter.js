@@ -10,9 +10,8 @@
  * Safety invariant:
  * - Never calls vault.get(), vault.all(), vault.upsert(), vault.save(),
  *   vault.remove(), or vault.migrateFromState().
- * - Refuses to call vault.load() when the key/vault prerequisites are absent
- *   or the key material is malformed, because the v1 loader can create a key
- *   through ensureKey().
+ * - Refuses to treat malformed or undecryptable Vault material as empty, and
+ *   checks the Vault's read-only health status after load().
  * - Never returns provider, endpoint, model, secret, fingerprint, or cipher
  *   material. The v1 vault has no capability metadata contract.
  */
@@ -49,6 +48,7 @@ function createDesktopCredentialAuthorityAdapter(options) {
   const keyFile = dataDir ? path.join(dataDir, 'credential-vault.key') : '';
   const dataFile = dataDir ? path.join(dataDir, 'credential-vault.json') : '';
   let state = 'uninitialized';
+  let stateErrorCode = null;
   let vault = null;
 
   function safeFileState() {
@@ -66,7 +66,9 @@ function createDesktopCredentialAuthorityAdapter(options) {
       }
       keyText = String(fs.readFileSync(keyFile, 'utf8')).trim();
       const keyBytes = Buffer.from(keyText, 'base64');
-      if (keyBytes.length !== 32) {
+      const keyValid = keyBytes.length === 32 && keyBytes.toString('base64') === keyText;
+      keyBytes.fill(0);
+      if (!keyValid) {
         return { ok: false, errorCode: 'VAULT_KEY_INVALID' };
       }
       envelopeText = String(fs.readFileSync(dataFile, 'utf8'));
@@ -85,6 +87,7 @@ function createDesktopCredentialAuthorityAdapter(options) {
     const material = safeFileState();
     if (!material.ok) {
       state = 'unavailable';
+      stateErrorCode = material.errorCode;
       return state;
     }
     try {
@@ -94,15 +97,18 @@ function createDesktopCredentialAuthorityAdapter(options) {
        */
       vault = createCredentialVault({ dataDir });
       vault.load();
-      /*
-       * v1 load() intentionally swallows authentication/decryption errors.
-       * An empty result for a non-empty encrypted envelope is therefore not
-       * safe to call missing; preserve it as UNKNOWN.
-       */
+      const vaultStatus = typeof vault.status === 'function' ? vault.status() : { ok: true };
+      if (!vaultStatus.ok) {
+        stateErrorCode = vaultStatus.errorCode || 'VAULT_UNAVAILABLE';
+        vault = null;
+        state = 'unavailable';
+        return state;
+      }
       state = vault.count() > 0 ? 'ready' : 'unknown';
       return state;
     } catch (_) {
       vault = null;
+      stateErrorCode = 'AUTHORITY_UNAVAILABLE';
       state = 'unavailable';
       return state;
     }
@@ -123,7 +129,7 @@ function createDesktopCredentialAuthorityAdapter(options) {
 
     const loaded = ensureLoaded();
     if (loaded === 'unavailable') {
-      return statusProjection(bindingId, 'unavailable', { errorCode: 'AUTHORITY_UNAVAILABLE' });
+      return statusProjection(bindingId, 'unavailable', { errorCode: stateErrorCode || 'AUTHORITY_UNAVAILABLE' });
     }
     if (loaded === 'unknown' || !vault) {
       return statusProjection(bindingId, 'unknown', { errorCode: 'AUTHORITY_STATE_UNKNOWN' });

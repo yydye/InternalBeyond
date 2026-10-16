@@ -315,8 +315,16 @@ const serviceControl = require('../runtime/service-control.js');
 let activeStopping = false;
 const activeStopDispatch = serviceControl.createStopDispatch({
   service: 'internal-beyond-active-messages',
-  authorize: request => devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin)
-    ? null : { status: 403, error: 'environment-identity-mismatch' },
+  authorize: request => {
+    /* The shared stop surface retains file:// compatibility for other local
+       components. Active's unauthenticated CORS policy does not: an opaque
+       remote iframe must not be able to stop this service before normal CORS. */
+    if (String(request && request.headers && request.headers.origin || '') === 'null') {
+      return { status: 403, error: 'origin-denied' };
+    }
+    return devServiceContract.authorizeRequestIdentity(request, process.env, DEV_IDENTITY.webOrigin)
+      ? null : { status: 403, error: 'environment-identity-mismatch' };
+  },
   stop: () => activeTeardown('http'),
   /* The dispatch owns the ENDING, uniformly for every component: run the
      teardown, then close the listener bounded, then exit. Before this the

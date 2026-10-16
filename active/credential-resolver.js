@@ -5,8 +5,8 @@
  *
  * This is a read-only bridge, not a second credential store. The caller must
  * hold the returned apiKey only for one provider request and must not cache or
- * persist it. File preflight is required because credential-vault.load() can
- * create a new key when its key file is missing or malformed.
+ * persist it. File preflight and the Vault status check ensure a damaged or
+ * missing key never causes this read path to create replacement key material.
  */
 
 const fs = require('fs');
@@ -59,6 +59,7 @@ function createCredentialResolver(options) {
       /* Preflight guarantees ensureKey() takes its existing-key read path. */
       const vault = createCredentialVault({ dataDir });
       vault.load();
+      if (typeof vault.status === 'function' && !vault.status().ok) return null;
       const credential = vault.get(id);
       if (!credential || typeof credential.apiKey !== 'string' || !credential.apiKey.trim()) return null;
       const provider = String(credential.provider || '').trim().toLowerCase();

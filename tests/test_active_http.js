@@ -19,19 +19,21 @@ function check(name, cond, extra) {
   else { failures++; console.error(`✖ ${name}${extra ? ' — ' + JSON.stringify(extra) : ''}`); }
 }
 
-function req(method, urlPath, body) {
+function req(method, urlPath, body, extraHeaders, portOverride) {
   return new Promise((resolve, reject) => {
     const data = body == null ? null : JSON.stringify(body);
-    const r = http.request(BASE + urlPath, {
+    const headers = Object.assign(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}, extraHeaders || {});
+    const base = 'http://127.0.0.1:' + String(portOverride || PORT);
+    const r = http.request(base + urlPath, {
       method,
-      headers: data ? { 'Content-Type': 'application/json' } : {}
+      headers
     }, res => {
       let raw = '';
       res.on('data', c => raw += c);
       res.on('end', () => {
         let parsed = null;
         try { parsed = raw ? JSON.parse(raw) : {}; } catch (_) { parsed = { raw }; }
-        resolve({ status: res.statusCode, body: parsed });
+        resolve({ status: res.statusCode, body: parsed, allowOrigin: res.headers['access-control-allow-origin'] || null });
       });
     });
     r.on('error', reject);
@@ -76,11 +78,11 @@ const TASK_SNAPSHOT = {
   character: { id: 'char_http', provider: 'openai', apiKey: 'sk-http', model: 'm', endpoint: 'https://example.invalid/v1/chat/completions' }
 };
 
-async function waitForHealth(timeoutMs) {
+async function waitForHealth(timeoutMs, portOverride) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const r = await req('GET', '/health');
+      const r = await req('GET', '/health', null, null, portOverride);
       if (r.status === 200 && r.body.ok) return r.body;
     } catch (_) {}
     await new Promise(r => setTimeout(r, 200));
@@ -92,6 +94,8 @@ async function waitForHealth(timeoutMs) {
   const child = spawn(process.execPath, ['services/active-message-service.js'], {
     env: {
       ...process.env,
+      IB_DEV_MODE: '',
+      IB_DEV_SYNTHETIC: '',
       IB_ACTIVE_PORT: String(PORT),
       IB_ACTIVE_START_DELAY_MS: '500',
       IB_ACTIVE_DATA_DIR: DATA_DIR
@@ -106,6 +110,81 @@ async function waitForHealth(timeoutMs) {
     const health = await waitForHealth(15000);
     check('companion 启动并响应 /health', !!health, { childOut: childOut.slice(-500) });
     if (!health) { failures++; return; }
+
+    const opaqueGet = await req('GET', '/health', null, { Origin: 'null' });
+    check('Origin:null GET is rejected without ACAO', opaqueGet.status === 403 && opaqueGet.allowOrigin === null);
+    const opaquePreflight = await req('OPTIONS', '/credentials', null, {
+      Origin: 'null', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type'
+    });
+    check('Origin:null credential preflight is rejected', opaquePreflight.status === 403 && opaquePreflight.allowOrigin === null);
+    const opaqueCredential = await req('POST', '/credentials', {
+      credentials: [{ credentialRef: 'synthetic-opaque-role', provider: 'test', apiKey: 'SYNTHETIC_P0_ONLY' }]
+    }, { Origin: 'null', 'Content-Type': 'application/json' });
+    check('Origin:null cannot write a Credential binding', opaqueCredential.status === 403 && opaqueCredential.allowOrigin === null);
+    const opaqueStop = await req('POST', '/__shutdown', null, { Origin: 'null' });
+    check('Origin:null cannot bypass CORS via the stop pre-dispatch', opaqueStop.status === 403);
+    const noOriginProbe = await req('GET', '/health');
+    check('Native no-Origin probe remains usable without a CORS grant', noOriginProbe.status === 200 && noOriginProbe.allowOrigin === null);
+    const loopbackProbe = await req('GET', '/health', null, { Origin: 'http://127.0.0.1:23120' });
+    check('Product loopback Origin remains allowed', loopbackProbe.status === 200 && loopbackProbe.allowOrigin === 'http://127.0.0.1:23120');
+    const foreignLoopbackProbe = await req('GET', '/health', null, { Origin: 'http://127.0.0.1:23121' });
+    check('Unregistered loopback web Origin is rejected', foreignLoopbackProbe.status === 403 && foreignLoopbackProbe.allowOrigin === null);
+    const tauriProbe = await req('GET', '/health', null, { Origin: 'http://tauri.localhost' });
+    check('Tauri WebView Origin remains allowed', tauriProbe.status === 200 && tauriProbe.allowOrigin === 'http://tauri.localhost');
+    const localCredential = await req('POST', '/credentials', {
+      credentials: [{ credentialRef: 'synthetic-loopback-role', provider: 'test', apiKey: 'SYNTHETIC_LOCAL_ONLY' }]
+    }, { Origin: 'http://127.0.0.1:23120', 'Content-Type': 'application/json' });
+    check('Authorized local page can still write a Credential binding', localCredential.status === 200 && localCredential.body.stored === 1);
+    const localCredentialDelete = await req('DELETE', '/credentials', { credentialRef: 'synthetic-loopback-role' }, { Origin: 'http://127.0.0.1:23120', 'Content-Type': 'application/json' });
+    check('Authorized local page can still remove its synthetic binding', localCredentialDelete.status === 200 && localCredentialDelete.body.removed === 1,
+      { status: localCredentialDelete.status, body: localCredentialDelete.body });
+
+    /* A damaged Vault is tested in a separate synthetic process so the normal
+       credential path above remains independent and usable. */
+    const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-active-corrupt-vault-'));
+    const corruptKeyPath = path.join(corruptDir, 'credential-vault.key');
+    const corruptDataPath = path.join(corruptDir, 'credential-vault.json');
+    fs.writeFileSync(corruptKeyPath, 'CORRUPTED_SYNTHETIC_KEY');
+    fs.writeFileSync(corruptDataPath, 'SYNTHETIC_CIPHERTEXT_PRESERVE');
+    const corruptKeyBefore = fs.readFileSync(corruptKeyPath);
+    const corruptDataBefore = fs.readFileSync(corruptDataPath);
+    const corruptPort = await new Promise((resolve, reject) => {
+      const reserve = require('net').createServer();
+      reserve.once('error', reject);
+      reserve.listen(0, '127.0.0.1', () => {
+        const value = reserve.address().port;
+        reserve.close(error => error ? reject(error) : resolve(value));
+      });
+    });
+    const corruptChild = spawn(process.execPath, ['services/active-message-service.js'], {
+      env: {
+        ...process.env,
+        IB_DEV_MODE: '',
+        IB_DEV_SYNTHETIC: '',
+        IB_ACTIVE_PORT: String(corruptPort),
+        IB_ACTIVE_START_DELAY_MS: '500',
+        IB_ACTIVE_DATA_DIR: corruptDir,
+        IB_CREDENTIAL_DATA_DIR: corruptDir
+      },
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+    try {
+      const corruptHealth = await waitForHealth(15000, corruptPort);
+      check('损坏 Vault 的 Active 测试进程启动', !!corruptHealth);
+      if (corruptHealth) {
+        const rejected = await req('POST', '/credentials', {
+          credentials: [{ credentialRef: 'synthetic-corrupt-role', provider: 'test', apiKey: 'SYNTHETIC_CORRUPT_WRITE' }]
+        }, null, corruptPort);
+        check('损坏 Vault 的 Credential 写入明确返回 503', rejected.status === 503
+          && rejected.body.error === 'CREDENTIAL_VAULT_KEY_INVALID' && rejected.body.stored === 0);
+        check('HTTP 拒绝后原 key 与密文仍保持字节不变', fs.readFileSync(corruptKeyPath).equals(corruptKeyBefore)
+          && fs.readFileSync(corruptDataPath).equals(corruptDataBefore));
+      }
+    } finally {
+      corruptChild.kill();
+      await new Promise(r => setTimeout(r, 300));
+      try { fs.rmSync(corruptDir, { recursive: true, force: true }); } catch (_) {}
+    }
 
     /* PUT 手动任务（background 计划） */
     const putTask = await req('PUT', '/tasks/task_http_1', TASK_SNAPSHOT);

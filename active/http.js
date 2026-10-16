@@ -7,6 +7,7 @@
 const http = require('http');
 const { isTauriOrigin, blocksDevWebOrigin } = require('../runtime/host-origin.js');
 const devServiceContract = require('../runtime/dev-service-contract.js');
+const componentRegistry = require('../runtime/component-registry.js');
 
 /* Proactive Observability v1..v3：只读 debug 页（消费 /proactive/traces，不参与任何决策）
    v3 增加“WHY THIS PROACTIVE?”可读解释 + 结果链（sent → laterOutcome）。无 UI 框架（原生 details）。 */
@@ -93,19 +94,37 @@ function createHttp(ctx) {
     return c;
   }
 
+  function credentialVaultErrorCode() {
+    if (!credentialVault || typeof credentialVault.status !== 'function') return null;
+    const status = credentialVault.status();
+    return status && status.ok === false ? String(status.errorCode || 'CREDENTIAL_VAULT_UNAVAILABLE') : null;
+  }
+
   function originAllowed(origin) {
     if (environmentIdentity.mode === 'dev' || environmentIdentity.mode === 'synthetic') {
       return !origin || origin === environmentIdentity.webOrigin;
     }
     if (blocksDevWebOrigin(origin)) return false;
     if (devServiceContract.isKnownDevOrigin(origin)) return false;
-    return !origin || origin === 'null' || isTauriOrigin(origin) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(origin);
+    /* An opaque `null` Origin can be produced by a sandboxed remote iframe.
+       Unlike Home Node's token-gated file:// bootstrap, Active has no desktop
+       credential bootstrap; it must not grant that origin cross-origin access. */
+    const uiPort = componentRegistry.portOf('static');
+    const canonicalLoopbackOrigins = new Set([
+      'http://127.0.0.1:' + uiPort,
+      'http://localhost:' + uiPort,
+      'http://[::1]:' + uiPort
+    ]);
+    return isTauriOrigin(origin) || canonicalLoopbackOrigins.has(String(origin || ''));
   }
 
   function applyCors(request, response) {
     const origin = request.headers.origin;
+    /* Native local callers may omit Origin. They do not need CORS headers; do
+       not synthesize ACAO: null, which would authorize an opaque browser origin. */
+    if (origin == null || origin === '') return true;
     if (!originAllowed(origin)) return false;
-    response.setHeader('Access-Control-Allow-Origin', origin || 'null');
+    response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Vary', 'Origin');
     response.setHeader('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
     response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-IB-Dev-Session, X-IB-Dev-Instance');
@@ -243,6 +262,15 @@ function createHttp(ctx) {
          The allowlist is reference metadata only; API keys remain exclusively in the encrypted Vault.
          No response or exception echoes the submitted secret. */
       if (request.method === 'POST' && url.pathname === '/credentials') {
+        const vaultError = credentialVaultErrorCode();
+        if (vaultError) {
+          json(response, 503, { ok: false, error: vaultError, stored: 0, credentialRefs: [] });
+          return;
+        }
+        if (!credentialVault || typeof credentialVault.upsert !== 'function') {
+          json(response, 503, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', stored: 0, credentialRefs: [] });
+          return;
+        }
         const body = await readBody(request);
         const list = Array.isArray(body && body.credentials) ? body.credentials : [];
         let stored = 0;
@@ -267,7 +295,14 @@ function createHttp(ctx) {
               apiKey: keyNow,
               endpoint: String(c.endpoint || ''),
               model: String(c.model || '')
-            })) continue;
+            })) {
+              const writeError = credentialVaultErrorCode();
+              if (writeError) {
+                json(response, 503, { ok: false, error: writeError, stored: stored, credentialRefs: credentialRefs });
+                return;
+              }
+              continue;
+            }
             stored += 1;
             credentialRefs.push(id);
           } catch (_) {}
@@ -281,6 +316,11 @@ function createHttp(ctx) {
         return;
       }
       if (request.method === 'DELETE' && url.pathname === '/credentials') {
+        const vaultError = credentialVaultErrorCode();
+        if (vaultError) {
+          json(response, 503, { ok: false, error: vaultError, removed: 0, credentialRefs: [] });
+          return;
+        }
         const body = await readBody(request);
         let requested = Array.isArray(body && body.credentialRefs)
           ? body.credentialRefs

@@ -11,6 +11,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const assert = require('assert');
 const createCredentialVault = require(path.join(ROOT, 'active', 'credential-vault'));
+const createCredentialResolver = require(path.join(ROOT, 'active', 'credential-resolver'));
 
 
 let passed = 0, failures = 0;
@@ -104,6 +105,87 @@ function dataFile() { return path.join(DATA_DIR, 'credential-vault.json'); }
   check('失败的 upsert 不留内存凭据', v.has('write_fail') === false && v.count() === 0);
   check('失败的 upsert 不生成 Vault 数据文件', fs.existsSync(path.join(failDir, 'credential-vault.json')) === false);
   try { fs.rmSync(failDir, { recursive: true, force: true }); } catch (_) {}
+})();
+
+/* A damaged existing key must never be replaced, and its ciphertext must stay byte-identical. */
+(() => {
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-credvault-corrupt-key-'));
+  const keyPath = path.join(corruptDir, 'credential-vault.key');
+  const dataPath = path.join(corruptDir, 'credential-vault.json');
+  const initial = createCredentialVault({ dataDir: corruptDir });
+  initial.load();
+  initial.upsert('synthetic-corrupt-role', { provider: 'test', apiKey: 'SYNTHETIC_VAULT_VALUE' });
+  fs.writeFileSync(keyPath, 'CORRUPTED_SYNTHETIC_KEY');
+  const corruptKey = fs.readFileSync(keyPath);
+  const originalCiphertext = fs.readFileSync(dataPath);
+
+  const reopened = createCredentialVault({ dataDir: corruptDir });
+  const loadStatus = reopened.load();
+  check('损坏的既有 key 明确报错', loadStatus.ok === false && loadStatus.errorCode === 'CREDENTIAL_VAULT_KEY_INVALID', loadStatus);
+  check('损坏 key 后 upsert 被拒绝', reopened.upsert('other-role', { provider: 'test', apiKey: 'SYNTHETIC_OTHER_VALUE' }) === false);
+  check('损坏 key 后 remove 被拒绝', reopened.remove('synthetic-corrupt-role') === false);
+  check('损坏 key 后不暴露已解密记录', reopened.count() === 0 && reopened.get('synthetic-corrupt-role') === null);
+  check('request resolver 对损坏 key fail closed', createCredentialResolver({ dataDir: corruptDir }).resolve('synthetic-corrupt-role') === null);
+  check('损坏 key 与原密文均保持原始字节', fs.readFileSync(keyPath).equals(corruptKey) && fs.readFileSync(dataPath).equals(originalCiphertext));
+  try { fs.rmSync(corruptDir, { recursive: true, force: true }); } catch (_) {}
+})();
+
+/* A missing key beside existing ciphertext is also corruption, not a fresh Vault. */
+(() => {
+  const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-credvault-missing-key-'));
+  const keyPath = path.join(missingDir, 'credential-vault.key');
+  const dataPath = path.join(missingDir, 'credential-vault.json');
+  const initial = createCredentialVault({ dataDir: missingDir });
+  initial.load();
+  initial.upsert('synthetic-missing-role', { provider: 'test', apiKey: 'SYNTHETIC_MISSING_KEY_VALUE' });
+  fs.unlinkSync(keyPath);
+  const originalCiphertext = fs.readFileSync(dataPath);
+
+  const reopened = createCredentialVault({ dataDir: missingDir });
+  const loadStatus = reopened.load();
+  check('密文存在但 key 缺失时明确报错', loadStatus.ok === false && loadStatus.errorCode === 'CREDENTIAL_VAULT_KEY_MISSING', loadStatus);
+  check('缺 key 时不会创建替代 key 或覆盖密文', reopened.upsert('other-role', { provider: 'test', apiKey: 'SYNTHETIC_OTHER_VALUE' }) === false
+    && !fs.existsSync(keyPath) && fs.readFileSync(dataPath).equals(originalCiphertext));
+  try { fs.rmSync(missingDir, { recursive: true, force: true }); } catch (_) {}
+})();
+
+/* Detect an on-disk key change after this instance loaded, before any new ciphertext is written. */
+(() => {
+  const changedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-credvault-runtime-key-change-'));
+  const keyPath = path.join(changedDir, 'credential-vault.key');
+  const dataPath = path.join(changedDir, 'credential-vault.json');
+  const vault = createCredentialVault({ dataDir: changedDir });
+  vault.load();
+  vault.upsert('synthetic-runtime-role', { provider: 'test', apiKey: 'SYNTHETIC_RUNTIME_VALUE' });
+  fs.writeFileSync(keyPath, 'CHANGED_SYNTHETIC_KEY');
+  const changedKey = fs.readFileSync(keyPath);
+  const originalCiphertext = fs.readFileSync(dataPath);
+  check('运行期间 key 文件变更会锁定 Vault', vault.upsert('runtime-other', { provider: 'test', apiKey: 'SYNTHETIC_RUNTIME_OTHER' }) === false
+    && vault.status().errorCode === 'CREDENTIAL_VAULT_KEY_INVALID');
+  check('运行期间 key 变更不会覆盖 key 文件或密文', fs.readFileSync(keyPath).equals(changedKey)
+    && fs.readFileSync(dataPath).equals(originalCiphertext));
+  try { fs.rmSync(changedDir, { recursive: true, force: true }); } catch (_) {}
+})();
+
+/* An unreadable/authentication-failed ciphertext cannot be silently reset by a later write. */
+(() => {
+  const corruptDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-credvault-corrupt-data-'));
+  const keyPath = path.join(corruptDataDir, 'credential-vault.key');
+  const dataPath = path.join(corruptDataDir, 'credential-vault.json');
+  const initial = createCredentialVault({ dataDir: corruptDataDir });
+  initial.load();
+  initial.upsert('synthetic-data-role', { provider: 'test', apiKey: 'SYNTHETIC_DATA_VALUE' });
+  const originalKey = fs.readFileSync(keyPath);
+  fs.writeFileSync(dataPath, '{"v":1,"iv":"bad","tag":"bad","data":"bad"}');
+  const corruptCiphertext = fs.readFileSync(dataPath);
+
+  const reopened = createCredentialVault({ dataDir: corruptDataDir });
+  const loadStatus = reopened.load();
+  check('损坏密文明确进入只读故障态', loadStatus.ok === false && loadStatus.errorCode === 'CREDENTIAL_VAULT_DATA_INVALID', loadStatus);
+  check('request resolver 对损坏密文 fail closed', createCredentialResolver({ dataDir: corruptDataDir }).resolve('synthetic-data-role') === null);
+  check('损坏密文不能被后续 save/upsert 覆盖', reopened.upsert('other-role', { provider: 'test', apiKey: 'SYNTHETIC_OTHER_VALUE' }) === false
+    && reopened.save() === false && fs.readFileSync(keyPath).equals(originalKey) && fs.readFileSync(dataPath).equals(corruptCiphertext));
+  try { fs.rmSync(corruptDataDir, { recursive: true, force: true }); } catch (_) {}
 })();
 
 try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (_) {}

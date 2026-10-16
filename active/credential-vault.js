@@ -22,18 +22,70 @@ function createCredentialVault(deps) {
   const TMP_FILE = DATA_FILE + '.tmp';
   let key = null;
   let vault = {}; /* characterId -> { provider, apiKey, endpoint, model, updatedAt } */
+  let vaultError = null;
+
+  function failVault(code) {
+    vaultError = vaultError || code;
+    if (String(vaultError).indexOf('CREDENTIAL_VAULT_KEY_') === 0) {
+      if (key) key.fill(0);
+      key = null;
+      vault = {};
+    }
+    const error = new Error(vaultError);
+    error.code = vaultError;
+    return error;
+  }
+
+  function readExistingKey() {
+    let raw;
+    try { raw = String(fileSystem.readFileSync(KEY_FILE, 'utf8')).trim(); }
+    catch (_) { throw failVault('CREDENTIAL_VAULT_KEY_UNREADABLE'); }
+    const candidate = Buffer.from(raw, 'base64');
+    if (candidate.length !== 32 || candidate.toString('base64') !== raw) {
+      candidate.fill(0);
+      throw failVault('CREDENTIAL_VAULT_KEY_INVALID');
+    }
+    if (key) key.fill(0);
+    key = candidate;
+    return key;
+  }
 
   function ensureKey() {
-    if (key) return key;
+    if (vaultError) throw failVault(vaultError);
+    if (key) {
+      let keyExists = false;
+      try { keyExists = fileSystem.existsSync(KEY_FILE); }
+      catch (_) { throw failVault('CREDENTIAL_VAULT_KEY_UNREADABLE'); }
+      if (!keyExists) throw failVault('CREDENTIAL_VAULT_KEY_MISSING');
+      let raw;
+      try { raw = String(fileSystem.readFileSync(KEY_FILE, 'utf8')).trim(); }
+      catch (_) { throw failVault('CREDENTIAL_VAULT_KEY_UNREADABLE'); }
+      const onDisk = Buffer.from(raw, 'base64');
+      const matches = onDisk.length === 32 && onDisk.toString('base64') === raw && onDisk.equals(key);
+      onDisk.fill(0);
+      if (!matches) throw failVault('CREDENTIAL_VAULT_KEY_INVALID');
+      return key;
+    }
+    let keyExists = false, dataExists = false;
     try {
-      if (fileSystem.existsSync(KEY_FILE)) {
-        const b = Buffer.from(String(fileSystem.readFileSync(KEY_FILE, 'utf8')).trim(), 'base64');
-        if (b.length === 32) { key = b; return key; }
-      }
-    } catch (_) { /* fall through to generate */ }
-    key = crypto.randomBytes(32);
-    fileSystem.writeFileSync(KEY_FILE, key.toString('base64'), { flag: 'w' });
-    return key;
+      keyExists = fileSystem.existsSync(KEY_FILE);
+      dataExists = fileSystem.existsSync(DATA_FILE);
+    } catch (_) { throw failVault('CREDENTIAL_VAULT_IO_UNAVAILABLE'); }
+    if (keyExists) return readExistingKey();
+    if (dataExists) throw failVault('CREDENTIAL_VAULT_KEY_MISSING');
+
+    const candidate = crypto.randomBytes(32);
+    try {
+      /* Exclusive creation prevents a stale/corrupt key from ever being
+         replaced by this process or by a concurrent first writer. */
+      fileSystem.writeFileSync(KEY_FILE, candidate.toString('base64'), { flag: 'wx', mode: 0o600 });
+      key = candidate;
+      return key;
+    } catch (error) {
+      candidate.fill(0);
+      if (error && error.code === 'EEXIST') return readExistingKey();
+      throw failVault('CREDENTIAL_VAULT_KEY_WRITE_FAILED');
+    }
   }
 
   function encrypt(obj) {
@@ -45,39 +97,77 @@ function createCredentialVault(deps) {
   }
 
   function decrypt(blob) {
+    let p;
     try {
-      const p = JSON.parse(blob);
-      if (!p || p.v !== 1) return null;
-      const iv = Buffer.from(p.iv, 'base64');
-      const tag = Buffer.from(p.tag, 'base64');
-      const data = Buffer.from(p.data, 'base64');
+      p = JSON.parse(blob);
+    } catch (_) {
+      throw failVault('CREDENTIAL_VAULT_DATA_INVALID');
+    }
+    if (!p || p.v !== 1 || typeof p.iv !== 'string' || typeof p.tag !== 'string' || typeof p.data !== 'string') {
+      throw failVault('CREDENTIAL_VAULT_DATA_INVALID');
+    }
+    const iv = Buffer.from(p.iv, 'base64');
+    const tag = Buffer.from(p.tag, 'base64');
+    const data = Buffer.from(p.data, 'base64');
+    if (iv.length !== 12 || tag.length !== 16 || !data.length
+      || iv.toString('base64') !== p.iv || tag.toString('base64') !== p.tag || data.toString('base64') !== p.data) {
+      iv.fill(0); tag.fill(0); data.fill(0);
+      throw failVault('CREDENTIAL_VAULT_DATA_INVALID');
+    }
+    let clear;
+    try {
       const decipher = crypto.createDecipheriv('aes-256-gcm', ensureKey(), iv);
       decipher.setAuthTag(tag);
-      const dec = Buffer.concat([decipher.update(data), decipher.final()]);
-      return JSON.parse(dec.toString('utf8'));
-    } catch (_) { return null; }
+      clear = Buffer.concat([decipher.update(data), decipher.final()]);
+      const parsed = JSON.parse(clear.toString('utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid-vault-payload');
+      return parsed;
+    } catch (error) {
+      if (vaultError) throw error;
+      throw failVault('CREDENTIAL_VAULT_DATA_INVALID');
+    } finally {
+      iv.fill(0); tag.fill(0); data.fill(0);
+      if (clear) clear.fill(0);
+    }
   }
 
   function load() {
+    vault = {};
+    vaultError = null;
+    if (key) { key.fill(0); key = null; }
     try {
-      if (!fileSystem.existsSync(DATA_FILE)) { vault = {}; return; }
-      const parsed = decrypt(fileSystem.readFileSync(DATA_FILE, 'utf8'));
-      vault = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
-    } catch (_) { vault = {}; }
+      const keyExists = fileSystem.existsSync(KEY_FILE);
+      const dataExists = fileSystem.existsSync(DATA_FILE);
+      if (keyExists) ensureKey(); /* validate even when the data file is absent */
+      if (!dataExists) return status();
+      vault = decrypt(fileSystem.readFileSync(DATA_FILE, 'utf8'));
+      return status();
+    } catch (error) {
+      vault = {};
+      if (!vaultError) vaultError = (error && error.code) || 'CREDENTIAL_VAULT_LOAD_FAILED';
+      return status();
+    }
   }
 
   function save() {
+    if (vaultError) return false;
     try {
       fileSystem.writeFileSync(TMP_FILE, encrypt(vault));
       fileSystem.renameSync(TMP_FILE, DATA_FILE);
       return true;
     } catch (_) {
+      if (!vaultError) vaultError = 'CREDENTIAL_VAULT_WRITE_FAILED';
       try { if (fileSystem.existsSync(TMP_FILE)) fileSystem.unlinkSync(TMP_FILE); } catch (_) {}
       return false;
     }
   }
 
+  function status() {
+    return { ok: !vaultError, errorCode: vaultError || null };
+  }
+
   function upsert(characterId, credential) {
+    if (vaultError) return false;
     const id = String(characterId || '');
     if (!id) return false;
     const previous = vault[id];
@@ -100,17 +190,20 @@ function createCredentialVault(deps) {
   }
 
   function get(characterId) {
+    if (vaultError) return null;
     const c = vault[String(characterId || '')];
     if (!c) return null;
     return { provider: c.provider, apiKey: c.apiKey, endpoint: c.endpoint, model: c.model };
   }
 
   function has(characterId) {
+    if (vaultError) return false;
     const c = vault[String(characterId || '')];
     return !!(c && String(c.apiKey || '').trim());
   }
 
   function remove(characterId) {
+    if (vaultError) return false;
     const id = String(characterId || '');
     if (vault[id]) {
       const previous = vault[id];
@@ -122,9 +215,9 @@ function createCredentialVault(deps) {
     return false;
   }
 
-  function all() { return vault; }
-  function bindingIds() { return Object.keys(vault); }
-  function count() { return Object.keys(vault).length; }
+  function all() { return vaultError ? {} : vault; }
+  function bindingIds() { return vaultError ? [] : Object.keys(vault); }
+  function count() { return vaultError ? 0 : Object.keys(vault).length; }
 
   /* ── 迁移：从旧业务 snapshot 的 character.apiKey 提取到 vault（幂等）──
      · 旧 snapshot 的 apiKey 保留不动（recovery source）；仅复制进 vault。
@@ -152,7 +245,7 @@ function createCredentialVault(deps) {
   }
 
   return {
-    load, save, upsert, get, has, remove, all, bindingIds, count, migrateFromState
+    load, save, status, upsert, get, has, remove, all, bindingIds, count, migrateFromState
   };
 }
 
