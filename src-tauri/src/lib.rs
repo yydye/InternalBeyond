@@ -4655,6 +4655,43 @@ fn finalize_recovery(
     }))
 }
 
+/* Credential-bearing IPC commands are bound to the one canonical WebCore
+   document. Tauri's invoke handler is app-wide, so a future helper/preview
+   WebView must not inherit this authority merely because its command is
+   registered on the Builder. */
+fn credential_ipc_target_allowed(
+    label: &str,
+    scheme: &str,
+    host: Option<&str>,
+    port: Option<u16>,
+    path: &str,
+) -> bool {
+    if label != "main" || path != "/InternalBeyond.html" || scheme != "http" {
+        return false;
+    }
+    let host = host.unwrap_or("").to_ascii_lowercase();
+    if host == "tauri.localhost" {
+        return port.is_none() || port == Some(80);
+    }
+    #[cfg(debug_assertions)]
+    {
+        return matches!(host.as_str(), "127.0.0.1" | "localhost") && port == Some(23120);
+    }
+    #[cfg(not(debug_assertions))]
+    false
+}
+
+fn credential_ipc_window_allowed(window: &tauri::WebviewWindow) -> bool {
+    let Ok(url) = window.url() else { return false; };
+    credential_ipc_target_allowed(
+        window.label(),
+        url.scheme(),
+        url.host_str(),
+        url.port(),
+        url.path(),
+    )
+}
+
 /* Home Node desktop-credential bridge for the canonical Tauri desktop host.
    The page origin (http://tauri.localhost) is not a loopback origin, so the
    Home Node HTTP bootstrap (/internal/desktop-credential) refuses it. This
@@ -4685,7 +4722,10 @@ fn read_home_node_desktop_credential(data_root: &Path) -> Result<String, String>
 }
 
 #[tauri::command]
-fn home_node_desktop_credential() -> Result<serde_json::Value, String> {
+fn home_node_desktop_credential(webview: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    if !credential_ipc_window_allowed(&webview) {
+        return Err("HOME_NODE_CREDENTIAL_UNAVAILABLE".to_string());
+    }
     let data_root = recovery_data_root()?;
     let credential = read_home_node_desktop_credential(&data_root)?;
     Ok(serde_json::json!({
@@ -4918,11 +4958,14 @@ fn credential_resolve_unavailable() -> serde_json::Value {
 fn credential_resolve(
     state: tauri::State<'_, Arc<HostLifecycle>>,
     request: CredentialResolveRequest,
+    webview: tauri::WebviewWindow,
 ) -> serde_json::Value {
     const MAX_SECRET_BYTES: usize = 8192;
     const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 
-    if !credential_status_binding_id_allowed(&request.binding_id) {
+    if !credential_ipc_window_allowed(&webview)
+        || !credential_status_binding_id_allowed(&request.binding_id)
+    {
         return credential_resolve_unavailable();
     }
 
@@ -7590,6 +7633,38 @@ mod runtime_authority_tests {
         assert_eq!(read_home_node_desktop_credential(&root).unwrap(), token);
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn credential_ipc_is_limited_to_the_main_webcore_document() {
+        assert!(credential_ipc_target_allowed(
+            "main", "http", Some("tauri.localhost"), None, "/InternalBeyond.html"
+        ));
+        assert!(credential_ipc_target_allowed(
+            "main", "http", Some("tauri.localhost"), Some(80), "/InternalBeyond.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "recovery", "http", Some("tauri.localhost"), None, "/InternalBeyond.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "main", "https", Some("tauri.localhost"), None, "/InternalBeyond.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "main", "http", Some("tauri.localhost"), None, "/Recovery.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "main", "http", Some("evil.example"), None, "/InternalBeyond.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "main", "http", None, None, "/InternalBeyond.html"
+        ));
+        #[cfg(debug_assertions)]
+        assert!(credential_ipc_target_allowed(
+            "main", "http", Some("127.0.0.1"), Some(23120), "/InternalBeyond.html"
+        ));
+        assert!(!credential_ipc_target_allowed(
+            "main", "http", Some("127.0.0.1"), Some(23130), "/InternalBeyond.html"
+        ));
     }
 
     fn synthetic_apply_window_approval(
