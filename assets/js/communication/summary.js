@@ -1,5 +1,6 @@
 ﻿/* CONVERSATION SUMMARY SYSTEM —— 自 communication.js 机械提取（只动位置，不改逻辑；加载于 communication.js 之前）。 */
 (function(NS){
+function _summarySafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
 /* ===== CONVERSATION SUMMARY SYSTEM ===== */
 /* 摘要触发间隔：跟随 AI 读取消息数设置，最少 8 条 */
 function _getSummaryTriggerCount(){try{var k=parseInt(document.getElementById('api-read-chat')&&document.getElementById('api-read-chat').value);if(k&&k>=5)return Math.max(8,k);return 10}catch(e){return 10}}
@@ -59,7 +60,7 @@ async function renderSummaryMgmt(){
         +'<div class="sum-mgmt-name">'+esc(name)+(kind?' <span class="sum-mgmt-kind">'+kind+'</span>':'')+'</div>'
         +'<div class="sum-mgmt-meta">'+date+' · '+charCount+' 字 · 撰写: '+esc(author)+'</div>'
         +'</div>'
-        +'<span class="sum-mgmt-del" onclick="event.stopPropagation();deleteSingleSummary(\''+s.id+'\')" title="删除此摘要">'
+        +'<span class="sum-mgmt-del" onclick="event.stopPropagation();deleteSingleSummary('+_summarySafeJsArg(s.id)+')" title="删除此摘要">'
         +'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>'
         +'</span></div>'
         +'<div class="summary-detail" style="display:none">'+esc(s.summary||'（空）')+'</div>'

@@ -188,6 +188,7 @@
         if(!pendingEnvelope)throw new Error('没有待导入的加密备份，请重新选择文件。');
         var decrypted=await decryptBackup(pendingEnvelope,value);
         if(typeof nativeImport!=='function')throw new Error('普通导入器不可用，请刷新页面后重试。');
+        decrypted=sanitizeImportedData(decrypted);
         var file=new File([JSON.stringify(decrypted)],'InternalBeyond_decrypted_import.json',{type:'application/json'});
         await nativeImport({target:{files:[file],value:''}});
         try{localStorage.setItem('ib_vault_lastEncryptedImport',new Date().toISOString())}catch(e){}
@@ -215,8 +216,31 @@
       if(input)input.value='';
       say('该加密备份版本不受支持或文件已损坏。');return;
     }
-    if(typeof nativeImport==='function')return nativeImport(event);
+    if(typeof nativeImport==='function'){
+      try{
+        var safeData=sanitizeImportedData(parsed);
+        var safeFile=new File([JSON.stringify(safeData)],String(file.name||'InternalBeyond_import.json'),{type:'application/json'});
+        var safeTarget={files:[safeFile]};
+        Object.defineProperty(safeTarget,'value',{
+          get:function(){return input&&input.value||'';},
+          set:function(value){if(input)input.value=value;}
+        });
+        return nativeImport({target:safeTarget});
+      }catch(error){
+        if(input)input.value='';
+        var reason=String(error&&error.code||error&&error.message||'');
+        say(/IMPORT_ID_INVALID|API_CONFIG_ID_INVALID|IMPORT_CREDENTIAL_REF_INVALID/.test(reason)
+          ?'导入失败：角色或记录标识字段格式无效，未导入存档。'
+          :'导入失败：图片或存档内容无法安全校验。');
+        return;
+      }
+    }
     say('导入器不可用，请刷新页面后重试。');
+  }
+  function sanitizeImportedData(data){
+    var helper=window.IBSafeImage;
+    if(!helper||typeof helper.sanitizeImportedArchive!=='function')throw new Error('IMPORT_IMAGE_VALIDATOR_UNAVAILABLE');
+    return helper.sanitizeImportedArchive(data);
   }
   function safeJSONString(value){
     var seen=typeof WeakSet==='function'?new WeakSet():null;

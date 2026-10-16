@@ -14,6 +14,10 @@
   var SELFS='assets/js/activity/coread.js';
 
   function _esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
+  function _coreadSafeJsArgument(value){
+    var guard=window.IBSafeImage;
+    return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""';
+  }
   function _toast(m){try{if(typeof toast==='function')toast(m)}catch(e){}}
 
   /* ---- 分页：按段落边界切，尽量贴近每页 _charsPerPage ---- */
@@ -46,12 +50,12 @@
     var html='';
     if(recent.length){
       html+='<div class="cr-group"><div class="cr-group-head">最近在读</div>';
-      for(var r of recent){var p=posts.find(function(x){return x.id===r.resourceId});html+='<div class="cr-book" onclick="coreadOpen(\''+r.resourceId+'\')"><div class="cr-book-title">'+_esc(r.title||'')+'</div><div class="cr-book-meta">与 '+_esc(r.progress&&r.progress.roleName||'TA')+' · 读到第 '+((r.progress&&r.progress.page)||1)+' 页</div></div>'}
+      for(var r of recent){var p=posts.find(function(x){return x.id===r.resourceId});html+='<div class="cr-book" onclick="coreadOpen('+_coreadSafeJsArgument(r.resourceId)+')"><div class="cr-book-title">'+_esc(r.title||'')+'</div><div class="cr-book-meta">与 '+_esc(r.progress&&r.progress.roleName||'TA')+' · 读到第 '+((r.progress&&r.progress.page)||1)+' 页</div></div>'}
       html+='</div>';
     }
     if(!posts.length){shelf.innerHTML='<div class="empty-state"><span>✎</span>还没有公开日志。先到「Blog」写一篇，就能和 TA 一起读。</div>';return}
     html+='<div class="cr-group"><div class="cr-group-head">书架</div>';
-    for(var q of posts){var a=acts.find(function(x){return x.resourceId===q.id});html+='<div class="cr-book" onclick="coreadOpen(\''+q.id+'\')"><div class="cr-book-title">'+_esc(q.title||'无标题')+'</div><div class="cr-book-meta">'+_esc((q.subtitle||'').slice(0,50))+(a?(' · 读到 '+(a.progress&&a.progress.page||1)+' 页'):'')+'</div></div>'}
+    for(var q of posts){var a=acts.find(function(x){return x.resourceId===q.id});html+='<div class="cr-book" onclick="coreadOpen('+_coreadSafeJsArgument(q.id)+')"><div class="cr-book-title">'+_esc(q.title||'无标题')+'</div><div class="cr-book-meta">'+_esc((q.subtitle||'').slice(0,50))+(a?(' · 读到 '+(a.progress&&a.progress.page||1)+' 页'):'')+'</div></div>'}
     html+='</div>';
     shelf.innerHTML=html;
   }

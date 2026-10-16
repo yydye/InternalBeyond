@@ -101,6 +101,8 @@
 
   /* ---- 渲染：收藏墙（page-favorites） ---- */
   function _favEsc(s){if(!s)return'';var d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
+  function _favSafeAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
+  function _favSafeImage(value){var guard=window.IBSafeImage;return guard&&typeof guard.normalizeSource==='function'?guard.normalizeSource(value):''}
   function _favShort(s){return s.length>160?s.slice(0,160)+'…':s}
   function _favFmt(ts){try{return new Date(ts||Date.now()).toLocaleString('zh-CN',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return''}}
   function _favTypeLabel(t){
@@ -121,16 +123,16 @@
         var src=await _resolveSource(f2);
         var body=f2.body||(src.body?src.body.slice(0,6000):'');
         var bubbles='';
-        if(src.voice&&src.voice.dataUrl){bubbles+='<button class="fav-voice" data-favid="'+f2.id+'">▶ '+_favEsc(src.voice.transcript||'语音')+'</button>'}
+        if(src.voice&&src.voice.dataUrl){bubbles+='<button class="fav-voice" data-favid="'+_favSafeAttr(f2.id)+'">▶ '+_favEsc(src.voice.transcript||'语音')+'</button>'}
         if(src.images&&src.images.length){
           bubbles+='<div class="fav-imgs">';
-          for(var im of src.images){var u=(im&&(im.dataUrl||im.url))||'';if(u)bubbles+='<img class="fav-img" loading="lazy" decoding="async" src="'+u+'">'}
+          for(var im of src.images){var u=_favSafeImage((im&&(im.dataUrl||im.url))||'');if(u)bubbles+='<img class="fav-img" loading="lazy" decoding="async" src="'+_favSafeAttr(u)+'">'}
           bubbles+='</div>';
         }
-        html+='<div class="fav-paper" data-favid="'+f2.id+'"><div class="fav-paper-head"><span class="fav-tag">'+_favTypeLabel(f2.type)+'</span><span class="fav-title">'+_favEsc(f2.title||_favShort(body))+'</span></div>'+
+        html+='<div class="fav-paper" data-favid="'+_favSafeAttr(f2.id)+'"><div class="fav-paper-head"><span class="fav-tag">'+_favTypeLabel(f2.type)+'</span><span class="fav-title">'+_favEsc(f2.title||_favShort(body))+'</span></div>'+
           '<div class="fav-tx">'+_favEsc(_favShort(body))+'</div>'+
           bubbles+
-          '<div class="fav-paper-foot"><span>'+_favFmt(f2.updatedAt)+'</span><span class="fav-paper-acts"><button class="fav-open" data-favopen="'+f2.id+'">打开原内容</button><button class="fav-del" data-favdel="'+f2.id+'">移除</button></span></div>'+
+          '<div class="fav-paper-foot"><span>'+_favFmt(f2.updatedAt)+'</span><span class="fav-paper-acts"><button class="fav-open" data-favopen="'+_favSafeAttr(f2.id)+'">打开原内容</button><button class="fav-del" data-favdel="'+_favSafeAttr(f2.id)+'">移除</button></span></div>'+
           '</div>';
       }
       html+='</div>';

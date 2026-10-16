@@ -652,7 +652,7 @@ async function startVoiceCallFor(roleId,opts){
   text(byId('voice-call-role-name'),safeName(role));text(byId('voice-call-transcript'),'');text(byId('voice-call-reply'),'');
   var dur=byId('voice-call-duration');if(dur)dur.textContent='0:00';
   var wave=byId('voice-call-wave');if(wave){wave.innerHTML='';for(var w=0;w<32;w++){var bar=document.createElement('span');bar.className='voice-call-wave-bar';wave.appendChild(bar)}}
-  var avatar=byId('voice-call-avatar');if(avatar){avatar.innerHTML='';var av=opts.avatar||role.avatar;if(av){var img=document.createElement('img');img.src=av;img.alt='';avatar.appendChild(img)}else avatar.textContent=safeName(role).charAt(0).toUpperCase()}
+  var avatar=byId('voice-call-avatar');if(avatar){avatar.replaceChildren();var av=opts.avatar||role.avatar;var safeAvatar=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'?window.IBSafeImage.normalizeSource(av):'';if(safeAvatar){var img=document.createElement('img');img.src=safeAvatar;img.alt='';avatar.appendChild(img)}else avatar.textContent=safeName(role).charAt(0).toUpperCase()}
   var conversationId=opts.conversationId||(activeThreadId?('thread:'+activeThreadId):('main:'+String(roleId)));
   /* Move focus to the first control (mute button) after the modal opens, so keyboard
      navigation works and screen readers announce the modal's purpose. */
@@ -693,7 +693,7 @@ function offerIncoming(event){
     text(byId('incoming-call-msg'),ev.openingMessage||'');
     text(byId('incoming-call-reason'),ev.reason||'');
     var avatar=byId('incoming-call-avatar');
-    if(avatar){avatar.innerHTML='';if(ev.avatar){var img=document.createElement('img');img.src=ev.avatar;img.alt='';avatar.appendChild(img)}else avatar.textContent=(ev.roleName||'A').charAt(0).toUpperCase()}
+    if(avatar){avatar.replaceChildren();var safeAvatar=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'?window.IBSafeImage.normalizeSource(ev.avatar):'';if(safeAvatar){var img=document.createElement('img');img.src=safeAvatar;img.alt='';avatar.appendChild(img)}else avatar.textContent=(ev.roleName||'A').charAt(0).toUpperCase()}
     overlay.hidden=false;overlay.setAttribute('aria-hidden','false');
     overlay.dataset.eventId=ev.eventId||'';
     /* Move focus to the accept button so the overlay is keyboard-navigable. */

@@ -4,6 +4,25 @@
    PROVIDERS 唯一 canonical 来源已迁至 assets/js/provider-directory.js（window.PROVIDERS_DIR）。
    social.js 不再维护第二份 provider metadata 字面量，仅作 window.PROVIDERS 兼容暴露。 */
 const PROVIDERS=(window.PROVIDERS_DIR&&window.PROVIDERS_DIR.PROVIDERS)||{};
+function _ibApiIdAllowed(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.validBindingId==='function'
+    ?helper.validBindingId(value):/^[A-Za-z0-9_.:-]{1,180}$/.test(String(value==null?'':value));
+}
+function _ibApiHtmlAttribute(value){
+  return String(value==null?'':value).replace(/[&<>"']/g,function(character){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character];
+  });
+}
+function _ibApiJsArgument(value){
+  var literal=JSON.stringify(String(value==null?'':value)).replace(/</g,'\\u003c').replace(/>/g,'\\u003e')
+    .replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+  return _ibApiHtmlAttribute(literal);
+}
+function _ibApiAvatarSource(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.normalizeSource==='function'?helper.normalizeSource(value):'';
+}
 function _apiUiText(key,fallback){return window.IBI18n&&typeof window.IBI18n.t==='function'?window.IBI18n.t(key):fallback}
 function _apiSetEditorTitle(key,fallback){var title=document.getElementById('api-editor-title');if(title)title.textContent=_apiUiText(key,fallback)}
 /* Local OpenAI-compatible runtimes such as Ollama and LM Studio normally do
@@ -842,6 +861,9 @@ function _apiFallbackPut(cfg){
 /* 返回 {durability,backend,idb}：durability 如实反映持久化强度，供 UI 区分提示。 */
 async function _persistApiConfig(cfg){
   const input=cfg&&typeof cfg==='object'?cfg:{};
+  const inputId=String(input.id==null?'':input.id).trim();
+  if(!_ibApiIdAllowed(inputId)||((input.credentialRef!=null&&String(input.credentialRef).trim())&&!_ibApiIdAllowed(input.credentialRef)))
+    throw Object.assign(new Error('API_CONFIG_ID_INVALID'),{code:'API_CONFIG_ID_INVALID'});
   const legacyKey=String(input.apiKey||'').trim();
   if(String(input.imageGenApiKey||'').trim())throw Object.assign(new Error('IMAGE_CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
   if(window._ibEndpointHasInlineCredential&&(
@@ -859,6 +881,7 @@ async function _persistApiConfig(cfg){
      供 loadApiConfigs 判断「刚保存成功的配置」vs「IndexedDB 里仍可读的旧记录」。
      同源同 payload 幂等，不影响既有读取；仅新增可选字段，向后兼容。 */
   const source=Object.assign({},input);
+  source.id=inputId;
   delete source.apiKey;
   delete source.imageGenApiKey;
   if(legacyKey||Object.prototype.hasOwnProperty.call(input,'credentialRef'))source.credentialRef=credentialRef;
@@ -911,8 +934,8 @@ async function loadApiConfigs(){
     });
     all=Array.from(merged.values());
   }
-  apiConfigs=all.filter(a=>!a.archived);
-  archivedConfigs=all.filter(a=>!!a.archived);
+  apiConfigs=all.filter(a=>a&&!a.archived&&_ibApiIdAllowed(a.id));
+  archivedConfigs=all.filter(a=>a&&!!a.archived&&_ibApiIdAllowed(a.id));
   /* 不再把 legacy apiSettings.main.apiKey 自动复制进 apiConfigs。
      credential-bearing migration 必须先有 Vault binding；此加载路径不拥有 secret resolver。 */
   /* Sort by user-defined order if present, otherwise by creation time */
@@ -1018,16 +1041,18 @@ function _ibRenderApiList(c,configs,statusMap,pending){
   const map=statusMap||{};
   c.innerHTML=configs.map(function(a,idx){
     const id=String(a&&a.id||'');
+    const idArg=_ibApiJsArgument(id),idAttr=_ibApiHtmlAttribute(id);
     const entry=map[id]||_ibApiCredentialProjection({
       status:pending?_ibApiCredentialLocalStatus(a)||'checking':'unknown'
     });
     const status=_ibApiCredentialStatusClass(entry.credentialStatus);
     const statusTag='<span class="ib-api-credential-status ib-api-credential-status-'+status+'" data-credential-status="'+status+'">（'+esc(_ibApiCredentialStatusLabel(status))+'）</span>';
     const needsKey=_ibApiCredentialEndpointClass(a)==='remote';
-    const keyBtn=needsKey?'<button type="button" class="ib-api-key-btn" onclick="event.stopPropagation();_ibOpenApiKeyModal(\''+id+'\',\''+(status==='ready'?'replace':'add')+'\')">'+(status==='ready'?'更换 API Key':'添加 API Key')+'</button>':'';
+    const keyBtn=needsKey?'<button type="button" class="ib-api-key-btn" onclick="event.stopPropagation();_ibOpenApiKeyModal('+idArg+',\''+(status==='ready'?'replace':'add')+'\')">'+(status==='ready'?'更换 API Key':'添加 API Key')+'</button>':'';
     const avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
-    const avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
-    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><button type="button" class="btn ib-expression-manage" data-expression-role-id="'+esc(id)+'" aria-label="管理 '+esc(a.nickname||a.model||'角色')+' 的表情包">表情包</button>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
+    const avatar=_ibApiAvatarSource(a.avatar);
+    const avHtml=avatar?'<div class="api-item-avatar"><img src="'+_ibApiHtmlAttribute(avatar)+'" alt=""></div>':'<div class="api-item-avatar">'+esc(avInit)+'</div>';
+    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+idAttr+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi('+idArg+')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><button type="button" class="btn ib-expression-manage" data-expression-role-id="'+idAttr+'" aria-label="管理 '+esc(a.nickname||a.model||'角色')+' 的表情包">表情包</button>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig('+idArg+')" title="删除">✕</span></div>';
   }).join('');
 }
 async function renderApiList(){
@@ -1103,6 +1128,10 @@ async function _ibSaveApiConfigCredential(configId,secret){
 async function _ibPersistImportedApiSetting(setting){
   if(!setting||typeof setting!=='object')throw new Error('invalid-api-setting');
   const copy=Object.assign({},setting);
+  const settingId=String(copy.id==null?'':copy.id).trim();
+  if(!_ibApiIdAllowed(settingId)||((copy.credentialRef!=null&&String(copy.credentialRef).trim())&&!_ibApiIdAllowed(copy.credentialRef)))
+    throw Object.assign(new Error('API_CONFIG_ID_INVALID'),{code:'API_CONFIG_ID_INVALID'});
+  copy.id=settingId;
   const key=String(copy.apiKey||'').trim();
   if(String(copy.imageGenApiKey||'').trim())throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
   if(key){
@@ -1203,8 +1232,10 @@ var _pendingApiAvatar=null;/* null=no change, ''=remove, string=new dataUrl */
 function handleApiAvatarUpload(e){
   var f=e.target.files[0];if(!f)return;
   var r=new FileReader();r.onload=function(){
-    _pendingApiAvatar=r.result;
-    _renderApiAvatarPreview(r.result);
+    var source=_ibApiAvatarSource(String(r.result||''));
+    if(!source){toast('头像格式不受支持，请选择 PNG/JPEG/WebP 等栅格图片');return}
+    _pendingApiAvatar=source;
+    _renderApiAvatarPreview(source);
     toast('头像已选择');
   };r.readAsDataURL(f);e.target.value='';
 }
@@ -1212,12 +1243,16 @@ function removeApiAvatar(){_pendingApiAvatar='';_renderApiAvatarPreview('');toas
 function _renderApiAvatarPreview(src){
   var el=document.getElementById('api-avatar-preview-el');
   if(!el)return;
-  if(src){el.innerHTML='<img class="aav-img" src="'+src+'" alt="" onerror="_apiAvatarLoadError(this)">';el.className=''}
-  else{
-    var nn=(document.getElementById('api-ai-name').value||'').trim();
-    var init=nn?nn.charAt(0).toUpperCase():'?';
-    el.innerHTML='';el.textContent=init;el.className='aav-placeholder';
+  var safeSource=_ibApiAvatarSource(src);
+  el.replaceChildren();
+  if(safeSource){
+    var image=document.createElement('img');image.className='aav-img';image.alt='';
+    image.addEventListener('error',function(){_apiAvatarLoadError(image)},{once:true});
+    image.src=safeSource;el.appendChild(image);el.className='';return;
   }
+  var nameInput=document.getElementById('api-ai-name');
+  var nn=(nameInput&&nameInput.value||'').trim();
+  el.textContent=nn?nn.charAt(0).toUpperCase():'?';el.className='aav-placeholder';
 }
 /* 头像图片加载失败（损坏 dataURL / 失效链接）→ 回退默认占位，不显示破图 */
 function _apiAvatarLoadError(img){
@@ -1232,8 +1267,10 @@ var _pendingApiBanner=null;
 function handleApiBannerUpload(e){
   var f=e.target.files[0];if(!f)return;
   var r=new FileReader();r.onload=function(){
-    _pendingApiBanner=r.result;
-    _renderApiBannerPreview(r.result);
+    var source=_ibApiAvatarSource(String(r.result||''));
+    if(!source){toast('背景图格式不受支持，请选择 PNG/JPEG/WebP 等栅格图片');return}
+    _pendingApiBanner=source;
+    _renderApiBannerPreview(source);
     toast('背景图已选择');
   };r.readAsDataURL(f);e.target.value='';
 }
@@ -1241,7 +1278,8 @@ function removeApiBanner(){_pendingApiBanner='';_renderApiBannerPreview('');toas
 function _renderApiBannerPreview(src){
   var el=document.getElementById('api-banner-preview-el');
   if(!el)return;
-  if(src){el.style.backgroundImage='url("'+src+'")';el.classList.add('has-img');el.classList.remove('is-empty')}
+  var safeSource=_ibApiAvatarSource(src);
+  if(safeSource&&window.IBSafeImage){el.style.backgroundImage=window.IBSafeImage.cssUrl(safeSource);el.classList.add('has-img');el.classList.remove('is-empty')}
   else{el.style.backgroundImage='';el.classList.remove('has-img');el.classList.add('is-empty')}
 }
 function _normApiHandle(v){
@@ -2057,14 +2095,16 @@ async function renderApiArchiveList(){
   const c=document.getElementById('api-list-container');
   if(!archivedConfigs.length){c.innerHTML='<div class="empty-state u-pad-20">归档区暂无API</div>';return}
   c.innerHTML=archivedConfigs.map(a=>{
+    const id=String(a&&a.id||''),idArg=_ibApiJsArgument(id),idAttr=_ibApiHtmlAttribute(id);
     var avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
-    var avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
-    return '<div class="chat-history-item api-arch-item" style="gap:12px" data-arch-id="'+a.id+'">'+avHtml
+    var avatar=_ibApiAvatarSource(a.avatar);
+    var avHtml=avatar?'<div class="api-item-avatar"><img src="'+_ibApiHtmlAttribute(avatar)+'" alt=""></div>':'<div class="api-item-avatar">'+esc(avInit)+'</div>';
+    return '<div class="chat-history-item api-arch-item" style="gap:12px" data-arch-id="'+idAttr+'">'+avHtml
       +'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+'</strong>'
       +(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')
       +'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider||'')+' · '+esc(a.model||'')+'</div></div>'
-      +'<span class="arch-ops"><button class="arch-restore-btn" title="恢复到API管理区" onclick="openApiRestoreDialog(\''+a.id+'\')">'+_ARCH_RESTORE_SVG+'</button>'
-      +'<span class="del-btn" title="彻底删除" onclick="archHardDeleteAsk(this,\''+a.id+'\')">✕</span></span></div>';
+      +'<span class="arch-ops"><button class="arch-restore-btn" title="恢复到API管理区" onclick="openApiRestoreDialog('+idArg+')">'+_ARCH_RESTORE_SVG+'</button>'
+      +'<span class="del-btn" title="彻底删除" onclick="archHardDeleteAsk(this,'+idArg+')">✕</span></span></div>';
   }).join('');
 }
 function archHardDeleteAsk(el,id){
@@ -2122,22 +2162,24 @@ async function loadFriendsList(){
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of apiConfigs){
+    const friendArg=_ibApiJsArgument(a.id);
     const threads=allThreads.filter(t=>t.friendId===a.id).sort((x,y)=>x.created-y.created);
     const isActive=activeFriendId===a.id&&!activeThreadId;
     const isExpanded=activeFriendId===a.id;
     const badge=threads.length?'<span class="friend-thread-badge">('+threads.length+')</span>':'';
-    html+='<div class="friend-item'+(isActive?' active':'')+'" onclick="selectFriend(\''+a.id+'\')">'
+    html+='<div class="friend-item'+(isActive?' active':'')+'" onclick="selectFriend('+friendArg+')">'
       +'<span class="friend-dot"></span><span>'+esc(a.nickname||a.model)+'</span>'
       +'<span class="friend-actions">'+badge
-      +'<span class="friend-add-thread" onclick="event.stopPropagation();createThread(\''+a.id+'\')" title="新建话题频道">+</span>'
+      +'<span class="friend-add-thread" onclick="event.stopPropagation();createThread('+friendArg+')" title="新建话题频道">+</span>'
       +'</span></div>';
     if(threads.length){
       html+='<div class="friend-thread-list'+(isExpanded?' open':'')+'">';
       threads.forEach(t=>{
         const tActive=activeThreadId===t.id;
-        html+='<div class="thread-item'+(tActive?' active':'')+'" onclick="selectThread(\''+a.id+'\',\''+t.id+'\')">'
+        const threadArg=_ibApiJsArgument(t.id);
+        html+='<div class="thread-item'+(tActive?' active':'')+'" onclick="selectThread('+friendArg+','+threadArg+')">'
           +'<span class="thread-dot"></span><span>'+esc(t.name)+'</span>'
-          +'<span class="del-btn" onclick="event.stopPropagation();deleteThread(\''+t.id+'\')" title="删除">✕</span>'
+          +'<span class="del-btn" onclick="event.stopPropagation();deleteThread('+threadArg+')" title="删除">✕</span>'
           +'</div>';
       });
       html+='</div>';
@@ -2152,9 +2194,10 @@ async function loadFriendsList(){
   }else{
     gc.innerHTML=groups.map(g=>{
       normalizeGroupMembers(g);/* 自动迁移 */
+      const groupArg=_ibApiJsArgument(g.id);
       const memberNames=getGroupMemberIds(g).map(mid=>{const cfg=apiConfigs.find(a=>a.id===mid);return cfg?esc(cfg.nickname||cfg.model):'?'});
       const tags=memberNames.map(n=>'<span class="group-member-tag">'+n+'</span>').join('');
-      return '<div class="friend-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectGroup(\''+g.id+'\')"><span class="friend-dot" style="background:var(--accent-light)"></span><span>'+esc(g.name)+'</span><span class="del-btn" onclick="event.stopPropagation();deleteGroup(\''+g.id+'\')" title="删除群聊" style="margin-left:auto;font-size:var(--fs-meta);cursor:pointer;opacity:0.5">✕</span></div>';
+      return '<div class="friend-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectGroup('+groupArg+')"><span class="friend-dot" style="background:var(--accent-light)"></span><span>'+esc(g.name)+'</span><span class="del-btn" onclick="event.stopPropagation();deleteGroup('+groupArg+')" title="删除群聊" style="margin-left:auto;font-size:var(--fs-meta);cursor:pointer;opacity:0.5">✕</span></div>';
     }).join('');
   }
   _chatRenderConversationSelector(apiConfigs,groups,allThreads,false);
@@ -2407,7 +2450,7 @@ function _renderGroupRolePicker(){
   const list=document.getElementById('group-api-list');
   if(!list)return;
   const available=apiConfigs.filter(a=>_roleMatchesSearch(a,_groupRoleSearch));
-  list.innerHTML=available.length?available.map(a=>'<div class="group-api-item" data-id="'+a.id+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:var(--fs-meta);opacity:0.6;min-width:16px;text-align:center"></span></div>').join(''):'<div class="group-role-empty">没有匹配的角色</div>';
+  list.innerHTML=available.length?available.map(a=>'<div class="group-api-item" data-id="'+_ibApiHtmlAttribute(a.id)+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:var(--fs-meta);opacity:0.6;min-width:16px;text-align:center"></span></div>').join(''):'<div class="group-role-empty">没有匹配的角色</div>';
   document.querySelectorAll('#group-api-list .group-api-item').forEach(item=>{
     const selected=_groupSelectOrder.indexOf(item.dataset.id)>=0;
     item.classList.toggle('selected',selected);
@@ -2447,7 +2490,7 @@ function _renderGroupMentionList(){
   list.innerHTML=sel.map(id=>{
     const a=apiConfigs.find(x=>x.id===id);
     const on=_groupMentionOnly.has(id);
-    return '<div class="group-api-item'+(on?' selected':'')+'" data-mid="'+id+'" onclick="_toggleGroupMentionOnly(this)"><input type="checkbox" tabindex="-1"'+(on?' checked':'')+'><span>@ '+esc(a?(a.nickname||a.model||'AI'):'AI')+'</span><span style="margin-left:auto;font-size:var(--fs-meta);opacity:0.55">静默</span></div>';
+    return '<div class="group-api-item'+(on?' selected':'')+'" data-mid="'+_ibApiHtmlAttribute(id)+'" onclick="_toggleGroupMentionOnly(this)"><input type="checkbox" tabindex="-1"'+(on?' checked':'')+'><span>@ '+esc(a?(a.nickname||a.model||'AI'):'AI')+'</span><span style="margin-left:auto;font-size:var(--fs-meta);opacity:0.55">静默</span></div>';
   }).join('');
 }
 function _toggleGroupMentionOnly(el){
@@ -2526,11 +2569,11 @@ function renderMemberMgrList(group){
     html+='<span class="member-mgr-status '+esc(m.status)+'">'+statusText+'</span>';
     html+='<span class="member-mgr-actions">';
     if(m.status==='active'){
-      html+='<button onclick="memberAction(\''+group.id+'\',\''+m.characterId+'\',\'mute\')" aria-label="Mute '+esc(name)+'">Mute</button>';
-      html+='<button class="danger" onclick="memberAction(\''+group.id+'\',\''+m.characterId+'\',\'remove\')" aria-label="Remove '+esc(name)+'">Remove</button>';
+      html+='<button onclick="memberAction('+_ibApiJsArgument(group.id)+','+_ibApiJsArgument(m.characterId)+',\'mute\')" aria-label="Mute '+esc(name)+'">Mute</button>';
+      html+='<button class="danger" onclick="memberAction('+_ibApiJsArgument(group.id)+','+_ibApiJsArgument(m.characterId)+',\'remove\')" aria-label="Remove '+esc(name)+'">Remove</button>';
     }else if(m.status==='muted'){
-      html+='<button onclick="memberAction(\''+group.id+'\',\''+m.characterId+'\',\'unmute\')" aria-label="Unmute '+esc(name)+'">Unmute</button>';
-      html+='<button class="danger" onclick="memberAction(\''+group.id+'\',\''+m.characterId+'\',\'remove\')" aria-label="Remove '+esc(name)+'">Remove</button>';
+      html+='<button onclick="memberAction('+_ibApiJsArgument(group.id)+','+_ibApiJsArgument(m.characterId)+',\'unmute\')" aria-label="Unmute '+esc(name)+'">Unmute</button>';
+      html+='<button class="danger" onclick="memberAction('+_ibApiJsArgument(group.id)+','+_ibApiJsArgument(m.characterId)+',\'remove\')" aria-label="Remove '+esc(name)+'">Remove</button>';
     }
     html+='</span></div>';
   });
@@ -2631,7 +2674,14 @@ async function confirmCreateGroup(){
 }
 
 async function loadGroups(){
-  try{return await dbGetAll('groups')}catch(e){return[]}
+  try{
+    const rows=await dbGetAll('groups');
+    return (Array.isArray(rows)?rows:[]).filter(group=>group&&_ibApiIdAllowed(group.id)
+      &&(!Array.isArray(group.members)||group.members.every(member=>{
+        const id=typeof member==='string'?member:(member&&member.characterId);
+        return id!=null&&_ibApiIdAllowed(id);
+      })));
+  }catch(e){return[]}
 }
 
 /* ===== 群聊动态成员系统：数据迁移与工具函数 ===== */
@@ -3034,7 +3084,7 @@ async function selectGroup(gid){
   const memSel=document.getElementById('chat-mem-member-select');
   if(memSel){
     if(group&&group.members&&group.members.length){
-      memSel.innerHTML=group.members.filter(m=>m.status!=='removed').map(m=>{const c=apiConfigs.find(a=>a.id===m.characterId);if(c)return '<option value="'+m.characterId+'">'+esc(c.nickname||c.model)+'</option>';if(archivedConfigs.find(a=>a.id===m.characterId))return '';return '<option value="'+m.characterId+'">AI</option>'}).join('');
+      memSel.innerHTML=group.members.filter(m=>m.status!=='removed').map(m=>{const c=apiConfigs.find(a=>a.id===m.characterId);if(c)return '<option value="'+_ibApiHtmlAttribute(m.characterId)+'">'+esc(c.nickname||c.model)+'</option>';if(archivedConfigs.find(a=>a.id===m.characterId))return '';return '<option value="'+_ibApiHtmlAttribute(m.characterId)+'">AI</option>'}).join('');
       memSel.style.display='';
     }else{memSel.style.display='none'}
   }
@@ -3224,11 +3274,12 @@ async function renderArchFriendsList(){
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of archivedConfigs){
+    const friendArg=_ibApiJsArgument(a.id);
     const threads=allThreads.filter(t=>t.friendId===a.id).sort((x,y)=>x.created-y.created);
     const isActive=activeFriendId===a.id&&!activeThreadId;
     const isExpanded=activeFriendId===a.id;
     const badge=threads.length?'<span class="friend-thread-badge">('+threads.length+')</span>':'';
-    html+='<div class="friend-item arch-item'+(isActive?' active':'')+'" onclick="selectArchFriend(\''+a.id+'\')">'
+    html+='<div class="friend-item arch-item'+(isActive?' active':'')+'" onclick="selectArchFriend('+friendArg+')">'
       +'<span class="friend-dot"></span><span>'+esc(a.nickname||a.model)+'</span>'
       +'<span class="friend-actions">'+badge
       +'<span class="friend-add-thread arch-lock" onclick="event.stopPropagation()" title="归档好友的话题频道为只读状态">+</span>'
@@ -3237,7 +3288,7 @@ async function renderArchFriendsList(){
       html+='<div class="friend-thread-list'+(isExpanded?' open':'')+'">';
       threads.forEach(t=>{
         const tActive=activeThreadId===t.id;
-        html+='<div class="thread-item'+(tActive?' active':'')+'" onclick="selectArchThread(\''+a.id+'\',\''+t.id+'\')">'
+        html+='<div class="thread-item'+(tActive?' active':'')+'" onclick="selectArchThread('+friendArg+','+_ibApiJsArgument(t.id)+')">'
           +'<span class="thread-dot"></span><span>'+esc(t.name)+'</span>'
           +'</div>';
       });

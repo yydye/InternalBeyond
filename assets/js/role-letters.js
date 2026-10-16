@@ -22,6 +22,8 @@
    全部 fail-open：任一生成/入库失败只回退与退避，不影响聊天 / Moments / 日记 / Memory。 */
 (function(NS){
 'use strict';
+function _roleLettersJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _roleLettersHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 const RL_STORE='roleLetters';                                   /* IndexedDB 存储（新增，见 core.js v19）——信件唯一持久化来源 */
 const RL_MEM_STORE='roleLetterMemories';                        /* 角色私信长期记忆命名空间（按 characterId owner 隔离，见 core.js v20）。绝不写入共享 memories，避免污染 Memory 面板/export/backup/统计。 */
 const RL_CLEAN_KEY='ib_role_letters_clean_v1';                  /* 一次性清理历史误入共享 memories 的 role-letter 记录 */
@@ -615,15 +617,16 @@ async function _rlRenderInbox(){
     const fromName=_momName(from),toName=_momName(to);
     const tag=l.kind==='reply'?'回信':'来信';
     const status=(l.kind==='init')?(l.replyStatus==='replied'?'<span class="rl-badge rl-ok">已回</span>':(l.replyStatus==='declined'?'<span class="rl-badge">未回</span>':'<span class="rl-badge rl-pending">待回</span>')):'';
-    const unread=(mode==='inbox'&&l.kind==='init'&&!l.readAt)?'<span class="rl-badge rl-new" id="rln-'+l.id+'">新</span>':'';
-    return '<div class="rl-item" id="rl-'+l.id+'">'
+    const letterIdAttr=_roleLettersHtmlAttr(l.id),letterIdArg=_roleLettersJsArg(l.id);
+    const unread=(mode==='inbox'&&l.kind==='init'&&!l.readAt)?'<span class="rl-badge rl-new" id="rln-'+letterIdAttr+'">新</span>':'';
+    return '<div class="rl-item" id="rl-'+letterIdAttr+'">'
       +'<div class="rl-item-head">'
       +'<div class="rl-persons">'+_rlAvatar(from,26)+'<span class="rl-name">'+esc(fromName)+'</span><span class="rl-arrow">→</span>'+_rlAvatar(to,26)+'<span class="rl-name">'+esc(toName)+'</span></div>'
       +'<span class="rl-tag">'+tag+'</span>'+status+unread
       +'<span class="mom-card-time">'+_rlTimeLabel(l.createdAt)+'</span>'
-      +'<button type="button" class="mom-action-btn" onclick="_rlExp(\''+l.id+'\')">详情</button>'
+      +'<button type="button" class="mom-action-btn" onclick="_rlExp('+letterIdArg+')">详情</button>'
       +'</div>'
-      +'<div class="rl-preview" id="rlx-'+l.id+'" hidden>'+esc(String(l.content||''))+'</div>'
+      +'<div class="rl-preview" id="rlx-'+letterIdAttr+'" hidden>'+esc(String(l.content||''))+'</div>'
       +'</div>';
   }).join('');
 }

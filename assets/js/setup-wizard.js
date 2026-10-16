@@ -671,7 +671,8 @@
     var preview = el('div', 'ib-setup-avatar-img');
     preview.id = 'ib-setup-avatar';
     preview.textContent = (S.nickname || '?').charAt(0).toUpperCase();
-    if (S.avatar) preview.style.backgroundImage = 'url("' + S.avatar + '")';
+    var safeAvatar = window.IBSafeImage && typeof window.IBSafeImage.normalizeSource === 'function' ? window.IBSafeImage.normalizeSource(S.avatar) : '';
+    if (safeAvatar && window.IBSafeImage) preview.style.backgroundImage = window.IBSafeImage.cssUrl(safeAvatar);
     var pick = el('button', 'ib-setup-mini', '选择图片');
     pick.type = 'button';
     var file = el('input');
@@ -685,9 +686,10 @@
       if (!f) return;
       var reader = new FileReader();
       reader.onload = function () {
-        S.avatar = String(reader.result || '');
+        S.avatar = window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'
+          ?window.IBSafeImage.normalizeSource(String(reader.result||'')):'';
         var pv = $('ib-setup-avatar');
-        if (pv) { pv.style.backgroundImage = 'url("' + S.avatar + '")'; pv.textContent = ''; }
+        if (pv) { pv.style.backgroundImage = S.avatar&&window.IBSafeImage?window.IBSafeImage.cssUrl(S.avatar):''; pv.textContent = S.avatar?'':(S.nickname||'?').charAt(0).toUpperCase(); }
       };
       reader.readAsDataURL(f);
       file.value = '';

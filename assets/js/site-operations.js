@@ -1,6 +1,7 @@
 ﻿/* DANGEROUS OPERATIONS */
 /* IB 命名空间迁移：IIFE 私有作用域 + 双挂载（window 实时 + IB 注册）。 */
 (function(NS){
+function _ibToolSafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
 async function clearAllApiKeys(){
   if(!confirm('⚠ 确定要清除所有 API 密钥吗？\n\nAPI昵称和其他设置会保留，但密钥会被清空。'))return;
   if(typeof _activePrepareAllBackgroundRemoval==='function'&&!(await _activePrepareAllBackgroundRemoval('清除全部 API Key')))return;
@@ -179,9 +180,9 @@ async function renderIbToolsList(){
     return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border-soft)">'
       +'<div style="flex:1;min-width:0"><div style="font-size:0.86rem;font-weight:500">'+esc(t.name)+'</div>'
       +'<div style="font-size:var(--fs-meta);opacity:0.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc((t.method||'GET')+' · '+t.url)+(t.desc?' · '+esc(t.desc):'')+'</div></div>'
-      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolTest(\''+t.id+'\')">测试</button>'
-      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolOpenEditor(\''+t.id+'\')">编辑</button>'
-      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px;color:var(--status-danger)" onclick="ibToolDelete(\''+t.id+'\')">删除</button>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolTest('+_ibToolSafeJsArg(t.id)+')">测试</button>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolOpenEditor('+_ibToolSafeJsArg(t.id)+')">编辑</button>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px;color:var(--status-danger)" onclick="ibToolDelete('+_ibToolSafeJsArg(t.id)+')">删除</button>'
       +'</div>';
   }).join('');
 }

@@ -713,7 +713,10 @@
     var result = null;
     try {
       var text = await readSceneImportFile(file);
-      result = await api.importSceneData(JSON.parse(text));
+      var payload = JSON.parse(text);
+      var safeMedia = window.IBSafeImage;
+      if (!safeMedia || typeof safeMedia.sanitizeSceneData !== 'function') throw new Error('scene-media-validator-unavailable');
+      result = await api.importSceneData(safeMedia.sanitizeSceneData(payload));
     } catch (e) { result = { ok: false, reason: 'bad-scene-file' }; }
     input.value = '';
     if (!result || result.ok !== true) {

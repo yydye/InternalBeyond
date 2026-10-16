@@ -7,6 +7,9 @@
    稳定块前置以配合提示缓存。分类/写入门槛/质量标准由 Anthropic 客户端 memory 导出样本反推而来。 */
 const AM_CATS={work_context:'Work',personal_context:'Personal',top_of_mind:'Top of mind',brief_history:'History',long_term_background:'Background',user_instructions:'Instructions'};
 const AM_PRIOS=['always','normal','low'];
+function _amSafeJsArg(value){const guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _amSafeHtmlAttr(value){const guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
+function _amSafeSearchHref(value){const guard=window.IBSafeImage;return guard&&typeof guard.normalizeLink==='function'?guard.normalizeLink(String(value||''))||'#':'#'}
 /* Understanding 证据独立性：两条记忆 content 的 _activeTextSimilarity ≥ 此阈值即视为同一事实，不重复计数。
    注意：_activeTextSimilarity 是字符 bigram Jaccard，对中文"近字面重复"（score≥0.5）可靠，
    对"完全改写式释义"不敏感（score 可低至 0.2）——阈值 0.5 只拦截近字面重复，不做语义释义判等。 */
@@ -229,7 +232,8 @@ function _showNextMemoryApproval(){
   const confirmNames={create:'确认记住',update:'确认修改',delete:'确认忘记'};
   const av=document.getElementById('mem-approval-avatar');
   av.innerHTML='';
-  if(c.avatar){const img=document.createElement('img');img.src=c.avatar;img.alt='';av.appendChild(img)}
+  const safeAvatar=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'?window.IBSafeImage.normalizeSource(c.avatar):'';
+  if(safeAvatar){const img=document.createElement('img');img.src=safeAvatar;img.alt='';av.appendChild(img)}
   else av.textContent=(name.trim().charAt(0)||'AI').toUpperCase();
   document.getElementById('mem-approval-kicker').textContent='Memory request'+(_memoryApprovalQueue.length?' · 还有 '+_memoryApprovalQueue.length+' 条候选':'');
   document.getElementById('mem-approval-title').textContent=titles[c.operation]||titles.create;
@@ -365,7 +369,7 @@ function _amBuildSearchCard(s){
   c.innerHTML=WS_ICON.search+'<span class="ws-op-text">已联网搜索'+(s.query?' · <b>'+esc(s.query)+'</b>':'')+esc(' ('+n+' 条结果)')+'</span>'
     +'<svg class="ws-op-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>';
   const det=document.createElement('div');det.className='ws-op-detail';
-  (s.results||[]).forEach(r=>{const a=document.createElement('a');a.href=r.url||'#';a.target='_blank';a.rel='noopener';a.textContent='· '+(r.title||r.url);a.style.cssText='display:block;color:inherit;opacity:0.85;text-decoration:none;padding:1px 0';det.appendChild(a)});
+  (s.results||[]).forEach(r=>{const a=document.createElement('a');a.href=_amSafeSearchHref(r.url);a.target='_blank';a.rel='noopener';a.textContent='· '+(r.title||r.url);a.style.cssText='display:block;color:inherit;opacity:0.85;text-decoration:none;padding:1px 0';det.appendChild(a)});
   c.appendChild(det);
   c.onclick=function(ev){if(ev.target&&ev.target.tagName==='A')return;c.classList.toggle('expanded')};
   return c;
@@ -451,7 +455,10 @@ function toggleAmArchive(){
 }
 function _amCoreHtml(cfg){
   const ini=(cfg.nickname||cfg.model||'AI').slice(0,1);
-  const ava=cfg.avatar?'<img src="'+esc(cfg.avatar)+'" alt="">':'<span>'+esc(ini)+'</span>';
+  const imageGuard=window.IBSafeImage;
+  const safeAvatar=imageGuard&&typeof imageGuard.normalizeSource==='function'?imageGuard.normalizeSource(cfg.avatar):'';
+  const avatarAttr=safeAvatar&&typeof imageGuard.escapeAttribute==='function'?imageGuard.escapeAttribute(safeAvatar):'';
+  const ava=avatarAttr?'<img src="'+avatarAttr+'" alt="">':'<span>'+esc(ini)+'</span>';
   return '<div class="am-ava">'+ava+'</div>'
     +'<div class="am-name">'+esc(cfg.nickname||cfg.model||'AI')+'</div>'
     +'<code class="am-model">'+esc(cfg.model||'')+'</code>'
@@ -470,9 +477,9 @@ function _amTrayHtml(cfg,entries){
       if(!groups[cat])return;
       entHtml+='<div class="am-cat">'+esc(AM_CATS[cat])+'</div>';
       groups[cat].forEach(e=>{
-        entHtml+='<div class="am-entry" data-amid="'+esc(e.id)+'">'
+        entHtml+='<div class="am-entry" data-amid="'+_amSafeHtmlAttr(e.id)+'">'
           +'<div class="am-entry-text">'+(e.priority==='always'?'<span class="am-flag">always</span>':'')+esc(e.content)+'</div>'
-          +(_amArchMode?'':'<span class="am-entry-ops"><button class="am-mini" onclick="amEditEntry(\''+esc(e.id)+'\')" title="Edit">\u270e</button><button class="am-mini" onclick="amDeleteEntry(\''+esc(e.id)+'\')" title="Delete">\u2715</button></span>')
+          +(_amArchMode?'':'<span class="am-entry-ops"><button class="am-mini" onclick="amEditEntry('+_amSafeJsArg(e.id)+')" title="Edit">\u270e</button><button class="am-mini" onclick="amDeleteEntry('+_amSafeJsArg(e.id)+')" title="Delete">\u2715</button></span>')
           +'</div>';
       });
     });
@@ -559,10 +566,10 @@ async function amToggleRecordOnly(v){
 function amRecPillClick(ev){if(ev&&ev.stopPropagation)ev.stopPropagation();if(_amArchMode)return;const c=_amList()[_amIdx];if(c)amToggleRecordOnly(!c.amRecordOnly)}
 function amJumpSettings(id){try{navTo('api');setTimeout(function(){if(typeof editApi==='function')editApi(id);else if(typeof editApiConfig==='function')editApiConfig(id)},80)}catch(e){navTo('api')}}
 async function amEditEntry(id){
-  const row=document.querySelector('.am-entry[data-amid="'+id+'"]');if(!row)return;
+  const row=Array.from(document.querySelectorAll('.am-entry')).find(function(item){return item.getAttribute('data-amid')===String(id)});if(!row)return;
   const e=await dbGet('autoMemory',id);if(!e)return;
   row.innerHTML='<textarea class="am-edit-ta"></textarea>'
-    +'<span class="am-entry-ops"><button class="am-mini" onclick="amSaveEntry(\''+esc(id)+'\',this)" title="Save">✓</button><button class="am-mini" onclick="renderAutoMemShowcase()" title="Cancel">↺</button></span>';
+    +'<span class="am-entry-ops"><button class="am-mini" onclick="amSaveEntry('+_amSafeJsArg(id)+',this)" title="Save">✓</button><button class="am-mini" onclick="renderAutoMemShowcase()" title="Cancel">↺</button></span>';
   const ta=row.querySelector('textarea');ta.value=e.content||'';ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);
 }
 async function amSaveEntry(id,btn){
@@ -595,7 +602,7 @@ async function renderApiDayList(fid){
   if(!msgs.length){box.innerHTML='<div class="api-dayempty">暂无聊天记录</div>';return}
   const days={};msgs.forEach(m=>{const t=m.timestamp||m.created||0;if(!t)return;const k=_amDayKey(t);days[k]=(days[k]||0)+1});
   const keys=Object.keys(days).sort().reverse();
-  box.innerHTML=keys.map(k=>'<div class="api-dayrow" data-day="'+k+'"><span class="api-dayd">'+k+'</span><span class="api-dayn">'+days[k]+' \u6761</span><span class="am-entry-ops"><button class="am-mini" title="\u5bfc\u51fa\u8be5\u65e5" onclick="apiExportDay(\''+fid+'\',\''+k+'\')">\u2913</button><button class="am-mini am-mini-danger" title="\u5220\u9664\u8be5\u65e5" onclick="apiDeleteDay(this,\''+fid+'\',\''+k+'\')">\u2715</button></span></div>').join('');
+  box.innerHTML=keys.map(k=>'<div class="api-dayrow" data-day="'+_amSafeHtmlAttr(k)+'"><span class="api-dayd">'+esc(k)+'</span><span class="api-dayn">'+days[k]+' \u6761</span><span class="am-entry-ops"><button class="am-mini" title="\u5bfc\u51fa\u8be5\u65e5" onclick="apiExportDay('+_amSafeJsArg(fid)+','+_amSafeJsArg(k)+')">\u2913</button><button class="am-mini am-mini-danger" title="\u5220\u9664\u8be5\u65e5" onclick="apiDeleteDay(this,'+_amSafeJsArg(fid)+','+_amSafeJsArg(k)+')">\u2715</button></span></div>').join('');
 }
 async function apiExportDay(fid,k){
   const list=(await _amMsgsOfDay(fid,k)).sort((a,b)=>(a.timestamp||a.created||0)-(b.timestamp||b.created||0));

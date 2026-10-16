@@ -241,7 +241,8 @@ async function _activeRenderSettings(){
     const top=document.createElement('div');top.className='active-setting-top';
     const who=document.createElement('div');who.className='active-setting-who';
     const av=document.createElement('span');av.className='active-avatar';
-    if(cfg&&cfg.avatar){const img=document.createElement('img');img.src=cfg.avatar;img.alt='';av.appendChild(img)}else av.textContent=(name||'?').charAt(0);
+    const safeAvatar=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'?window.IBSafeImage.normalizeSource(cfg&&cfg.avatar):'';
+    if(safeAvatar){const img=document.createElement('img');img.src=safeAvatar;img.alt='';av.appendChild(img)}else av.textContent=(name||'?').charAt(0);
     const copy=document.createElement('div'),nm=document.createElement('div'),meta=document.createElement('div');
     nm.className='active-setting-name';nm.textContent=name;meta.className='active-setting-meta';meta.textContent=_activeTypeLabel(s.message_type)+' · '+_activeFrequencyLabel(s);
     copy.append(nm,meta);who.append(av,copy);

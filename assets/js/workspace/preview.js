@@ -1,5 +1,7 @@
 ﻿/* WORKSPACE PREVIEW —— 富文件支持（二进制嗅探 / 解析库缓存 / PDF·DOCX·XLSX·PPTX·RTF·EPUB 提取 / ZIP 工具 / PDF 密码）+ 预览面板 UI。自 workspace.js 机械提取（只动位置，不改逻辑；加载于 workspace.js 之前）。 */
 (function(NS){
+function _wsPreviewSafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _wsPreviewSafeHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 /* ── 二进制嗅探：头 1KB 里出现 NUL 字节即视为二进制（几乎所有真二进制格式开头都有 NUL） ── */
 function _icodeLooksBinary(bytes){
   var n=Math.min(bytes.length,1024);
@@ -472,11 +474,12 @@ async function wsTogglePreview(fileId){
   var lines=f.content.split('\n');
   var numbered=lines.map(function(l,i){return String(i+1).padStart(4,' ')+'  '+l}).join('\n');
   var isHtml=/\.html?$/i.test(f.path||'');
+  var fileIdArg=_wsPreviewSafeJsArg(fileId);
   preview.innerHTML='<div class="ws-preview-head"><span class="ws-preview-name">'+esc(f.path)+'</span>'
     +'<div class="ws-preview-acts">'
-    +'<button class="ws-file-btn" title="搜索定位" onclick="wsToggleSearch(\''+fileId+'\')">'+_WS_SEARCH_SVG+'</button>'
-    +(isHtml?'<button class="ws-file-btn" data-wsact="render" onclick="wsToggleRenderPreview(\''+fileId+'\')">渲染</button>':'')
-    +'<button class="ws-file-btn" onclick="wsEditInPreview(\''+fileId+'\')">编辑</button>'
+    +'<button class="ws-file-btn" title="搜索定位" onclick="wsToggleSearch('+fileIdArg+')">'+_WS_SEARCH_SVG+'</button>'
+    +(isHtml?'<button class="ws-file-btn" data-wsact="render" onclick="wsToggleRenderPreview('+fileIdArg+')">渲染</button>':'')
+    +'<button class="ws-file-btn" onclick="wsEditInPreview('+fileIdArg+')">编辑</button>'
     +'<button class="ws-file-btn" onclick="this.closest(\'.ws-preview\').remove()">关闭</button>'
     +'</div></div>'
     +'<div class="ws-preview-code"></div>';
@@ -491,13 +494,14 @@ function _wsOpenRichPreview(fileId,f,row){
   var preview=document.createElement('div');preview.className='ws-preview';preview.id='wsp-'+fileId;
   var kind=_wsRichKind(f.path);
   var textOnly=/^(pptx|rtf|epub)$/.test(kind);
+  var fileIdArg=_wsPreviewSafeJsArg(fileId),fileIdAttr=_wsPreviewSafeHtmlAttr(fileId);
   preview.innerHTML='<div class="ws-preview-head"><span class="ws-preview-name">'+esc(f.path)+'</span>'
     +'<div class="ws-preview-acts">'
-    +'<span class="ws-rich-badge" id="wsrb-'+fileId+'">'+kind.toUpperCase()+'</span>'
-    +(kind==='pdf'?'<button class="ws-file-btn" title="把页面转成图片附加到聊天（需支持图像的模型）" onclick="wsPdfPagesToChat(\''+fileId+'\')">以图片发送</button>':'')
-    +(kind==='docx'?'<button class="ws-file-btn" title="抽取文档内嵌图片附加到聊天（需支持图像的模型）" onclick="wsDocxImagesToChat(\''+fileId+'\')">提取图片</button>':'')
-    +'<button class="ws-file-btn" title="搜索提取文本" onclick="wsRichSearch(\''+fileId+'\')">'+_WS_SEARCH_SVG+'</button>'
-    +(textOnly?'':'<button class="ws-file-btn" data-wsact="richview" onclick="wsRichToggleView(\''+fileId+'\')">文本</button>')
+    +'<span class="ws-rich-badge" id="wsrb-'+fileIdAttr+'">'+kind.toUpperCase()+'</span>'
+    +(kind==='pdf'?'<button class="ws-file-btn" title="把页面转成图片附加到聊天（需支持图像的模型）" onclick="wsPdfPagesToChat('+fileIdArg+')">以图片发送</button>':'')
+    +(kind==='docx'?'<button class="ws-file-btn" title="抽取文档内嵌图片附加到聊天（需支持图像的模型）" onclick="wsDocxImagesToChat('+fileIdArg+')">提取图片</button>':'')
+    +'<button class="ws-file-btn" title="搜索提取文本" onclick="wsRichSearch('+fileIdArg+')">'+_WS_SEARCH_SVG+'</button>'
+    +(textOnly?'':'<button class="ws-file-btn" data-wsact="richview" onclick="wsRichToggleView('+fileIdArg+')">文本</button>')
     +'<button class="ws-file-btn" onclick="this.closest(\'.ws-preview\').remove()">关闭</button>'
     +'</div></div>'
     +'<div class="ws-preview-code" style="display:'+(textOnly?'':'none')+'"></div>'
@@ -740,8 +744,8 @@ async function wsEditInPreview(fileId){
   ta.focus();
 }
 /* ── HTML 渲染预览：预览面板内「渲染 ⇄ 代码」一键切换 ──
-   iframe 用 sandbox（不含 allow-same-origin）隔离：页面里的脚本可以跑，
-   但拿不到 IB 的存储与 DOM。与编辑互斥：进入编辑时自动退回代码视图。 */
+   HTML 预览按静态文档处理：iframe 不开放脚本、表单、弹窗或父页面访问。
+   与编辑互斥：进入编辑时自动退回代码视图。 */
 async function wsToggleRenderPreview(fileId){
   var preview=document.getElementById('wsp-'+fileId);if(!preview)return;
   if(preview.querySelector('.ws-edit-area')){toast('正在编辑中，请先保存或取消再切换渲染');return}
@@ -753,7 +757,7 @@ async function wsToggleRenderPreview(fileId){
   if(!f){toast('文件不存在');return}
   frame=document.createElement('iframe');
   frame.className='ws-render-frame';
-  frame.setAttribute('sandbox','allow-scripts allow-forms allow-modals allow-popups');
+  frame.setAttribute('sandbox','');
   frame.setAttribute('referrerpolicy','no-referrer');
   frame.srcdoc=f.content;
   if(code)code.style.display='none';

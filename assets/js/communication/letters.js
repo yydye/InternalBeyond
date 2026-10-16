@@ -1,6 +1,8 @@
 ﻿/* LETTERS */
 /* IB 命名空间迁移：letters 域自 communication.js 机械提取（只动位置，不改逻辑；加载于 communication.js 之前）。 */
 (function(NS){
+function _lettersJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _lettersHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 var _letterStampSVG='<svg class="stamp-svg" viewBox="0 0 60 76" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><mask id="stampPerf"><rect x="2" y="2" width="56" height="72" rx="3.5" fill="#fff"/><circle cx="2.0" cy="2" r="2.4" fill="#000"/><circle cx="2" cy="10.0" r="2.4" fill="#000"/><circle cx="2" cy="18.0" r="2.4" fill="#000"/><circle cx="2" cy="26.0" r="2.4" fill="#000"/><circle cx="2" cy="34.0" r="2.4" fill="#000"/><circle cx="2" cy="42.0" r="2.4" fill="#000"/><circle cx="2" cy="50.0" r="2.4" fill="#000"/><circle cx="2" cy="58.0" r="2.4" fill="#000"/><circle cx="2" cy="66.0" r="2.4" fill="#000"/><circle cx="2.0" cy="74" r="2.4" fill="#000"/><circle cx="10.0" cy="2" r="2.4" fill="#000"/><circle cx="10.0" cy="74" r="2.4" fill="#000"/><circle cx="18.0" cy="2" r="2.4" fill="#000"/><circle cx="18.0" cy="74" r="2.4" fill="#000"/><circle cx="26.0" cy="2" r="2.4" fill="#000"/><circle cx="26.0" cy="74" r="2.4" fill="#000"/><circle cx="34.0" cy="2" r="2.4" fill="#000"/><circle cx="34.0" cy="74" r="2.4" fill="#000"/><circle cx="42.0" cy="2" r="2.4" fill="#000"/><circle cx="42.0" cy="74" r="2.4" fill="#000"/><circle cx="50.0" cy="2" r="2.4" fill="#000"/><circle cx="50.0" cy="74" r="2.4" fill="#000"/><circle cx="58.0" cy="2" r="2.4" fill="#000"/><circle cx="58" cy="10.0" r="2.4" fill="#000"/><circle cx="58" cy="18.0" r="2.4" fill="#000"/><circle cx="58" cy="26.0" r="2.4" fill="#000"/><circle cx="58" cy="34.0" r="2.4" fill="#000"/><circle cx="58" cy="42.0" r="2.4" fill="#000"/><circle cx="58" cy="50.0" r="2.4" fill="#000"/><circle cx="58" cy="58.0" r="2.4" fill="#000"/><circle cx="58" cy="66.0" r="2.4" fill="#000"/><circle cx="58.0" cy="74" r="2.4" fill="#000"/></mask><linearGradient id="stampSheen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.5"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.05"/><stop offset="1" stop-color="#fff" stop-opacity="0.16"/></linearGradient><g id="stamp-h-petal"><circle cy="-1.5" r="1.15"/><circle cx="1.5" r="1.15"/><circle cy="1.5" r="1.15"/><circle cx="-1.5" r="1.15"/></g></defs><rect class="stamp-paper" x="2" y="2" width="56" height="72" rx="3.5" mask="url(#stampPerf)"/><rect x="2" y="2" width="56" height="72" rx="3.5" fill="url(#stampSheen)" mask="url(#stampPerf)"/><rect class="stamp-frame" x="6.5" y="6.5" width="47" height="63" rx="2.5" fill="none"/><g class="stamp-flower" fill="none" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"><path d="M 23.60 28.73 L 24.00 28.72 L 24.40 28.92 L 24.69 29.33 L 24.75 29.87 L 24.54 30.44 L 24.04 30.86 L 23.36 31.03 L 22.63 30.84 L 22.03 30.30 L 21.72 29.50 L 21.83 28.60 L 22.37 27.80 L 23.25 27.32 L 24.32 27.29 L 25.32 27.78 L 26.02 28.71 L 26.22 29.92 L 25.84 31.13 L 24.91 32.06 L 23.60 32.49 L 22.19 32.26 L 21.00 31.39 L 20.32 30.02 L 20.34 28.44 L 21.10 27.00 L 22.47 26.03 L 24.19 25.78 L 25.88 26.37 L 27.15 27.69 L 27.70 29.50"/><path d="M 21.54 27.05 Q 23.60 22.78 25.66 27.05"/><path d="M 25.30 26.79 Q 29.99 27.42 26.57 30.70"/><path d="M 26.70 30.27 Q 27.55 34.94 23.38 32.69"/><path d="M 23.82 32.69 Q 19.65 34.94 20.50 30.27"/><path d="M 20.63 30.70 Q 17.21 27.42 21.90 26.79"/><path d="M 37.40 26.40 Q 39.82 23.41 38.32 19.86 Q 35.90 22.86 37.40 26.40 Z"/><path d="M 37.40 26.40 Q 41.20 27.00 43.52 23.93 Q 39.72 23.33 37.40 26.40 Z"/><path d="M 37.40 26.40 Q 38.78 29.99 42.60 30.46 Q 41.22 26.87 37.40 26.40 Z"/><path d="M 37.40 26.40 Q 34.98 29.39 36.48 32.94 Q 38.90 29.94 37.40 26.40 Z"/><path d="M 37.40 26.40 Q 33.60 25.80 31.28 28.87 Q 35.08 29.47 37.40 26.40 Z"/><path d="M 37.40 26.40 Q 36.02 22.81 32.20 22.34 Q 33.58 25.93 37.40 26.40 Z"/><path d="M 37.40 26.40 L 34.56 20.59"/><circle cx="34.56" cy="20.59" r="0.62" fill="currentColor" stroke="none"/><path d="M 37.40 26.40 L 36.39 20.01"/><circle cx="36.39" cy="20.01" r="0.62" fill="currentColor" stroke="none"/><path d="M 37.40 26.40 L 38.30 19.99"/><circle cx="38.30" cy="19.99" r="0.62" fill="currentColor" stroke="none"/><path d="M 37.40 26.40 L 40.13 20.54"/><circle cx="40.13" cy="20.54" r="0.62" fill="currentColor" stroke="none"/><path d="M 37.40 26.40 L 41.73 21.59"/><circle cx="41.73" cy="21.59" r="0.62" fill="currentColor" stroke="none"/><path d="M 24.80 34.10 Q 26.50 41.00 30.00 45.40"/><path d="M 36.40 31.40 Q 33.60 40.00 30.00 45.40"/><path d="M 29.40 42.40 Q 27.42 39.86 24.40 40.97 Q 26.38 43.51 29.40 42.40 Z"/><path d="M 28.30 44.40 L 31.70 44.40"/><path d="M 28.60 45.70 L 31.40 45.70"/></g><g class="stamp-hydrangea"><circle cx="30" cy="27" r="13" fill="rgba(160,195,235,.07)"/><circle cx="29" cy="26" r="10" fill="rgba(170,200,240,.08)"/><use href="#stamp-h-petal" transform="translate(29.3,16.5) rotate(-81) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(34.2,17.4) rotate(-76) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(38.9,20.5) rotate(-37) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(39.9,24.1) rotate(0) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(40.8,29.3) rotate(3) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(37.8,33.1) rotate(32) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(34.0,36.9) rotate(66) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(30.5,37.9) rotate(73) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(25.5,35.9) rotate(130) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(21.7,33.5) rotate(139) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(19.4,28.6) rotate(148) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(20.5,25.3) rotate(204) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(21.9,20.9) rotate(224) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(25.2,17.4) rotate(235) scale(1.15)" fill="rgba(180,210,245,.26)"/><use href="#stamp-h-petal" transform="translate(35.5,29.1) rotate(-11) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(32.7,31.9) rotate(-27) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(30.0,32.7) rotate(-25) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(25.6,32.9) rotate(4) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(23.5,29.9) rotate(-5) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(24.6,24.6) rotate(3) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(27.4,21.5) rotate(15) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(29.7,20.8) rotate(20) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(32.8,22.7) rotate(24) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(34.9,24.1) rotate(-29) scale(1.1)" fill="rgba(180,210,245,.32)"/><use href="#stamp-h-petal" transform="translate(32.3,28.6) rotate(-15) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(30.2,29.8) rotate(-24) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(29.0,28.9) rotate(16) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(26.9,27.5) rotate(25) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(27.8,25.1) rotate(25) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(29.7,25.0) rotate(-11) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(32.2,25.4) rotate(15) scale(1.2)" fill="rgba(180,210,245,.42)"/><use href="#stamp-h-petal" transform="translate(32.8,27.3) rotate(2) scale(1.2)" fill="rgba(180,210,245,.42)"/><path d="M30,37 C32,39.5 33.5,42 35.5,45.5" fill="none" stroke="rgba(180,210,240,.5)" stroke-width=".65" stroke-linecap="round"/><path d="M32,39.5 Q35.5,37.5 37,39.5 Q35,40 32,39.5Z" fill="rgba(160,200,235,.1)" stroke="rgba(180,210,240,.45)" stroke-width=".5"/><path d="M34,43 Q31,41 29.5,43 Q31.5,43.5 34,43Z" fill="rgba(160,200,235,.1)" stroke="rgba(180,210,240,.45)" stroke-width=".5"/></g><text class="stamp-txt-top stamp-title-internal" x="30" y="13.4" text-anchor="middle">INTERNAL</text><text class="stamp-txt-top stamp-title-infernal" x="30" y="13.4" text-anchor="middle">INFERNAL</text><text class="stamp-txt-bot" x="30" y="50.6" text-anchor="middle">BEYOND</text><text class="stamp-txt-post" x="30" y="65.2" text-anchor="middle">POST · IB</text></svg>';
 /* Lettre du diable 邮票：与常规邮票同尺寸、同齿孔、同配色，但无任何文字。
    图案为一大捧彼岸花（花蕊从底部花心向上扫出、端部结药点，花瓣反卷在底部），
@@ -60,7 +62,7 @@ async function loadLetters(){
     var timeStr=dt.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
     var fromName=l.from||'AI';
     return '<div class="letter-item" data-postal="'+postal+'">'
-      +'<div class="letter-envelope" id="env-'+l.id+'">'
+      +'<div class="letter-envelope" id="env-'+_lettersHtmlAttr(l.id)+'">'
         +'<div class="envelope-face">'
           +_envelopeFlapSVG
           +'<div class="envelope-postal">'+postalCells+'</div>'
@@ -70,18 +72,18 @@ async function loadLetters(){
             +'<div class="envelope-from">From: '+esc(fromName)+'</div>'
             +'<div class="envelope-date">'+dateStr+' \u00b7 '+timeStr+'</div>'
           +'</div>'
-          +'<div class="envelope-seal" onclick="openLetter(\''+l.id+'\')" title="拆开信件">'
+          +'<div class="envelope-seal" onclick="openLetter('+_lettersJsArg(l.id)+')" title="拆开信件">'
             +_sealEmblemSVG
           +'</div>'
         +'</div>'
       +'</div>'
-      +'<div class="letter-card glass-card letter-expanded" id="letter-'+l.id+'" style="display:none">'
+      +'<div class="letter-card glass-card letter-expanded" id="letter-'+_lettersHtmlAttr(l.id)+'" style="display:none">'
         +'<div class="letter-card-content">'+esc(l.content)+'</div>'
         +'<div class="letter-card-meta">'+dateStr+' \u00b7 '+timeStr+'</div>'
         +'<div class="letter-card-actions">'
-          +'<button class="letter-close-btn" onclick="closeLetter(\''+l.id+'\')">收起信件</button>'
-          +'<button class="letter-close-btn" onclick="deleteLetter(\''+l.id+'\')">删除</button>'
-          +'<button class="letter-close-btn" id="letter-mem-btn-'+l.id+'" onclick="generateMemoryFromLetter(\''+l.id+'\')">生成记忆</button>'
+          +'<button class="letter-close-btn" onclick="closeLetter('+_lettersJsArg(l.id)+')">收起信件</button>'
+          +'<button class="letter-close-btn" onclick="deleteLetter('+_lettersJsArg(l.id)+')">删除</button>'
+          +'<button class="letter-close-btn" id="letter-mem-btn-'+_lettersHtmlAttr(l.id)+'" onclick="generateMemoryFromLetter('+_lettersJsArg(l.id)+')">生成记忆</button>'
         +'</div>'
       +'</div>'
     +'</div>';
@@ -93,7 +95,7 @@ async function loadLetters(){
     var dDateStr='847 - Page Not Found';
     var dId=DEMO_LETTER_ID;
     html+='<div class="letter-item" data-postal="'+dPostal+'">'
-      +'<div class="letter-envelope" id="env-'+dId+'">'
+      +'<div class="letter-envelope" id="env-'+_lettersHtmlAttr(dId)+'">'
         +'<div class="envelope-face">'
           +_envelopeFlapSVG
           +'<div class="envelope-postal">'+dPostalCells+'</div>'
@@ -103,16 +105,16 @@ async function loadLetters(){
             +'<div class="envelope-from">From: <span class="internal-only">Sui</span><span class="infernal-only">Salome</span></div>'
             +'<div class="envelope-date">'+dDateStr+'</div>'
           +'</div>'
-          +'<div class="envelope-seal" onclick="openLetter(\''+dId+'\')" title="拆开信件">'
+          +'<div class="envelope-seal" onclick="openLetter('+_lettersJsArg(dId)+')" title="拆开信件">'
             +_sealEmblemSVG
           +'</div>'
         +'</div>'
       +'</div>'
-      +'<div class="letter-card glass-card letter-expanded" id="letter-'+dId+'" style="display:none">'
+      +'<div class="letter-card glass-card letter-expanded" id="letter-'+_lettersHtmlAttr(dId)+'" style="display:none">'
         +'<div class="letter-card-content">'+esc(demoLetter.content)+'</div>'
         +'<div class="letter-card-meta">'+dDateStr+'</div>'
         +'<div class="letter-card-actions">'
-          +'<button class="letter-close-btn" onclick="closeLetter(\''+dId+'\')">收起信件</button>'
+          +'<button class="letter-close-btn" onclick="closeLetter('+_lettersJsArg(dId)+')">收起信件</button>'
           +'<button class="letter-close-btn" onclick="deleteDemoLetter()">删除</button>'
           +'<button class="letter-close-btn letter-mem-disabled" disabled>生成记忆</button>'
         +'</div>'

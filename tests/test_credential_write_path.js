@@ -254,6 +254,7 @@ async function main() {
           ? String(cfg.credentialRef || '').trim()
           : String(cfg && cfg.id || '').trim();
       },
+      _ibApiIdAllowed: function (value) { return /^[A-Za-z0-9_.:-]{1,180}$/.test(String(value == null ? '' : value)); },
       renderApiList: async function () {
         ctx.apiConfigs = configRows();
       },

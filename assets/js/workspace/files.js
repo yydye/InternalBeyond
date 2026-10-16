@@ -1,5 +1,7 @@
 ﻿/* WORKSPACE FILES —— 项目/文件状态与 CRUD、导入管线、文件列表 UI 与行操作。自 workspace.js 机械提取（四段，只动位置，不改逻辑；加载于 preview.js / run.js / workspace.js 之前）。 */
 (function(NS){
+function _wsSafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _wsSafeHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 var _wsActiveProject=null;/* 当前 AI 操作的项目 ID */
 var _wsPendingReads=[];/* 待注入的文件读取结果 */
 /* ws_read 单文件注入上限统一由 _ibInjectMax() 提供（默认 100 万字符，DIY 页可调） */
@@ -1370,15 +1372,16 @@ async function renderWsProjects(){
     var totalSize=0;files.forEach(function(f){totalSize+=f.size||0});
     var isDef=p.id===WS_DEFAULT_PROJ_ID;
     var isUsr=p.id===WS_USER_PROJ_ID;
-    html+='<div class="ws-proj-card" onclick="renderWsFiles(\''+p.id+'\')">'
+    var pIdArg=_wsSafeJsArg(p.id),pIdAttr=_wsSafeHtmlAttr(p.id);
+    html+='<div class="ws-proj-card" onclick="renderWsFiles('+pIdArg+')">'
       +'<span class="ws-proj-icon">'+WS_ICON.folder+'</span>'
       +'<div class="ws-proj-info">'
-      +'<div class="ws-proj-name-row"><span class="ws-proj-name" id="wspn-'+p.id+'">'+esc(p.name)+'</span>'+(isDef?'<span class="ws-proj-tag">默认</span>':(isUsr?'<span class="ws-proj-tag">上传</span>':''))+'</div>'
+      +'<div class="ws-proj-name-row"><span class="ws-proj-name" id="wspn-'+pIdAttr+'">'+esc(p.name)+'</span>'+(isDef?'<span class="ws-proj-tag">默认</span>':(isUsr?'<span class="ws-proj-tag">上传</span>':''))+'</div>'
       +'<div class="ws-proj-meta">'+files.length+' 个文件 · '+_fmtFileSize(totalSize)+' · 更新于 '+new Date(p.lastModified||p.created).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+'</div>'
       +'</div>'
       +((isDef||isUsr)?'':'<div class="ws-card-actions">'
-      +'<button class="ws-icon-btn" title="重命名" onclick="event.stopPropagation();_wsInlineRename(\''+p.id+'\',document.getElementById(\'wspn-'+p.id+'\'))">'+WS_ICON.rename+'</button>'
-      +'<button class="ws-icon-btn danger" title="删除项目" onclick="event.stopPropagation();wsConfirmDeleteProject(\''+p.id+'\')">'+WS_ICON.trash+'</button>'
+      +'<button class="ws-icon-btn" title="重命名" onclick="event.stopPropagation();_wsInlineRename('+pIdArg+',document.getElementById(\'wspn-'+pIdAttr+'\'))">'+WS_ICON.rename+'</button>'
+      +'<button class="ws-icon-btn danger" title="删除项目" onclick="event.stopPropagation();wsConfirmDeleteProject('+pIdArg+')">'+WS_ICON.trash+'</button>'
       +'</div>')
       +'</div>';
   }
@@ -1397,24 +1400,26 @@ async function renderWsFiles(projId){
   if(sub)sub.innerHTML='<b>'+files.length+'</b>'+(files.length===1?'File':'Files');
   var isDef=projId===WS_DEFAULT_PROJ_ID;
   var isUsr=projId===WS_USER_PROJ_ID;
+  var projectIdArg=_wsSafeJsArg(projId);
   var isSys=isDef||isUsr;/* 系统文件夹（默认 / User）：不可重命名、不可删除 */
   var html='<div class="ws-file-header"><div class="ws-file-header-title"><h3>Files</h3>'+(isDef?'<span class="ws-proj-tag">默认</span>':(isUsr?'<span class="ws-proj-tag">上传</span>':''))+'</div>'
     +'<div class="ws-file-header-actions">'
-    +(isSys?'':'<button class="ws-file-btn" onclick="wsRenameCurrentProject(\''+projId+'\')">重命名</button>'
-    +'<button class="ws-file-btn danger" onclick="wsConfirmDeleteProject(\''+projId+'\')">删除项目</button>')
+    +(isSys?'':'<button class="ws-file-btn" onclick="wsRenameCurrentProject('+projectIdArg+')">重命名</button>'
+    +'<button class="ws-file-btn danger" onclick="wsConfirmDeleteProject('+projectIdArg+')">删除项目</button>')
     +'</div></div>';
   if(!files.length){html+='<div class="ws-empty" style="padding:30px">'+(isUsr?'还没有上传过文件<br><span style="font-size:var(--fs-meta);opacity:0.8">在聊天里附加发送的文件会自动归档到这里</span>':'项目中还没有文件')+'</div>';body.innerHTML=html;_wsUpdateStorage();return}
   for(var f of files){
-    html+='<div class="ws-file-row" id="wsf-'+f.id+'" draggable="true" ondragstart="wsFileDragStart(event,this,\''+f.id+'\')" title="拖到聊天窗口可作为附件发送">'
+    var fileIdArg=_wsSafeJsArg(f.id),fileIdAttr=_wsSafeHtmlAttr(f.id);
+    html+='<div class="ws-file-row" id="wsf-'+fileIdAttr+'" draggable="true" ondragstart="wsFileDragStart(event,this,'+fileIdArg+')" title="拖到聊天窗口可作为附件发送">'
       +'<div class="ws-file-icon">'+WS_ICON.file+'</div>'
       +'<div class="ws-file-info"><div class="ws-file-name">'+esc(f.path)+'</div>'
       +'<div class="ws-file-meta">'+_fmtFileSize(f.size||0)+' · '+((f.lastModifiedBy==='你'?'User':f.lastModifiedBy)||'AI')+' · '+new Date(f.lastModified).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+'</div></div>'
       +'<div class="ws-file-actions">'
-      +'<button class="ws-file-btn" onclick="wsTogglePreview(\''+f.id+'\')">预览</button>'
-      +(/\.(py|mjs|js)$/i.test(f.path)?'<button class="ws-file-btn" onclick="wsRunFileFromUI(\''+f.id+'\')">运行</button>':'')
-      +'<button class="ws-file-btn" onclick="wsDownloadFile(\''+f.id+'\')">下载</button>'
-      +'<button class="ws-icon-btn" title="复制或移动到其他文件夹" onclick="wsMoveCopyDialog(\''+f.id+'\',\''+projId+'\')">'+WS_ICON.organize+'</button>'
-      +'<button class="ws-file-btn danger" onclick="wsConfirmDeleteFile(\''+f.id+'\',\''+projId+'\')">删除</button>'
+      +'<button class="ws-file-btn" onclick="wsTogglePreview('+fileIdArg+')">预览</button>'
+      +(/\.(py|mjs|js)$/i.test(f.path)?'<button class="ws-file-btn" onclick="wsRunFileFromUI('+fileIdArg+')">运行</button>':'')
+      +'<button class="ws-file-btn" onclick="wsDownloadFile('+fileIdArg+')">下载</button>'
+      +'<button class="ws-icon-btn" title="复制或移动到其他文件夹" onclick="wsMoveCopyDialog('+fileIdArg+','+projectIdArg+')">'+WS_ICON.organize+'</button>'
+      +'<button class="ws-file-btn danger" onclick="wsConfirmDeleteFile('+fileIdArg+','+projectIdArg+')">删除</button>'
       +'</div></div>';
   }
   body.innerHTML=html;
@@ -1533,7 +1538,7 @@ async function wsMoveCopyDialog(fileId,fromProjId){
   var targets=projects.filter(function(p){return p.id!==fromProjId});
   var listHtml='';
   targets.forEach(function(p){
-    listHtml+='<div class="ws-dialog-item" data-pid="'+p.id+'">'+WS_ICON.folder
+    listHtml+='<div class="ws-dialog-item" data-pid="'+_wsSafeHtmlAttr(p.id)+'">'+WS_ICON.folder
       +'<span class="ws-dialog-item-name">'+esc(p.name)+'</span>'
       +(p.id===WS_DEFAULT_PROJ_ID?'<span class="ws-proj-tag">默认</span>':'')
       +'</div>';

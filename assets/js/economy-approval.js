@@ -630,10 +630,12 @@ function boot() {
   function avatar(agentId) {
     var wrap = el('span', 'ec-avatar');
     var cfg = roleConfig(agentId);
-    var src = cfg ? (cfg.avatar || cfg.avatarUrl || '') : '';
+    var rawSrc = cfg ? (cfg.avatar || cfg.avatarUrl || '') : '';
+    var src = window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'
+      ?window.IBSafeImage.normalizeSource(rawSrc):'';
     if (src) {
       var img = document.createElement('img');
-      img.src = String(src);
+      img.src = src;
       img.alt = '';
       img.loading = 'lazy';
       img.decoding = 'async';

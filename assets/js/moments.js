@@ -902,10 +902,16 @@ async function _momentsRecentImagesBurst(roleId){
     return own.length>=2&&own.every(m=>m.images&&m.images.length>0)/* 最近多条全是图 → 本次不配图 */
   }catch(e){return true}
 }
+function _momentsSafeImageSource(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.normalizeSource==='function'?helper.normalizeSource(value):'';
+}
 /* 数据 URL 缩放（镜像 compressImage 的内核逻辑；输入来自生图接口而非 File） */
 function _momentsShrinkDataUrl(dataUrl,maxPx,quality){
   return new Promise(resolve=>{
     try{
+      const safeSource=_momentsSafeImageSource(String(dataUrl||''));
+      if(!safeSource){resolve('');return}
       const img=new Image();
       img.onload=function(){
         let w=img.width,h=img.height;
@@ -917,7 +923,7 @@ function _momentsShrinkDataUrl(dataUrl,maxPx,quality){
         }catch(e){resolve(String(dataUrl))}
       };
       img.onerror=function(){resolve(String(dataUrl))};
-      img.src=String(dataUrl)
+      img.src=safeSource
     }catch(e){resolve(String(dataUrl))}
   })
 }
@@ -2376,7 +2382,8 @@ function _momentsTimeLabel(iso){
 function _momentsAvatar(cfg,name,size){
   const d=document.createElement('div');d.className='mom-avatar';
   if(size)d.style.width=size+'px',d.style.height=size+'px';
-  const src=cfg?(cfg.avatar||cfg.avatarUrl||(cfg.character&&(cfg.character.avatar||cfg.character.avatarUrl||cfg.character.image))||''):'';
+  const rawSrc=cfg?(cfg.avatar||cfg.avatarUrl||(cfg.character&&(cfg.character.avatar||cfg.character.avatarUrl||cfg.character.image))||''):'';
+  const src=_momentsSafeImageSource(rawSrc);
   if(src){const img=document.createElement('img');img.src=src;img.alt='';img.loading='lazy';img.decoding='async';d.appendChild(img)}
   else d.textContent=String(name||'?').charAt(0).toUpperCase();
   return d
@@ -2464,7 +2471,7 @@ async function _momentsRenderFeed(opts){
     /* 头部（用户作者：复用 Profile 头像/昵称；角色作者：沿用现有解析） */
     const head=document.createElement('div');head.className='mom-card-head';
     head.appendChild(isUserPost?_momentsAvatar(null,_momentsUserDisplayName(),42):_momentsAvatar(cfg,_momentsRoleName(cfg),42));
-    if(isUserPost){const av=head.firstChild;if(av&&!av.querySelector('img')){const src=_momentsUserAvatarSrc();if(src){const img=document.createElement('img');img.src=src;img.alt='';img.loading='lazy';img.decoding='async';av.textContent='';av.appendChild(img)}}}
+    if(isUserPost){const av=head.firstChild;if(av&&!av.querySelector('img')){const src=_momentsSafeImageSource(_momentsUserAvatarSrc());if(src){const img=document.createElement('img');img.src=src;img.alt='';img.loading='lazy';img.decoding='async';av.textContent='';av.appendChild(img)}}}
     const headInfo=document.createElement('div');headInfo.className='mom-card-info';
     const name=document.createElement('div');name.className='mom-card-name';name.textContent=isUserPost?_momentsUserDisplayName():_momentsRoleName(cfg);
     const time=document.createElement('div');time.className='mom-card-time';time.textContent=_momentsTimeLabel(m.createdAt);
@@ -2481,7 +2488,8 @@ async function _momentsRenderFeed(opts){
       const grid=document.createElement('div');grid.className='mom-images n'+(n===1?'1':(n>=5?'5plus':'23'));
       m.images.forEach(im=>{
         const w=document.createElement('div');w.className='mom-image';
-        const img=document.createElement('img');img.src=String(im&&im.dataUrl||'');img.alt='';img.loading='lazy';img.decoding='async';
+        const source=_momentsSafeImageSource(String(im&&im.dataUrl||''));if(!source)return;
+        const img=document.createElement('img');img.src=source;img.alt='';img.loading='lazy';img.decoding='async';
         img.onerror=function(){w.remove()};
         img.onclick=function(){try{if(typeof _viewImageFull==='function')_viewImageFull(String(im&&im.dataUrl||''))}catch(e){}};
         w.appendChild(img);grid.appendChild(w)
@@ -2613,7 +2621,8 @@ function _momentsRenderComposeIdentity(){
   box.innerHTML='';
   const av=_momentsAvatar(null,_momentsUserDisplayName(),22);
   const src=_momentsUserAvatarSrc();
-  if(src){const img=document.createElement('img');img.src=src;img.alt='';img.loading='lazy';img.decoding='async';av.textContent='';av.appendChild(img)}
+  const safeSrc=_momentsSafeImageSource(src);
+  if(safeSrc){const img=document.createElement('img');img.src=safeSrc;img.alt='';img.loading='lazy';img.decoding='async';av.textContent='';av.appendChild(img)}
   const label=document.createElement('span');label.textContent=_momentsUserDisplayName()+'（本人）';
   box.append(av,label)
 }
@@ -2633,7 +2642,8 @@ function _momentsRenderComposePreviews(){
   box.innerHTML='';
   _momentsComposeImages.forEach((im,i)=>{
     const w=document.createElement('div');w.className='mom-image';
-    const img=document.createElement('img');img.src=im.dataUrl;img.alt='';img.loading='lazy';img.decoding='async';w.appendChild(img);
+    const source=_momentsSafeImageSource(im&&im.dataUrl);if(!source)return;
+    const img=document.createElement('img');img.src=source;img.alt='';img.loading='lazy';img.decoding='async';w.appendChild(img);
     const del=document.createElement('button');del.type='button';del.className='mom-remove-image';del.textContent='✕';
     del.onclick=()=>{_momentsComposeImages.splice(i,1);_momentsRenderComposePreviews()};
     w.appendChild(del);box.appendChild(w)

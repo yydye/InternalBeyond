@@ -64,6 +64,8 @@ document.addEventListener('contextmenu',function(e){
 });
 
 function _annoClearTempHL(){const old=document.getElementById('anno-temp-hl');if(old){const p=old.parentNode;while(old.firstChild)p.insertBefore(old.firstChild,old);p.removeChild(old);p.normalize()}}
+function _annoJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _annoHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 
 function _annoHideAll(){
   const tb=document.getElementById('anno-toolbar');if(tb)tb.classList.remove('show');
@@ -76,7 +78,7 @@ function _annoHideAll(){
 
 function _annoPopulateDrop(){
   const drop=document.getElementById('anno-drop');if(!drop)return;
-  drop.innerHTML=apiConfigs.map(a=>'<div class="anno-tb-drop-item" onclick="_annoPickAI(\''+a.id+'\',event)"><span class="atdi-name">'+esc(a.nickname||a.model||'AI')+'</span><span class="atdi-check">✓</span></div>').join('');
+  drop.innerHTML=apiConfigs.map(a=>'<div class="anno-tb-drop-item" onclick="_annoPickAI('+_annoJsArg(a.id)+',event)"><span class="atdi-name">'+esc(a.nickname||a.model||'AI')+'</span><span class="atdi-check">✓</span></div>').join('');
 }
 
 function _annoCopy(){
@@ -210,7 +212,7 @@ async function _renderAnnotationsForPost(postId){
       const count=textGroups[t].length;
       const bubble='<span class="pv-anno-count">'+count+'</span>';
       if(html.includes(escaped)){
-        html=html.replace(escaped,'<span class="pv-annotated" onclick="_annoToggleGroup(\''+gid+'\')" data-grp="'+gid+'">'+escaped+'</span>'+bubble);
+        html=html.replace(escaped,'<span class="pv-annotated" onclick="_annoToggleGroup('+_annoJsArg(gid)+')" data-grp="'+_annoHtmlAttr(gid)+'">'+escaped+'</span>'+bubble);
       }else{unanchored[gid]=true}
     });
     paraEl.innerHTML=html;
@@ -226,7 +228,7 @@ async function _renderAnnotationsForPost(postId){
           +(a.userMsg?'<div class="anno-block-q">'+esc(a.userMsg)+'</div>':'')
           +'<div class="anno-block-txt">'+esc(a.content)+'</div>'
           +'</div>'
-          +'<button class="anno-block-del" onclick="_deleteAnno(\''+a.id+'\',\''+a.postId+'\')" title="删除">×</button>';
+          +'<button class="anno-block-del" onclick="_deleteAnno('+_annoJsArg(a.id)+','+_annoJsArg(a.postId)+')" title="删除">×</button>';
         grpDiv.appendChild(block);
       });
       insertAfter.insertAdjacentElement('afterend',grpDiv);
@@ -252,8 +254,8 @@ async function _annoEnrichPostCards(){
   try{const all=await dbGetAll('blogAnnotations');if(!all.length)return;
   const byPost={};all.forEach(a=>{if(!byPost[a.postId])byPost[a.postId]={count:0,names:[]};byPost[a.postId].count++;if(!byPost[a.postId].names.includes(a.aiName))byPost[a.postId].names.push(a.aiName)});
   document.querySelectorAll('.post-card').forEach(card=>{
-    const onclick=card.getAttribute('onclick')||'';const m=onclick.match(/viewPost\('([^']+)'\)/);if(!m)return;
-    const pid=m[1];const info=byPost[pid];if(!info)return;
+    const pid=card.getAttribute('data-post-id')||'';if(!pid)return;
+    const info=byPost[pid];if(!info)return;
     const meta=card.querySelector('.post-card-meta');if(!meta)return;
     const span=document.createElement('span');span.textContent='· '+info.count+' notes';
     meta.appendChild(span);

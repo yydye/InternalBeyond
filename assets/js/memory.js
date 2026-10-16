@@ -1,6 +1,8 @@
 ﻿/* ====================== MEMORY SYSTEM ====================== */
 /* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.memory 注册）。 */
 (function(NS){
+function _memSafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
+function _memSafeHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 /* Ombre Brain 理念改造版：情感坐标 + 自然衰减 + 浮现机制 + 可见性控制 */
 
 let _editingMemId=null;
@@ -736,7 +738,8 @@ async function renderMemories(){
         creatorStr='<strong>'+esc(apiName)+'</strong>编写';
       }
     }
-    html+='<div class="mem-card'+(m.pinned?' mem-pinned':'')+'" id="mc-'+m.id+'" onclick="toggleMemExpand(\''+m.id+'\',event)">'
+    const memIdAttr=_memSafeHtmlAttr(m.id),memIdArg=_memSafeJsArg(m.id);
+    html+='<div class="mem-card'+(m.pinned?' mem-pinned':'')+'" id="mc-'+memIdAttr+'" onclick="toggleMemExpand('+memIdArg+',event)">'
       +(m.pinned?'<div class="mem-pin-nail"></div>':'')
       +'<div class="mem-card-head">'
         +'<div class="mem-card-title">'+esc(m.title||'无标题')+'</div>'
@@ -756,13 +759,13 @@ async function renderMemories(){
         +'<div class="mem-card-content">'+esc(m.content||'')+'</div>'
         +'<div style="font-size:0.78rem;color:var(--content-muted);margin-bottom:12px;margin-top:6px">V:'+(m.valence!=null?m.valence:0.5)+' A:'+(m.arousal!=null?m.arousal:0.3)+' \u00B7 '+(m.activationCount||0)+'次激活</div>'
         +'<div class="mem-card-actions">'
-          +'<button class="btn" onclick="event.stopPropagation();toggleMemPin(\''+m.id+'\')">'+(m.pinned?'取消置顶':'置顶')+'</button>'
-          +'<button class="btn" onclick="event.stopPropagation();toggleMemResolved(\''+m.id+'\')">'+(m.resolved?'未解决':'解决')+'</button>'
-          +'<button class="btn" onclick="event.stopPropagation();toggleInlineEdit(\''+m.id+'\')">编辑</button>'
-          +'<button class="btn" onclick="event.stopPropagation();deleteMemory(\''+m.id+'\')">删除</button>'
-          +(m.createdBy&&m.createdBy!=='user'?'<button class="btn" onclick="event.stopPropagation();writeOneLineToMemory(\''+m.id+'\')">'+(m.oneLine?'重写一句':'写一句话')+'</button>':'')
+          +'<button class="btn" onclick="event.stopPropagation();toggleMemPin('+memIdArg+')">'+(m.pinned?'取消置顶':'置顶')+'</button>'
+          +'<button class="btn" onclick="event.stopPropagation();toggleMemResolved('+memIdArg+')">'+(m.resolved?'未解决':'解决')+'</button>'
+          +'<button class="btn" onclick="event.stopPropagation();toggleInlineEdit('+memIdArg+')">编辑</button>'
+          +'<button class="btn" onclick="event.stopPropagation();deleteMemory('+memIdArg+')">删除</button>'
+          +(m.createdBy&&m.createdBy!=='user'?'<button class="btn" onclick="event.stopPropagation();writeOneLineToMemory('+memIdArg+')">'+(m.oneLine?'重写一句':'写一句话')+'</button>':'')
         +'</div>'
-        +'<div class="mem-card-edit-panel" id="mce-'+m.id+'"></div>'
+        +'<div class="mem-card-edit-panel" id="mce-'+memIdAttr+'"></div>'
       +'</div>'
     +'</div>';
   });
@@ -988,31 +991,32 @@ async function toggleInlineEdit(id){
   let m;
   try{m=await dbGet('memories',id)}catch(e){_memoryUiMutationFailure('读取详情',e);return}
   if(!m)return;
-  const apiOpts=apiConfigs.map(a=>'<label style="margin:0;display:flex;align-items:center;gap:4px"><input type="checkbox" class="mce-vis-cb-'+id+'" value="'+a.id+'"'
+  const idAttr=_memSafeHtmlAttr(id),idArg=_memSafeJsArg(id);
+  const apiOpts=apiConfigs.map(a=>'<label style="margin:0;display:flex;align-items:center;gap:4px"><input type="checkbox" class="mce-vis-cb-'+idAttr+'" value="'+_memSafeHtmlAttr(a.id)+'"'
     +((m.visibility==='only'&&(m.visibleTo||[]).includes(a.id))||(m.visibility==='except'&&(m.excludeFrom||[]).includes(a.id))?' checked':'')
     +'> '+esc(a.nickname||a.model||'AI')+'</label>').join('');
   panel.innerHTML=
-    '<label>标题</label><input id="mce-title-'+id+'" value="'+esc(m.title||'')+'">'
-    +'<label>概括</label><textarea id="mce-summary-'+id+'" style="min-height:36px">'+esc(m.summary||'')+'</textarea>'
-    +'<label>写一句话</label><input id="mce-oneline-'+id+'" value="'+esc(m.oneLine||'')+'" placeholder="留空则不显示引言行">'
-    +'<label>内容</label><textarea id="mce-content-'+id+'">'+esc(m.content||'')+'</textarea>'
+    '<label>标题</label><input id="mce-title-'+idAttr+'" value="'+esc(m.title||'')+'">'
+    +'<label>概括</label><textarea id="mce-summary-'+idAttr+'" style="min-height:36px">'+esc(m.summary||'')+'</textarea>'
+    +'<label>写一句话</label><input id="mce-oneline-'+idAttr+'" value="'+esc(m.oneLine||'')+'" placeholder="留空则不显示引言行">'
+    +'<label>内容</label><textarea id="mce-content-'+idAttr+'">'+esc(m.content||'')+'</textarea>'
     +'<div class="mem-card-edit-row">'
-      +'<div><label>领域</label><select id="mce-domain-'+id+'"><option value="情感"'+(m.domain==='情感'?' selected':'')+'>情感</option><option value="日常"'+(m.domain==='日常'?' selected':'')+'>日常</option><option value="创作"'+(m.domain==='创作'?' selected':'')+'>创作</option><option value="思考"'+(m.domain==='思考'?' selected':'')+'>思考</option></select></div>'
-      +'<div><label>来源</label><select id="mce-source-'+id+'"><option value="manual"'+(m.rawSource==='manual'?' selected':'')+'>手动</option><option value="chat"'+(m.rawSource==='chat'?' selected':'')+'>Chat</option><option value="letter"'+(m.rawSource==='letter'?' selected':'')+'>Letter</option><option value="blog"'+(m.rawSource==='blog'?' selected':'')+'>Blog</option><option value="tea"'+(m.rawSource==='tea'?' selected':'')+'>Tea</option><option value="story"'+(m.rawSource==='story'?' selected':'')+'>Story</option></select></div>'
+      +'<div><label>领域</label><select id="mce-domain-'+idAttr+'"><option value="情感"'+(m.domain==='情感'?' selected':'')+'>情感</option><option value="日常"'+(m.domain==='日常'?' selected':'')+'>日常</option><option value="创作"'+(m.domain==='创作'?' selected':'')+'>创作</option><option value="思考"'+(m.domain==='思考'?' selected':'')+'>思考</option></select></div>'
+      +'<div><label>来源</label><select id="mce-source-'+idAttr+'"><option value="manual"'+(m.rawSource==='manual'?' selected':'')+'>手动</option><option value="chat"'+(m.rawSource==='chat'?' selected':'')+'>Chat</option><option value="letter"'+(m.rawSource==='letter'?' selected':'')+'>Letter</option><option value="blog"'+(m.rawSource==='blog'?' selected':'')+'>Blog</option><option value="tea"'+(m.rawSource==='tea'?' selected':'')+'>Tea</option><option value="story"'+(m.rawSource==='story'?' selected':'')+'>Story</option></select></div>'
     +'</div>'
-    +'<label>标签（逗号分隔）</label><input id="mce-tags-'+id+'" value="'+esc((m.tags||[]).join(', '))+'">'
-    +'<label>效价 (V)</label><div class="mem-edit-range"><input type="range" id="mce-v-'+id+'" min="0" max="1" step="0.01" value="'+(m.valence!=null?m.valence:0.5)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.valence!=null?m.valence:0.5)+'</span></div>'
-    +'<label>唤醒度 (A)</label><div class="mem-edit-range"><input type="range" id="mce-a-'+id+'" min="0" max="1" step="0.05" value="'+(m.arousal!=null?m.arousal:0.3)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.arousal!=null?m.arousal:0.3)+'</span></div>'
-    +'<label>重要性</label><div class="mem-edit-range"><input type="range" id="mce-imp-'+id+'" min="1" max="10" step="1" value="'+(m.importance||5)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.importance||5)+'</span></div>'
+    +'<label>标签（逗号分隔）</label><input id="mce-tags-'+idAttr+'" value="'+esc((m.tags||[]).join(', '))+'">'
+    +'<label>效价 (V)</label><div class="mem-edit-range"><input type="range" id="mce-v-'+idAttr+'" min="0" max="1" step="0.01" value="'+(m.valence!=null?m.valence:0.5)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.valence!=null?m.valence:0.5)+'</span></div>'
+    +'<label>唤醒度 (A)</label><div class="mem-edit-range"><input type="range" id="mce-a-'+idAttr+'" min="0" max="1" step="0.05" value="'+(m.arousal!=null?m.arousal:0.3)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.arousal!=null?m.arousal:0.3)+'</span></div>'
+    +'<label>重要性</label><div class="mem-edit-range"><input type="range" id="mce-imp-'+idAttr+'" min="1" max="10" step="1" value="'+(m.importance||5)+'" oninput="this.nextElementSibling.textContent=this.value"><span>'+(m.importance||5)+'</span></div>'
     +'<div class="mem-card-edit-row">'
-      +'<div><label>状态</label><select id="mce-resolved-'+id+'"><option value="false"'+(!m.resolved?' selected':'')+'>未解决</option><option value="true"'+(m.resolved?' selected':'')+'>已解决</option></select></div>'
-      +'<div><label>置顶</label><select id="mce-pinned-'+id+'"><option value="false"'+(!m.pinned?' selected':'')+'>否</option><option value="true"'+(m.pinned?' selected':'')+'>是</option></select></div>'
-      +'<div><label>可见性</label><select id="mce-vis-'+id+'" onchange="document.getElementById(\'mce-vis-apis-'+id+'\').style.display=(this.value===\'only\'||this.value===\'except\')?\'flex\':\'none\'"><option value="public"'+(m.visibility==='public'?' selected':'')+'>全部公开</option><option value="only"'+(m.visibility==='only'?' selected':'')+'>仅指定</option><option value="except"'+(m.visibility==='except'?' selected':'')+'>排除指定</option><option value="private"'+(m.visibility==='private'?' selected':'')+'>私密</option></select></div>'
+      +'<div><label>状态</label><select id="mce-resolved-'+idAttr+'"><option value="false"'+(!m.resolved?' selected':'')+'>未解决</option><option value="true"'+(m.resolved?' selected':'')+'>已解决</option></select></div>'
+      +'<div><label>置顶</label><select id="mce-pinned-'+idAttr+'"><option value="false"'+(!m.pinned?' selected':'')+'>否</option><option value="true"'+(m.pinned?' selected':'')+'>是</option></select></div>'
+      +'<div><label>可见性</label><select id="mce-vis-'+idAttr+'" data-vis-target="mce-vis-apis-'+idAttr+'" onchange="document.getElementById(this.dataset.visTarget).style.display=(this.value===\'only\'||this.value===\'except\')?\'flex\':\'none\'"><option value="public"'+(m.visibility==='public'?' selected':'')+'>全部公开</option><option value="only"'+(m.visibility==='only'?' selected':'')+'>仅指定</option><option value="except"'+(m.visibility==='except'?' selected':'')+'>排除指定</option><option value="private"'+(m.visibility==='private'?' selected':'')+'>私密</option></select></div>'
     +'</div>'
-    +'<div id="mce-vis-apis-'+id+'" style="display:'+((m.visibility==='only'||m.visibility==='except')?'flex':'none')+';flex-wrap:wrap;gap:8px;margin-top:6px">'+apiOpts+'</div>'
+    +'<div id="mce-vis-apis-'+idAttr+'" style="display:'+((m.visibility==='only'||m.visibility==='except')?'flex':'none')+';flex-wrap:wrap;gap:8px;margin-top:6px">'+apiOpts+'</div>'
     +'<div class="mem-card-edit-actions">'
-      +'<button class="btn" onclick="event.stopPropagation();toggleInlineEdit(\''+id+'\')">取消</button>'
-      +'<button class="btn btn-primary" onclick="event.stopPropagation();saveInlineEdit(\''+id+'\')">保存</button>'
+      +'<button class="btn" onclick="event.stopPropagation();toggleInlineEdit('+idArg+')">取消</button>'
+      +'<button class="btn btn-primary" onclick="event.stopPropagation();saveInlineEdit('+idArg+')">保存</button>'
     +'</div>';
   panel.classList.add('show');
   if(window._memRelayoutTimeline)requestAnimationFrame(window._memRelayoutTimeline);
@@ -2383,18 +2387,18 @@ async function renderChatPanelFriends(){
   let html='';
   apiConfigs.forEach(a=>{
     const isMainActive=activeFriendId===a.id&&!activeThreadId;
-    html+='<div class="cpf-item'+(isMainActive?' active':'')+'" onclick="selectPanelFriend(\''+a.id+'\')">'+esc(a.nickname||a.model||'AI')+'</div>';
+    html+='<div class="cpf-item'+(isMainActive?' active':'')+'" onclick="selectPanelFriend('+_memSafeJsArg(a.id)+')">'+esc(a.nickname||a.model||'AI')+'</div>';
     const threads=allThreads.filter(t=>t.friendId===a.id);
     if(threads.length&&activeFriendId===a.id){
       threads.forEach(t=>{
         const tActive=activeThreadId===t.id;
-        html+='<div class="cpf-item'+(tActive?' active':'')+'" onclick="selectPanelThread(\''+a.id+'\',\''+t.id+'\')" style="padding:3px 10px"><span style="margin-right:5px;font-size:var(--fs-meta);vertical-align:1px;color:'+(tActive?'var(--thread-dot-active,var(--accent-light))':'var(--content-muted)')+'">'+(tActive?'●':'○')+'</span>'+esc(t.name)+'</div>';
+        html+='<div class="cpf-item'+(tActive?' active':'')+'" onclick="selectPanelThread('+_memSafeJsArg(a.id)+','+_memSafeJsArg(t.id)+')" style="padding:3px 10px"><span style="margin-right:5px;font-size:var(--fs-meta);vertical-align:1px;color:'+(tActive?'var(--thread-dot-active,var(--accent-light))':'var(--content-muted)')+'">'+(tActive?'●':'○')+'</span>'+esc(t.name)+'</div>';
       });
     }
   });
   const groups=await loadGroups();
   if(groups.length){
-    html+=groups.map(g=>'<div class="cpf-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectPanelGroup(\''+g.id+'\')" style="border-color:color-mix(in srgb,var(--accent) 40%,transparent)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:0.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'+esc(g.name)+'</div>').join('');
+    html+=groups.map(g=>'<div class="cpf-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectPanelGroup('+_memSafeJsArg(g.id)+')" style="border-color:color-mix(in srgb,var(--accent) 40%,transparent)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:0.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'+esc(g.name)+'</div>').join('');
   }
   c.innerHTML=html;
 }

@@ -121,9 +121,11 @@ function _netEl(tag,cls,text){
 function _netAvatarEl(view,opts){
   opts=opts||{};
   const d=_netEl('div','net-avatar'+(opts.className?(' '+opts.className):''));
-  if(view.avatar){
+  const safeAvatar=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'
+    ?window.IBSafeImage.normalizeSource(view.avatar):'';
+  if(safeAvatar){
     const img=document.createElement('img');
-    img.src=view.avatar;img.alt='';img.loading='lazy';img.decoding='async';
+    img.src=safeAvatar;img.alt='';img.loading='lazy';img.decoding='async';
     img.onerror=function(){d.textContent=String(view.name||'?').charAt(0).toUpperCase()};
     d.appendChild(img);
   }else d.textContent=String(view.name||'?').charAt(0).toUpperCase();
@@ -267,10 +269,13 @@ function _netImagesEl(images,cls){
   const grid=_netEl('div',(cls||'net-images')+' n'+(n===1?'1':(n>=5?'5plus':'23')));
   images.forEach(function(im){
     const w=_netEl('div','net-image');
+    const source=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'
+      ?window.IBSafeImage.normalizeSource(im&&im.dataUrl):'';
+    if(!source)return;
     const img=document.createElement('img');
-    img.src=String(im&&im.dataUrl||'');img.alt='';img.loading='lazy';img.decoding='async';
+    img.src=source;img.alt='';img.loading='lazy';img.decoding='async';
     img.onerror=function(){w.remove()};
-    img.onclick=function(){try{if(typeof _viewImageFull==='function')_viewImageFull(String(im&&im.dataUrl||''))}catch(e){}};
+    img.onclick=function(){try{if(typeof _viewImageFull==='function')_viewImageFull(source,im)}catch(e){}};
     w.appendChild(img);grid.appendChild(w);
   });
   return grid;
@@ -395,8 +400,10 @@ async function _netRenderProfile(){
   const view=isUser?await _netUserView():_netRoleView(_netCfg(_netRoleId)||{id:_netRoleId,nickname:'（角色已删除）'});
   card.innerHTML='';
 
-  const banner=_netEl('div','net-profile-banner'+(view.banner?' has-img':' is-empty'));
-  if(view.banner)banner.style.backgroundImage='url("'+view.banner+'")';
+  const safeBanner=window.IBSafeImage&&typeof window.IBSafeImage.normalizeSource==='function'
+    ?window.IBSafeImage.normalizeSource(view.banner):'';
+  const banner=_netEl('div','net-profile-banner'+(safeBanner?' has-img':' is-empty'));
+  if(safeBanner)banner.style.backgroundImage=window.IBSafeImage.cssUrl(safeBanner);
   else banner.appendChild(_netEl('div','net-profile-banner-letter',String(view.name||'?').charAt(0).toUpperCase()));
   card.appendChild(banner);
 

@@ -807,12 +807,12 @@ async function loadCategories(){
     if(!lockedDiaryUnlocked){bar.innerHTML='';return}
     const cats=await getDiaryCats();
     bar.innerHTML='<span class="cat-tag'+(activeCat==='all'?' active':'')+'" onclick="filterCat(\'all\')">All</span>';
-    cats.forEach(name=>{const s=name.replace(/'/g,"\\'").replace(/"/g,'&quot;');bar.innerHTML+='<span class="cat-tag'+(activeCat===name?' active':'')+'" onclick="filterCat(\''+s+'\')">'+esc(name)+'<span class="del-cat" onclick="event.stopPropagation();deleteCat(\''+s+'\')">✕</span></span>'});
+    cats.forEach(name=>{const arg=_ibSafeJsArgument(name);bar.innerHTML+='<span class="cat-tag'+(activeCat===name?' active':'')+'" onclick="filterCat('+arg+')">'+esc(name)+'<span class="del-cat" onclick="event.stopPropagation();deleteCat('+arg+')">✕</span></span>'});
     return;
   }
   const cats=await dbGetAll('categories');
   bar.innerHTML='<span class="cat-tag'+(activeCat==='all'?' active':'')+'" onclick="filterCat(\'all\')">All</span>';
-  cats.forEach(c=>{if(c.name===LEGACY_DIARY_CAT)return;const s=c.name.replace(/'/g,"\\'").replace(/"/g,'&quot;');bar.innerHTML+='<span class="cat-tag'+(activeCat===c.name?' active':'')+'" onclick="filterCat(\''+s+'\')">'+esc(c.name)+'<span class="del-cat" onclick="event.stopPropagation();deleteCat(\''+s+'\')">✕</span></span>'})
+  cats.forEach(c=>{if(c.name===LEGACY_DIARY_CAT)return;const arg=_ibSafeJsArgument(c.name);bar.innerHTML+='<span class="cat-tag'+(activeCat===c.name?' active':'')+'" onclick="filterCat('+arg+')">'+esc(c.name)+'<span class="del-cat" onclick="event.stopPropagation();deleteCat('+arg+')">✕</span></span>'})
 }
 function filterCat(c){activeCat=c;loadCategories();loadPosts();updatePwdDiaryBtn();updateBlogStats()}
 function openCatModal(){document.getElementById('cat-modal').classList.add('show');document.getElementById('cat-input').value='';document.getElementById('cat-input').focus()}
@@ -839,7 +839,7 @@ async function deleteCat(n){
   await dbDelete('categories',n);if(activeCat===n)activeCat='all';loadCategories();loadPosts();toast('分类已删除')
 }
 
-async function loadPosts(){let posts=await dbGetAll('posts');posts.sort((a,b)=>b.created-a.created);/* 公开 Blog 与密码日记本完全隔离 */if(diaryMode){if(!lockedDiaryUnlocked){promptLockedDiary();return}posts=posts.filter(p=>isLockedPost(p));if(activeCat!=='all')posts=posts.filter(p=>(p.category||'')===activeCat)}else{posts=posts.filter(p=>!isLockedPost(p));if(activeCat!=='all')posts=posts.filter(p=>p.category===activeCat)}/* 列表搜索：匹配标题/副标题/分类/正文 */if(blogSearchQuery){const q=blogSearchQuery;posts=posts.filter(p=>((p.title||'')+' '+(p.subtitle||'')+' '+(p.category||'')+' '+(p.content||'')).toLowerCase().includes(q))}const c=document.getElementById('posts-container');if(!posts.length){c.innerHTML='<div class="empty-state"><span>✎</span>'+(blogSearchQuery?'没有找到匹配的日志':(diaryMode?'密码日记本中暂无记录。点击"写日志"开始记录，Tea 和 Story 的存档也会自动保存至此。':'还没有日志，点击"写日志"开始记录'))+'</div>';return}c.innerHTML=posts.map(p=>'<div class="post-card glass-card" onclick="viewPost(\''+p.id+'\')"><div class="post-card-title">'+esc(p.title||'无标题')+'</div>'+(p.subtitle?'<div class="post-card-sub">'+esc(p.subtitle)+'</div>':'')+'<div class="post-card-preview">'+esc(p.content)+'</div><div class="post-card-meta"><span>'+new Date(p.created).toLocaleDateString('zh-CN')+'</span>'+(p.category?'<span>· '+esc(p.category)+'</span>':'')+'<span>· '+estimateSize(p)+' bytes</span></div></div>').join('');_annoEnrichPostCards();if(window.IB&&IB.favorites&&typeof IB.favorites.starCard==='function'){c.querySelectorAll('.post-card').forEach(function(el){var pid=((el.getAttribute('onclick')||'').match(/viewPost\('([^']+)'\)/)||[])[1];if(!pid)return;var tt=(el.querySelector('.post-card-title')||{}).textContent||'';var bb=(el.querySelector('.post-card-preview')||{}).textContent||'';IB.favorites.starCard(el,{type:'blog',sourceId:pid,title:tt,body:bb})})}}
+async function loadPosts(){let posts=(await dbGetAll('posts')).filter(p=>p&&_ibSafeBindingId(p.id));posts.sort((a,b)=>b.created-a.created);/* 公开 Blog 与密码日记本完全隔离 */if(diaryMode){if(!lockedDiaryUnlocked){promptLockedDiary();return}posts=posts.filter(p=>isLockedPost(p));if(activeCat!=='all')posts=posts.filter(p=>(p.category||'')===activeCat)}else{posts=posts.filter(p=>!isLockedPost(p));if(activeCat!=='all')posts=posts.filter(p=>p.category===activeCat)}/* 列表搜索：匹配标题/副标题/分类/正文 */if(blogSearchQuery){const q=blogSearchQuery;posts=posts.filter(p=>((p.title||'')+' '+(p.subtitle||'')+' '+(p.category||'')+' '+(p.content||'')).toLowerCase().includes(q))}const c=document.getElementById('posts-container');if(!posts.length){c.innerHTML='<div class="empty-state"><span>✎</span>'+(blogSearchQuery?'没有找到匹配的日志':(diaryMode?'密码日记本中暂无记录。点击"写日志"开始记录，Tea 和 Story 的存档也会自动保存至此。':'还没有日志，点击"写日志"开始记录'))+'</div>';return}c.innerHTML=posts.map(p=>'<div class="post-card glass-card" data-post-id="'+_ibSafeHtmlAttribute(p.id)+'" onclick="viewPost('+_ibSafeJsArgument(p.id)+')"><div class="post-card-title">'+esc(p.title||'无标题')+'</div>'+(p.subtitle?'<div class="post-card-sub">'+esc(p.subtitle)+'</div>':'')+'<div class="post-card-preview">'+esc(p.content)+'</div><div class="post-card-meta"><span>'+new Date(p.created).toLocaleDateString('zh-CN')+'</span>'+(p.category?'<span>· '+esc(p.category)+'</span>':'')+'<span>· '+estimateSize(p)+' bytes</span></div></div>').join('');_annoEnrichPostCards();if(window.IB&&IB.favorites&&typeof IB.favorites.starCard==='function'){c.querySelectorAll('.post-card').forEach(function(el){var pid=el.getAttribute('data-post-id')||'';if(!pid)return;var tt=(el.querySelector('.post-card-title')||{}).textContent||'';var bb=(el.querySelector('.post-card-preview')||{}).textContent||'';IB.favorites.starCard(el,{type:'blog',sourceId:pid,title:tt,body:bb})})}}
 function estimateSize(p){return new Blob([JSON.stringify(p)]).size}
 async function updateBlogStats(){const all=await dbGetAll('posts');/* 修复：公开页只统计公开日志；密码日记本(已解锁)内只统计私密日志，避免在公开页暴露私密条目的数量与体积 */const inDiary=diaryMode&&lockedDiaryUnlocked;const posts=all.filter(p=>inDiary?isLockedPost(p):!isLockedPost(p));let t=0;posts.forEach(p=>t+=estimateSize(p));document.getElementById('blog-stats').textContent=posts.length+' 篇日志 · '+(t/1024).toFixed(1)+' KB'}
 
@@ -885,7 +885,7 @@ function exitEditor(){
 }
 function closeEditor(){editorDirty=false;document.getElementById('blog-edit-view').style.display='none';document.getElementById('blog-list-view').style.display='block';loadPosts();updateBlogStats()}
 async function savePost(){var content=document.getElementById('ed-content').value.trim();if(!content){toast('内容不能为空');return}var ex=editingPostId?await dbGet('posts',editingPostId):null;/* 在密码日记本内新建的日志自动标记为私密；编辑时保留原私密状态 */var post={id:editingPostId||'post_'+Date.now(),title:document.getElementById('ed-title').value.trim(),subtitle:document.getElementById('ed-subtitle').value.trim(),category:document.getElementById('ed-cat').value,locked:(ex?isLockedPost(ex):diaryMode),content:content,created:ex?.created||Date.now(),updated:Date.now()};await dbPut('posts',post);editorDirty=false;closeEditor();toast(post.locked?'已存入密码日记本':'日志已保存')}
-async function viewPost(id){const p=await dbGet('posts',id);if(!p)return;document.getElementById('blog-list-view').style.display='none';document.getElementById('blog-read-view').style.display='block';document.getElementById('blog-edit-view').style.display='none';const commentSelectOpts=apiConfigs.map(a=>'<option value="'+a.id+'">'+esc(a.nickname||a.model||'AI')+'</option>').join('');const paraHTML=p.content.split(/\n\n+/).map((para,i)=>'<div class="pv-para" data-idx="'+i+'">'+esc(para)+'</div>').join('');document.getElementById('post-view-content').innerHTML='<h2 class="post-view-title">'+esc(p.title||'无标题')+'</h2>'+(p.subtitle?'<p class="post-view-sub">'+esc(p.subtitle)+'</p>':'')+'<div class="post-view-meta">'+new Date(p.created).toLocaleString('zh-CN')+(p.category?' · '+esc(p.category):'')+'</div><div class="post-view-content">'+paraHTML+'</div><div class="post-view-actions"><button class="btn" onclick="openEditor(\''+p.id+'\')">编辑</button><button class="btn" onclick="deletePost(\''+p.id+'\')">删除</button><button class="btn" onclick="exportPost(\''+p.id+'\')">导出</button></div><div class="blog-comments-section"><div class="blog-comments-header">Comments</div><div class="blog-comment-request"><select class="blog-comment-select" id="blog-comment-select-'+p.id+'"><option value="">Choose one...</option>'+commentSelectOpts+'</select><button class="btn btn-primary" id="blog-comment-btn-'+p.id+'" onclick="requestBlogComment(\''+p.id+'\')">写下留言</button><button class="btn btn-primary" id="blog-mem-btn-'+p.id+'" onclick="generateMemoryFromPost(\''+p.id+'\')">生成记忆</button></div><div class="blog-comment-hint">TA将阅读这篇日志，留下感想或帮你生成记忆。</div><div id="blog-comments-'+p.id+'"></div></div>';_annoPostId=id;_renderAnnotationsForPost(id);loadBlogComments(p.id)}
+async function viewPost(id){if(!_ibSafeBindingId(id))return;const p=await dbGet('posts',id);if(!p)return;document.getElementById('blog-list-view').style.display='none';document.getElementById('blog-read-view').style.display='block';document.getElementById('blog-edit-view').style.display='none';const commentSelectOpts=apiConfigs.map(a=>'<option value="'+_ibSafeHtmlAttribute(a.id)+'">'+esc(a.nickname||a.model||'AI')+'</option>').join('');const paraHTML=p.content.split(/\n\n+/).map((para,i)=>'<div class="pv-para" data-idx="'+i+'">'+esc(para)+'</div>').join('');document.getElementById('post-view-content').innerHTML='<h2 class="post-view-title">'+esc(p.title||'无标题')+'</h2>'+(p.subtitle?'<p class="post-view-sub">'+esc(p.subtitle)+'</p>':'')+'<div class="post-view-meta">'+new Date(p.created).toLocaleString('zh-CN')+(p.category?' · '+esc(p.category):'')+'</div><div class="post-view-content">'+paraHTML+'</div><div class="post-view-actions"><button class="btn" onclick="openEditor('+_ibSafeJsArgument(p.id)+')">编辑</button><button class="btn" onclick="deletePost('+_ibSafeJsArgument(p.id)+')">删除</button><button class="btn" onclick="exportPost('+_ibSafeJsArgument(p.id)+')">导出</button></div><div class="blog-comments-section"><div class="blog-comments-header">Comments</div><div class="blog-comment-request"><select class="blog-comment-select" id="blog-comment-select-'+_ibSafeHtmlAttribute(p.id)+'"><option value="">Choose one...</option>'+commentSelectOpts+'</select><button class="btn btn-primary" id="blog-comment-btn-'+_ibSafeHtmlAttribute(p.id)+'" onclick="requestBlogComment('+_ibSafeJsArgument(p.id)+')">写下留言</button><button class="btn btn-primary" id="blog-mem-btn-'+_ibSafeHtmlAttribute(p.id)+'" onclick="generateMemoryFromPost('+_ibSafeJsArgument(p.id)+')">生成记忆</button></div><div class="blog-comment-hint">TA将阅读这篇日志，留下感想或帮你生成记忆。</div><div id="blog-comments-'+_ibSafeHtmlAttribute(p.id)+'"></div></div>';_annoPostId=id;_renderAnnotationsForPost(id);loadBlogComments(p.id)}
 function setReadFontSize(size){
   var rv=document.getElementById('blog-read-view');
   rv.classList.remove('fontsize-s','fontsize-m','fontsize-l');
@@ -927,29 +927,60 @@ function selectNameColor(key){
 const PROFILE_BIO_LIMIT=600;
 const PROFILE_CUSTOM_LIMIT=500;
 var _lastValidBio='',_lastValidCustom='';
+function _ibSafeProfileImageSource(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.normalizeSource==='function'?helper.normalizeSource(value):'';
+}
+function _ibSafeHtmlAttribute(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.escapeAttribute==='function'?helper.escapeAttribute(value):'';
+}
+function _ibSafeJsArgument(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.jsArgument==='function'?helper.jsArgument(value):'null';
+}
+function _ibSafeBindingId(value){
+  var helper=window.IBSafeImage;
+  return !!(helper&&typeof helper.validBindingId==='function'&&helper.validBindingId(value));
+}
+function _ibApplyProfileImageStyles(container,bgImage,galleryImages){
+  if(!container)return;
+  var helper=window.IBSafeImage;
+  if(!helper||typeof helper.cssUrl!=='function')return;
+  var bg=container.querySelector('[data-profile-bg]');
+  if(bg)bg.style.backgroundImage=helper.cssUrl(bgImage);
+  var slots=container.querySelectorAll('[data-profile-gallery-index]');
+  Array.prototype.forEach.call(slots,function(slot){
+    var index=Number(slot.getAttribute('data-profile-gallery-index'));
+    var image=Number.isInteger(index)&&index>=0&&index<galleryImages.length?galleryImages[index]:'';
+    if(image)slot.style.backgroundImage=helper.cssUrl(image);
+  });
+}
 async function loadAboutDisplay(){
   let data=await dbGet('about','main');
   if(!data){data=Object.assign({},defaultAbout,{galleryImages:['','','']});await dbPut('about',data)}
-  if(!data.galleryImages)data.galleryImages=['','',''];
-  const initials=(data.name||'S').charAt(0).toUpperCase();
-  const hasBg=!!data.bgImage;
-  const avatarHtml=data.avatar
-    ?'<img class="pc-avatar-img" src="'+data.avatar+'" alt="avatar">'
-    :'<div class="pc-avatar-placeholder">'+initials+'</div>';
+  if(!Array.isArray(data.galleryImages))data.galleryImages=['','',''];
+  const galleryImages=data.galleryImages.map(_ibSafeProfileImageSource);
+  const initials=String(data.name||'S').charAt(0).toUpperCase();
+  const safeAvatar=_ibSafeProfileImageSource(data.avatar);
+  const safeBgImage=_ibSafeProfileImageSource(data.bgImage);
+  const hasBg=!!safeBgImage;
+  const avatarHtml=safeAvatar
+    ?'<img class="pc-avatar-img" src="'+_ibSafeHtmlAttribute(safeAvatar)+'" alt="avatar">'
+    :'<div class="pc-avatar-placeholder">'+esc(initials)+'</div>';
   const bgClass=hasBg?'pc-avatar-bg has-img':'pc-avatar-bg frozen';
-  const bgStyle=hasBg?'background-image:url('+data.bgImage+')':'';
   const bioText=data.bio||'';
   const customText=data.customText||'';
   const ncS=pcNameColorStyles(data.nameColor||'theme');
-  const slots=data.galleryImages.map(function(img,i){
+  const slots=galleryImages.map(function(img,i){
     var label=i===0?'I':i===1?'II':'III';
-    if(img)return '<div class="pc-gallery-slot has-img" style="background-image:url('+img+')" onclick="toggleGalleryExpand(this)"><span class="pc-slot-label">'+label+'</span><div class="pc-gallery-del" onclick="event.stopPropagation();deleteGalleryImage('+i+')" title="删除图片">\u00D7</div></div>';
+    if(img)return '<div class="pc-gallery-slot has-img" data-profile-gallery-index="'+i+'" onclick="toggleGalleryExpand(this)"><span class="pc-slot-label">'+label+'</span><div class="pc-gallery-del" onclick="event.stopPropagation();deleteGalleryImage('+i+')" title="删除图片">\u00D7</div></div>';
     return '<div class="pc-gallery-slot empty" onclick="triggerGalleryUpload('+i+')"><span class="pc-slot-label">'+label+'</span></div>';
   }).join('');
   document.getElementById('about-display').innerHTML=
     '<div class="profile-card">'
       +'<div class="pc-avatar-col">'
-        +'<div class="'+bgClass+'" style="'+bgStyle+'"></div>'
+        +'<div class="'+bgClass+'" data-profile-bg></div>'
         +avatarHtml
         +'<div class="pc-avatar-name" style="'+ncS.name+'">'+esc(data.name||'Sui')+'</div>'
         +'<div class="pc-avatar-label" style="'+ncS.label+'"></div>'
@@ -968,6 +999,7 @@ async function loadAboutDisplay(){
       +'</div>'
       +'<div class="pc-gallery-col">'+slots+'</div>'
     +'</div>';
+  _ibApplyProfileImageStyles(document.getElementById('about-display'),safeBgImage,galleryImages);
   document.getElementById('about-editor').style.display='none';
   document.getElementById('about-display').style.display='block';
 }
@@ -983,9 +1015,11 @@ function triggerGalleryUpload(idx){
   inp.onchange=function(e){
     var f=e.target.files[0];if(!f)return;
     var r=new FileReader();r.onload=async function(){
+      const source=_ibSafeProfileImageSource(String(r.result||''));
+      if(!source){toast('图片格式不受支持，请选择 PNG/JPEG/WebP 等栅格图片');return}
       var data=await dbGet('about','main')||Object.assign({},defaultAbout);
       if(!data.galleryImages)data.galleryImages=['','',''];
-      data.galleryImages[idx]=r.result;
+      data.galleryImages[idx]=source;
       await dbPut('about',data);loadAboutDisplay();toast('图片已保存');
     };r.readAsDataURL(f);
   };inp.click();
@@ -998,30 +1032,32 @@ async function deleteGalleryImage(idx){
 }
 async function openAboutEdit(){
   let data=await dbGet('about','main')||Object.assign({},defaultAbout);
-  if(!data.galleryImages)data.galleryImages=['','',''];
+  if(!Array.isArray(data.galleryImages))data.galleryImages=['','',''];
+  const galleryImages=data.galleryImages.map(_ibSafeProfileImageSource);
   _pendingProfileUploads={avatar:null,bgImage:null,gallery:[null,null,null]};
   _pendingNameColor=data.nameColor||'theme';
   _lastValidNickname=data.name||'';
   _lastValidBio=data.bio||'';
   _lastValidCustom=data.customText||'';
   const ncS=pcNameColorStyles(_pendingNameColor);
-  const initials=(data.name||'S').charAt(0).toUpperCase();
-  const hasBg=!!data.bgImage;
-  const avatarHtml=data.avatar
-    ?'<img class="pc-avatar-img" src="'+data.avatar+'" alt="avatar">'
-    :'<div class="pc-avatar-placeholder">'+initials+'</div>';
+  const initials=String(data.name||'S').charAt(0).toUpperCase();
+  const safeAvatar=_ibSafeProfileImageSource(data.avatar);
+  const safeBgImage=_ibSafeProfileImageSource(data.bgImage);
+  const hasBg=!!safeBgImage;
+  const avatarHtml=safeAvatar
+    ?'<img class="pc-avatar-img" src="'+_ibSafeHtmlAttribute(safeAvatar)+'" alt="avatar">'
+    :'<div class="pc-avatar-placeholder">'+esc(initials)+'</div>';
   const bgClass=hasBg?'pc-avatar-bg has-img':'pc-avatar-bg frozen';
-  const bgStyle=hasBg?'background-image:url('+data.bgImage+')':'';
-  const slots=data.galleryImages.map(function(img,i){
+  const slots=galleryImages.map(function(img,i){
     var label=i===0?'I':i===1?'II':'III';
-    if(img)return '<div class="pc-gallery-slot has-img" style="background-image:url('+img+')" onclick="toggleGalleryExpand(this)"><span class="pc-slot-label">'+label+'</span><div class="pc-gallery-del" onclick="event.stopPropagation();deleteGalleryImage('+i+')" title="删除图片">\u00D7</div></div>';
+    if(img)return '<div class="pc-gallery-slot has-img" data-profile-gallery-index="'+i+'" onclick="toggleGalleryExpand(this)"><span class="pc-slot-label">'+label+'</span><div class="pc-gallery-del" onclick="event.stopPropagation();deleteGalleryImage('+i+')" title="删除图片">\u00D7</div></div>';
     return '<div class="pc-gallery-slot empty" onclick="triggerGalleryUpload('+i+')"><span class="pc-slot-label">'+label+'</span></div>';
   }).join('');
   /* Render card with bio column replaced by edit form */
   document.getElementById('about-display').innerHTML=
     '<div class="profile-card">'
       +'<div class="pc-avatar-col">'
-        +'<div class="'+bgClass+'" style="'+bgStyle+'"></div>'
+        +'<div class="'+bgClass+'" data-profile-bg></div>'
         +avatarHtml
         +'<div class="pc-avatar-name" style="'+ncS.name+'">'+esc(data.name||'Sui')+'</div>'
         +'<div class="pc-avatar-label" style="'+ncS.label+'"></div>'
@@ -1059,12 +1095,15 @@ async function openAboutEdit(){
       +'</div>'
       +'<div class="pc-gallery-col">'+slots+'</div>'
     +'</div>';
+  _ibApplyProfileImageStyles(document.getElementById('about-display'),safeBgImage,galleryImages);
 }
 function closeAboutEdit(){loadAboutDisplay()}
 function handleProfileUpload(e,field){
   var f=e.target.files[0];if(!f)return;
   var r=new FileReader();r.onload=function(){
-    _pendingProfileUploads[field]=r.result;
+    var source=_ibSafeProfileImageSource(String(r.result||''));
+    if(!source){toast('图片格式不受支持，请选择 PNG/JPEG/WebP 等栅格图片');return}
+    _pendingProfileUploads[field]=source;
     toast(field==='avatar'?'头像已选择':'背景已选择');
   };r.readAsDataURL(f);
 }
@@ -1072,7 +1111,11 @@ function triggerGalleryEditUpload(idx){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(e){
     var f=e.target.files[0];if(!f)return;
-    var r=new FileReader();r.onload=function(){_pendingProfileUploads.gallery[idx]=r.result;toast('图片 '+(idx+1)+' 已选择')};r.readAsDataURL(f);
+    var r=new FileReader();r.onload=function(){
+      var source=_ibSafeProfileImageSource(String(r.result||''));
+      if(!source){toast('图片格式不受支持，请选择 PNG/JPEG/WebP 等栅格图片');return}
+      _pendingProfileUploads.gallery[idx]=source;toast('图片 '+(idx+1)+' 已选择');
+    };r.readAsDataURL(f);
   };inp.click();
 }
 /* Nickname character limit: 12 CJK chars / 24 ASCII chars */
@@ -1102,9 +1145,9 @@ async function saveAbout(){
   const gallery=old.galleryImages||['','',''];
   for(var i=0;i<3;i++){if(_pendingProfileUploads.gallery[i])gallery[i]=_pendingProfileUploads.gallery[i]}
   const data={id:'main',name:name||old.name||'Sui',bio:bio,
-    avatar:_pendingProfileUploads.avatar||old.avatar||'',
-    bgImage:_pendingProfileUploads.bgImage||old.bgImage||'',
-    customText:customText,galleryImages:gallery,
+    avatar:_ibSafeProfileImageSource(_pendingProfileUploads.avatar||old.avatar||''),
+    bgImage:_ibSafeProfileImageSource(_pendingProfileUploads.bgImage||old.bgImage||''),
+    customText:customText,galleryImages:(Array.isArray(gallery)?gallery:[]).map(_ibSafeProfileImageSource),
     nameColor:_pendingNameColor||'theme',
     showInNav:!!document.getElementById('about-show-nav')?.checked};
   await dbPut('about',data);
@@ -1483,8 +1526,8 @@ function _ibGuardInit(){
   document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden'){if(_ibFsDirty&&_ibFsState==='granted')_ibFsSyncNow('hidden');/* 切后台即抢写一份，静默 */if(_ibMirrorDirty)_ibMirrorNow(true)}});
   _ibRenderGuardPanel();
 }
-async function importAll(e){const file=e.target.files[0];if(!file)return;try{const text=await file.text();const data=JSON.parse(text);if(data.posts)for(const p of data.posts)await dbPut('posts',p);if(data.categories)for(const c of data.categories)await dbPut('categories',c);if(data.about)for(const a of data.about)await dbPut('about',a);if(data.apiSettings)for(const s of data.apiSettings){if(typeof window._ibPersistImportedApiSetting==='function')await window._ibPersistImportedApiSetting(s);else if(s&&String(s.apiKey||'').trim())throw new Error('CREDENTIAL_AUTHORITY_UNAVAILABLE');else await dbPut('apiSettings',s)}if(data.apiConfigs)for(const s of data.apiConfigs)await _persistApiConfig(s);if(data.chatMessages)for(const m of data.chatMessages)await dbPut('chatMessages',m);if(data.letters)for(const l of data.letters)await dbPut('letters',l);if(data.groups)for(const g of data.groups)await dbPut('groups',g);if(data.blogComments)for(const c of data.blogComments)await dbPut('blogComments',c);if(data.memories)await window.importCanonicalMemoryRows(data.memories);if(data.chatThreads)for(const t of data.chatThreads)await dbPut('chatThreads',t);if(data.chatSummaries)for(const s of data.chatSummaries)await dbPut('chatSummaries',s);if(data.projects)for(const p of data.projects)await dbPut('projects',p);if(data.projectFiles)for(const f of data.projectFiles)await dbPut('projectFiles',f);if(data.uploadedFiles)for(const u of data.uploadedFiles)await dbPut('uploadedFiles',u);if(data.blogAnnotations)for(const a of data.blogAnnotations)await dbPut('blogAnnotations',a);if(data.autoMemory)for(const am of data.autoMemory)await dbPut('autoMemory',am);if(data.calEvents)for(const ce of data.calEvents)await dbPut('calEvents',ce);if(data.calNotes)for(const cn of data.calNotes)await dbPut('calNotes',cn);if(data.calLedger)for(const cl of data.calLedger)await dbPut('calLedger',cl);if(data.active_message_settings)for(const s of data.active_message_settings)await dbPut('active_message_settings',s);if(data.active_message_history)for(const h of data.active_message_history)await dbPut('active_message_history',h);if(data.active_message_plans)for(const p of data.active_message_plans)await dbPut('active_message_plans',p);if(data.diary_entries)for(const e of data.diary_entries)await dbPut('diary_entries',e);if(data.moments)for(const e of data.moments)await dbPut('moments',e);if(data.activities)for(const a of data.activities)await dbPut('activities',a);if(data.favorites)for(const f of data.favorites)await dbPut('favorites',f);if(data.understandings)for(const un of data.understandings)await dbPut('understandings',un);if(data.threads)for(const th of data.threads)await dbPut('threads',th);await migrateLockedPosts();try{localStorage.removeItem('ib_guardMuted')}catch(e2){}var _go=document.getElementById('ib-guard-overlay');if(_go){_go.remove();_ibGuardShown=false}setTimeout(function(){_ibMirrorNow(true)},3000);_ibToolsCache=null;/* 导入可能带来新的外部工具配置，使缓存失效 */await loadApiConfigs();_refreshCachedUserName();_calEarliest=null;/* 同步刷新内存缓存：API 配置、用户名头像、日历最早日期 */if(data.apiConfigs&&typeof ibTtsVoiceCheckImport==='function'){try{const _vci=await ibTtsVoiceCheckImport(data.apiConfigs);if(_vci&&Array.isArray(_vci.missing)&&_vci.missing.length){alert('导入完成；但有 '+_vci.missing.length+' 个 VoiceClone 参考音频文件在本机 Bridge 中不存在（dangling reference）：\n'+_vci.missing.join('、')+'\n\n请打开对应角色的语音设置查看状态。')}}catch(eV){}}toast('数据已导入');navTo(currentPage)}catch(err){if(err&&err.memoryImport&&typeof window._memoryUiMutationFailure==='function')window._memoryUiMutationFailure('导入',err,Number(err.memoryImportCompleted)||0);else toast('导入失败：文件格式错误')}e.target.value=''}
-function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+async function importAll(e){const file=e.target.files[0];if(!file)return;try{const text=await file.text();const data=JSON.parse(text);if(!window.IBSafeImage||typeof window.IBSafeImage.sanitizeImportedArchive!=='function')throw new Error('IMPORT_IMAGE_VALIDATOR_UNAVAILABLE');window.IBSafeImage.sanitizeImportedArchive(data);if(data.posts)for(const p of data.posts)await dbPut('posts',p);if(data.categories)for(const c of data.categories)await dbPut('categories',c);if(data.about)for(const a of data.about)await dbPut('about',a);if(data.apiSettings)for(const s of data.apiSettings){if(typeof window._ibPersistImportedApiSetting==='function')await window._ibPersistImportedApiSetting(s);else if(s&&String(s.apiKey||'').trim())throw new Error('CREDENTIAL_AUTHORITY_UNAVAILABLE');else await dbPut('apiSettings',s)}if(data.apiConfigs)for(const s of data.apiConfigs)await _persistApiConfig(s);if(data.chatMessages)for(const m of data.chatMessages)await dbPut('chatMessages',m);if(data.letters)for(const l of data.letters)await dbPut('letters',l);if(data.groups)for(const g of data.groups)await dbPut('groups',g);if(data.blogComments)for(const c of data.blogComments)await dbPut('blogComments',c);if(data.memories)await window.importCanonicalMemoryRows(data.memories);if(data.chatThreads)for(const t of data.chatThreads)await dbPut('chatThreads',t);if(data.chatSummaries)for(const s of data.chatSummaries)await dbPut('chatSummaries',s);if(data.projects)for(const p of data.projects)await dbPut('projects',p);if(data.projectFiles)for(const f of data.projectFiles)await dbPut('projectFiles',f);if(data.uploadedFiles)for(const u of data.uploadedFiles)await dbPut('uploadedFiles',u);if(data.blogAnnotations)for(const a of data.blogAnnotations)await dbPut('blogAnnotations',a);if(data.autoMemory)for(const am of data.autoMemory)await dbPut('autoMemory',am);if(data.calEvents)for(const ce of data.calEvents)await dbPut('calEvents',ce);if(data.calNotes)for(const cn of data.calNotes)await dbPut('calNotes',cn);if(data.calLedger)for(const cl of data.calLedger)await dbPut('calLedger',cl);if(data.active_message_settings)for(const s of data.active_message_settings)await dbPut('active_message_settings',s);if(data.active_message_history)for(const h of data.active_message_history)await dbPut('active_message_history',h);if(data.active_message_plans)for(const p of data.active_message_plans)await dbPut('active_message_plans',p);if(data.diary_entries)for(const e of data.diary_entries)await dbPut('diary_entries',e);if(data.moments)for(const e of data.moments)await dbPut('moments',e);if(data.activities)for(const a of data.activities)await dbPut('activities',a);if(data.favorites)for(const f of data.favorites)await dbPut('favorites',f);if(data.understandings)for(const un of data.understandings)await dbPut('understandings',un);if(data.threads)for(const th of data.threads)await dbPut('threads',th);await migrateLockedPosts();try{localStorage.removeItem('ib_guardMuted')}catch(e2){}var _go=document.getElementById('ib-guard-overlay');if(_go){_go.remove();_ibGuardShown=false}setTimeout(function(){_ibMirrorNow(true)},3000);_ibToolsCache=null;/* 导入可能带来新的外部工具配置，使缓存失效 */await loadApiConfigs();_refreshCachedUserName();_calEarliest=null;/* 同步刷新内存缓存：API 配置、用户名头像、日历最早日期 */if(data.apiConfigs&&typeof ibTtsVoiceCheckImport==='function'){try{const _vci=await ibTtsVoiceCheckImport(data.apiConfigs);if(_vci&&Array.isArray(_vci.missing)&&_vci.missing.length){alert('导入完成；但有 '+_vci.missing.length+' 个 VoiceClone 参考音频文件在本机 Bridge 中不存在（dangling reference）：\n'+_vci.missing.join('、')+'\n\n请打开对应角色的语音设置查看状态。')}}catch(eV){}}toast('数据已导入');navTo(currentPage)}catch(err){if(err&&err.memoryImport&&typeof window._memoryUiMutationFailure==='function')window._memoryUiMutationFailure('导入',err,Number(err.memoryImportCompleted)||0);else if(/IMPORT_ID_INVALID|API_CONFIG_ID_INVALID|IMPORT_CREDENTIAL_REF_INVALID/.test(String(err&&err.code||err&&err.message||'')))toast('导入失败：角色或记录标识字段格式无效，未导入存档');else toast('导入失败：文件格式错误')}e.target.value=''}
+function esc(s){if(!s)return'';return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 
 /* ---- 双挂载：HTML 内联 onclick 与其它文件仍经 window 访问；IB.core 登记全部导出 ---- */
 function ibCoreLive(name, getter, setter){

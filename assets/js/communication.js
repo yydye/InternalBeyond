@@ -1,13 +1,21 @@
 ﻿/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.chat 注册）。letters 域已提取到 communication/letters.js。 */
 (function(NS){
 /* BLOG COMMENTS */
+function _chatImportIdAllowed(value){
+  var helper=window.IBSafeImage;
+  return !!(helper&&typeof helper.validBindingId==='function'&&helper.validBindingId(value));
+}
+function _chatSafeJsArgument(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.jsArgument==='function'?helper.jsArgument(value):'null';
+}
 async function loadBlogComments(postId){
   const container=document.getElementById('blog-comments-'+postId);
-  if(!container)return;
+  if(!container||!_chatImportIdAllowed(postId))return;
   const all=await dbGetAll('blogComments');
-  const comments=all.filter(c=>c.postId===postId).sort((a,b)=>b.created-a.created);
+  const comments=all.filter(c=>c&&_chatImportIdAllowed(c.id)&&_chatImportIdAllowed(c.postId)&&c.postId===postId).sort((a,b)=>b.created-a.created);
   if(!comments.length){container.innerHTML='<div style="font-size:0.78rem;color:var(--content-muted);padding:8px 0;opacity:0.7">还没有留言</div>';return}
-  container.innerHTML=comments.map(c=>'<div class="blog-comment-card"><div class="blog-comment-from">'+esc(c.from||'AI')+'</div><div class="blog-comment-text">'+esc(c.content)+'</div><div class="blog-comment-time">'+new Date(c.created).toLocaleString('zh-CN')+'</div><div class="blog-comment-actions"><button class="btn" style="font-size:var(--fs-meta);padding:3px 8px" onclick="deleteBlogComment(\''+c.id+'\',\''+c.postId+'\')">删除</button></div></div>').join('');
+  container.innerHTML=comments.map(c=>'<div class="blog-comment-card"><div class="blog-comment-from">'+esc(c.from||'AI')+'</div><div class="blog-comment-text">'+esc(c.content)+'</div><div class="blog-comment-time">'+new Date(c.created).toLocaleString('zh-CN')+'</div><div class="blog-comment-actions"><button class="btn" style="font-size:var(--fs-meta);padding:3px 8px" onclick="deleteBlogComment('+_chatSafeJsArgument(c.id)+','+_chatSafeJsArgument(c.postId)+')">删除</button></div></div>').join('');
 }
 
 async function requestBlogComment(postId){
@@ -623,7 +631,8 @@ function _finishStreamThinking(registry,text){
 function _buildAvatarCircle(name,src,size){
   var d=document.createElement('div');d.className='chat-msg-avatar';
   if(size){d.style.width=size+'px';d.style.height=size+'px';d.style.fontSize=(size*0.4)+'px'}
-  if(src){var img=document.createElement('img');img.src=src;img.alt='';d.appendChild(img)}
+  var safeSource=_chatSafeImageSource(src);
+  if(safeSource){var img=document.createElement('img');img.src=safeSource;img.alt='';d.appendChild(img)}
   else{d.textContent=(name||'?').charAt(0).toUpperCase()}
   return d;
 }
@@ -639,6 +648,21 @@ function _ibAiVoicePayload(m){
 }
 function _renderAiVoice(host,m){
   host.appendChild(_buildVoiceEl(m.voice,{transcriptToggle:true}));
+}
+function _chatSafeImageSource(value){
+  var helper=window.IBSafeImage;
+  return helper&&typeof helper.normalizeSource==='function'?helper.normalizeSource(value):'';
+}
+function _chatImageElement(image,maxWidth){
+  var data=image&&typeof image==='object'?image:{};
+  var source=_chatSafeImageSource(data.dataUrl);
+  if(!source)return null;
+  var element=document.createElement('img');
+  element.className='chat-bubble-img';element.loading='lazy';element.decoding='async';
+  element.src=source;element.alt=String(data.name||'image');
+  if(maxWidth)element.style.maxWidth=maxWidth;
+  element.addEventListener('click',function(){_viewImageFull(source,data)});
+  return element;
 }
 function _buildMsgEl(m,isFullscreen,isGroupCont,quoteSources){
   /* content 与 reasoning_content 始终分流；展示与否只由该消息对应模型的 showThinking 决定。 */
@@ -705,7 +729,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont,quoteSources){
       div.appendChild(txt);
     }
     if(m.files&&m.files.length)m.files.forEach(function(f){div.appendChild(_buildFileCard(f))});
-    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
+    if(m.images&&m.images.length)m.images.forEach(function(img){var el=_chatImageElement(img);if(el)div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
     _mbAppendNoticeCard(div,m);/* P11-2E · 历史重载：提示随消息持久化，回看同样看得见 */
@@ -732,7 +756,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont,quoteSources){
       div.textContent=m.content;
     }
     if(m.files&&m.files.length)m.files.forEach(function(f){div.appendChild(_buildFileCard(f))});
-    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
+    if(m.images&&m.images.length)m.images.forEach(function(img){var el=_chatImageElement(img,'180px');if(el)div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
     _mbAppendNoticeCard(div,m);/* P11-2E · 小窗历史：与全屏同款 */
@@ -754,13 +778,10 @@ async function updateNavUserIdentity(data){
     if(!nameEl||!avatarEl)return;
     const name=(data&&data.name)?data.name:'';
     nameEl.textContent=name;
-    if(data&&data.avatar){
-      avatarEl.innerHTML='<img src="'+data.avatar+'" alt="">';
-    }else{
-      const initials=name?name.charAt(0).toUpperCase():'';
-      avatarEl.innerHTML='';
-      avatarEl.textContent=initials;
-    }
+    avatarEl.replaceChildren();
+    const source=_chatSafeImageSource(data&&data.avatar);
+    if(source){const image=document.createElement('img');image.src=source;image.alt='';avatarEl.appendChild(image)}
+    else avatarEl.textContent=name?String(name).charAt(0).toUpperCase():'';
     /* Hide if no name set or user chose to hide */
     const idEl=document.getElementById('nav-user-id');
     const showInNav=data&&data.showInNav!==undefined?data.showInNav:true;
@@ -939,6 +960,8 @@ function compressImage(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onload=function(){
+      const source=_chatSafeImageSource(String(reader.result||''));
+      if(!source){reject(new Error('unsupported-image-format'));return}
       const img=new Image();
       img.onload=function(){
         let w=img.width,h=img.height;
@@ -953,7 +976,7 @@ function compressImage(file){
         resolve({dataUrl:dataUrl,base64:base64,mime:'image/jpeg',name:file.name||'image.jpg',size:Math.round(base64.length*0.75)})
       };
       img.onerror=reject;
-      img.src=reader.result
+      img.src=source
     };
     reader.onerror=reject;
     reader.readAsDataURL(file)
@@ -1017,7 +1040,8 @@ async function _requestLocalVision(img,prompt){
   const key=_localVisionCacheKey(img,prompt);
   if(_localVisionCache.has(key))return _localVisionCache.get(key);
   const request=(async function(){
-    const source=img.dataUrl||('data:'+(img.mime||'image/jpeg')+';base64,'+img.base64);
+    const source=_chatSafeImageSource(img.dataUrl||('data:'+(img.mime||'image/jpeg')+';base64,'+img.base64));
+    if(!source)throw new Error('图片格式无效或不受支持');
     const blob=await fetch(source).then(r=>r.blob());
     const body=new FormData();
     body.append('image',blob,img.name||'image.jpg');
@@ -1091,7 +1115,10 @@ function renderAttachPreviews(){
     bar.classList.add('has-items');
     _pendingImages.forEach((img,i)=>{
       const item=document.createElement('div');item.className='chat-preview-item';
-      item.innerHTML='<img src="'+img.dataUrl+'" alt="preview"><div class="chat-preview-x" onclick="removeImagePreview('+i+')">✕</div>';
+      const source=_chatSafeImageSource(img&&img.dataUrl);
+      if(source){const preview=document.createElement('img');preview.src=source;preview.alt='preview';item.appendChild(preview)}
+      const remove=document.createElement('div');remove.className='chat-preview-x';remove.textContent='✕';
+      remove.addEventListener('click',function(){removeImagePreview(i)});item.appendChild(remove);
       bar.appendChild(item)
     });
     _pendingFiles.forEach((f,i)=>{
@@ -1582,8 +1609,10 @@ function getTextContent(msg){
 }
 
 function _viewImageFull(src,image){
+  const safeSource=_chatSafeImageSource(src);if(!safeSource)return;
   const ov=document.createElement('div');ov.className='chat-bubble-img-full';
-  ov.innerHTML='<img src="'+src+'">';ov.onclick=function(){ov.remove()};
+  const imageElement=document.createElement('img');imageElement.src=safeSource;imageElement.alt='';
+  ov.appendChild(imageElement);ov.onclick=function(){ov.remove()};
   /* 图片编辑入口（Phase 3）：选中这张图 → 回到输入框，用户直接说"把背景换成晚上"即可。
      选中后 <ws_edit_image> / 自然语言续改都优先使用这张图（explicit > attached > latest）。 */
   try{
@@ -4498,7 +4527,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
         div.appendChild(txt);
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
-      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
+      imgs.forEach(img=>{const el=_chatImageElement(img);if(el)div.appendChild(el)});
       if(msgId)_chatAppendMessageActions({id:msgId,role:role,friendId:activeFriendId,senderName:senderName},div,full);
     }else{
         if(senderName&&role==='ai'&&!_isCont){
@@ -4526,7 +4555,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
         div.textContent=text;
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
-      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
+      imgs.forEach(img=>{const el=_chatImageElement(img,'180px');if(el)div.appendChild(el)});
       if(msgId)_chatAppendMessageActions({id:msgId,role:role,friendId:activeFriendId,senderName:senderName},div,full);
     }
     if(messageRecord)_chatAppendReplyQuoteCard(messageRecord,quoteSources||[],div);

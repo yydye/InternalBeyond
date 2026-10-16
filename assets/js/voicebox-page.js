@@ -538,11 +538,15 @@
       if (resource.description) appendText(copy, 'span', '', resource.description);
       var metadata = document.createElement('div'); metadata.className = 'voicebox-online-meta';
       var sourceLink = document.createElement('a'); sourceLink.textContent = '来源：' + resource.source.name;
-      if (resource.source.url) { sourceLink.href = resource.source.url; sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer'; }
+      var safeSourceUrl = window.IBSafeImage && typeof window.IBSafeImage.normalizeLink === 'function'
+        ? window.IBSafeImage.normalizeLink(resource.source.url) : '';
+      if (safeSourceUrl) { sourceLink.href = safeSourceUrl; sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer'; }
       metadata.appendChild(sourceLink);
       var licenseText = resource.license.name + (resource.license.id ? ' (' + resource.license.id + ')' : '');
-      if (resource.license.url) {
-        var licenseLink = document.createElement('a'); licenseLink.href = resource.license.url; licenseLink.target = '_blank'; licenseLink.rel = 'noopener noreferrer'; licenseLink.textContent = '许可证：' + licenseText; metadata.appendChild(licenseLink);
+      var safeLicenseUrl = window.IBSafeImage && typeof window.IBSafeImage.normalizeLink === 'function'
+        ? window.IBSafeImage.normalizeLink(resource.license.url) : '';
+      if (safeLicenseUrl) {
+        var licenseLink = document.createElement('a'); licenseLink.href = safeLicenseUrl; licenseLink.target = '_blank'; licenseLink.rel = 'noopener noreferrer'; licenseLink.textContent = '许可证：' + licenseText; metadata.appendChild(licenseLink);
       } else appendText(metadata, 'span', '', '许可证：' + licenseText);
       appendText(metadata, 'span', '', formatBytes(resource.sizeBytes) + ' · SHA-256 已列入 Manifest');
       appendText(metadata, 'span', '', 'Voicebox · ' + resource.engine + ' · ' + resource.language);
