@@ -78,7 +78,8 @@ function startMockApi() {
     const captured = {
       anthropic: { url: null, body: null, seen: false },
       gemini: { url: null, body: null, seen: false },
-      openai: { url: null, body: null, seen: false }
+      openai: { url: null, body: null, seen: false },
+      glm: { requests: [], fallbackAborted: false, holdFallback: false, respondWithContent: false, rejectStreaming: false, partialThenError: false }
     };
     const CORS = {
       'Content-Type': 'application/json',
@@ -119,7 +120,10 @@ function startMockApi() {
           captured.gemini = { url, body, seen: true };
           res.writeHead(200, CORS);
           res.end(JSON.stringify({
-            candidates: [{ content: { parts: [{ text: 'Gemini 回复正文。' }], role: 'model' }, finishReason: 'STOP' }],
+            candidates: [{ content: { parts: [
+              { text: 'Gemini 回复正文。' },
+              { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }
+            ], role: 'model' }, finishReason: 'STOP' }],
             usageMetadata: {
               promptTokenCount: 90,
               candidatesTokenCount: 33,
@@ -127,6 +131,47 @@ function startMockApi() {
               cachedContentTokenCount: 18
             }
           }));
+          return;
+        }
+
+        /* GLM 5.3: streaming reasoning can arrive before any answer text. The
+           first request deliberately ends after reasoning to exercise the
+           production non-stream fallback and the shared Stop handle. */
+        if (req.method === 'POST' && url.includes('/glm/chat/completions')) {
+          captured.glm.requests.push(body || {});
+          if (body && body.stream === true) {
+            if (captured.glm.rejectStreaming) {
+              res.writeHead(400, CORS);
+              res.end(JSON.stringify({ error: 'stream not supported by this proxy' }));
+              return;
+            }
+            res.writeHead(200, Object.assign({}, CORS, { 'Content-Type': 'text/event-stream' }));
+            if (captured.glm.partialThenError) {
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'GLM 部分回答。' } }] }) + '\n\n');
+              setTimeout(() => { if (!res.destroyed) res.destroy(); }, 100);
+              return;
+            }
+            const streamEvents = [{ choices: [{ delta: { reasoning_content: 'hidden GLM reasoning' } }] }];
+            if (captured.glm.respondWithContent) {
+              streamEvents.push({ choices: [{ delta: { content: 'GLM 流式' } }] });
+              streamEvents.push({ choices: [{ delta: { content: '回答完成。' } }] });
+              streamEvents.push({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+            }
+            res.end(streamEvents.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join('') + 'data: [DONE]\n\n');
+            return;
+          }
+          if (captured.glm.holdFallback) {
+            res.writeHead(200, CORS);
+            const timer = setTimeout(() => {
+              if (!res.destroyed) res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '停不掉的 GLM 回复。' }, finish_reason: 'stop' }] }));
+            }, 30000);
+            res.on('close', () => {
+              if (!res.writableEnded) { clearTimeout(timer); captured.glm.fallbackAborted = true; }
+            });
+            return;
+          }
+          res.writeHead(200, CORS);
+          res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'GLM 回答正文。', reasoning_content: 'fallback reasoning' }, finish_reason: 'stop' }] }));
           return;
         }
 
@@ -423,14 +468,32 @@ async function browserChatContractTest() {
 
     const mockBase = 'http://127.0.0.1:' + mock.port;
 
-    /* 注入三个 provider Friend（anthropic / gemini / openai-custom），全部指向 mock */
+    /* 注入 provider Friend（含遗留 streaming:false 的 GLM 5.3），全部指向 mock */
     const friendCfgs = [
       { id: 'contract_anth', nickname: 'ClaudeC', model: 'claude-sonnet-4-6', endpoint: mockBase + '/v1/messages', apiKey: 'anth-key', provider: 'anthropic', relationship: '测试伙伴', systemPrompt: '你是 Claude 契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
       { id: 'contract_gem', nickname: 'GemC', model: 'gemini-2.0-flash', endpoint: mockBase + '/v1beta/models/{model}:generateContent', apiKey: 'gem-key', provider: 'gemini', relationship: '测试伙伴', systemPrompt: '你是 Gemini 契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
-      { id: 'contract_oai', nickname: 'OaiC', model: 'gpt-4o-mini', endpoint: mockBase + '/v1/chat/completions', apiKey: '', provider: 'custom', relationship: '测试伙伴', systemPrompt: '你是 OpenAI 契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() }
+      { id: 'contract_oai', nickname: 'OaiC', model: 'gpt-4o-mini', endpoint: mockBase + '/v1/chat/completions', apiKey: '', provider: 'custom', relationship: '测试伙伴', systemPrompt: '你是 OpenAI 契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
+      { id: 'contract_glm', nickname: 'GlmC', model: 'glm-5.3-flash', endpoint: mockBase + '/glm/chat/completions', apiKey: '', provider: 'glm', relationship: '测试伙伴', systemPrompt: '你是 GLM 流式契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
+      { id: 'contract_glm_stream', nickname: 'GlmStream', model: 'glm-5.3-flash', endpoint: mockBase + '/glm/chat/completions', apiKey: '', provider: 'glm', relationship: '测试伙伴', systemPrompt: '你是 GLM 流式契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
+      { id: 'contract_glm_partial', nickname: 'GlmPartial', model: 'glm-5.3-flash', endpoint: mockBase + '/glm/chat/completions', apiKey: '', provider: 'glm', relationship: '测试伙伴', systemPrompt: '你是 GLM 部分流契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
+      { id: 'contract_glm_error', nickname: 'GlmError', model: 'glm-5.3-flash', endpoint: mockBase + '/glm/chat/completions', apiKey: '', provider: 'glm', relationship: '测试伙伴', systemPrompt: '你是 GLM 回退契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() },
+      { id: 'contract_glm_stop', nickname: 'GlmStop', model: 'glm-5.3-flash', endpoint: mockBase + '/glm/chat/completions', apiKey: '', provider: 'glm', relationship: '测试伙伴', systemPrompt: '你是 GLM 停止契约测试。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() }
     ];
     await evaluate(cdp, "(function(){ " + friendCfgs.map(c => 'dbPut(\'apiConfigs\',' + JSON.stringify(c) + ');').join(' ') + " })()");
     await evaluate(cdp, "loadApiConfigs()");
+    const qqMediaCfg = {
+      id: 'contract_gem_media', nickname: 'GemMedia', model: 'gemini-2.0-flash',
+      endpoint: mockBase + '/v1beta/models/{model}:generateContent', apiKey: 'gem-key', provider: 'gemini',
+      systemPrompt: 'QQ 官方媒体契约测试。', temperature: 1, streaming: false, showThinking: false,
+      promptCache: false, imageGen: true, vision: true, created: Date.now()
+    };
+    const qqLocalVisionCfg = {
+      id: 'contract_qq_local_vision', nickname: 'QQLocalVision', model: 'deepseek-chat',
+      endpoint: mockBase + '/v1/chat/completions', apiKey: 'oai-key', provider: 'deepseek',
+      systemPrompt: 'QQ 本地视觉契约测试。', temperature: 1, streaming: false, showThinking: false,
+      promptCache: false, vision: true, created: Date.now()
+    };
+    await evaluate(cdp, "(async function(){ await dbPut('apiConfigs'," + JSON.stringify(qqMediaCfg) + "); await dbPut('apiConfigs'," + JSON.stringify(qqLocalVisionCfg) + "); await loadApiConfigs(); })()");
 
     /* 先清理任一残留 token 记录，便于精确断言 */
     await evaluate(cdp, "(async function(){ try{ var r=await dbGet('apiSettings','ibTokenStats'); if(r&&r.data)r.data.records=[]; await dbPut('apiSettings',{id:'ibTokenStats',data:r?(r.data||{records:[]}):{records:[]}}); }catch(e){} })()");
@@ -473,6 +536,53 @@ async function browserChatContractTest() {
     check('gem.replyStored', await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); return all.some(function(m){return m.friendId==='contract_gem'&&m.role==='assistant'&&m.content==='Gemini 回复正文。';}); })()"));
     check('gem.cachedTokenCountNotLost', await evaluate(cdp, "(async function(){ var r=await dbGet('apiSettings','ibTokenStats'); var recs=(r&&r.data&&r.data.records)||[]; var hit=recs.find(function(x){return x.cid==='contract_gem'&&x.cr>0;}); return !!hit && hit.cr===18; })()"));
 
+    /* QQ Official media seam: existing Gemini Provider receives an inline image
+       part and its native image output is returned as request-local media. */
+    mock.captured.gemini.seen = false;
+    const mediaResult = await evaluate(cdp, "(async function(){ var r=await window.IB.chat.callExternalReplyMedia('contract_gem_media',[{role:'system',content:'role system'},{role:'user',content:[{type:'text',text:'请描述这张图片。'},{type:'_image',mime:'image/png',base64:'iVBORw0KGgo='}]}],'qq-official:mock:c2c:user'); return {text:r.text,imageCount:(r.images||[]).length,imageMime:r.images&&r.images[0]&&r.images[0].mime,imageBase64Length:r.images&&r.images[0]&&r.images[0].base64.length}; })()");
+    await waitCaptured(mock.captured.gemini);
+    const mediaUserParts = mock.captured.gemini.body && mock.captured.gemini.body.contents
+      .filter(function (message) { return message.role === 'user'; }).flatMap(function (message) { return message.parts || []; });
+    check('qq.mediaInputSentAsInlineData', mediaUserParts && mediaUserParts.some(function (part) {
+      return part.inlineData && part.inlineData.mimeType === 'image/png' && part.inlineData.data === 'iVBORw0KGgo=';
+    }));
+    check('qq.mediaOutputCaptured', mediaResult && mediaResult.text === 'Gemini 回复正文。'
+      && mediaResult.imageCount === 1 && mediaResult.imageMime === 'image/png'
+      && mediaResult.imageBase64Length === 'iVBORw0KGgo='.length);
+
+    mock.captured.anthropic.seen = false;
+    const anthropicMediaResult = await evaluate(cdp, "(async function(){ var r=await window.IB.chat.callExternalReplyMedia('contract_anth',[{role:'system',content:'role system'},{role:'user',content:[{type:'text',text:'请看图。'},{type:'_image',mime:'image/png',base64:'iVBORw0KGgo='}]}],'qq-official:mock:c2c:user'); return {text:r.text,imageCount:(r.images||[]).length}; })()");
+    await waitCaptured(mock.captured.anthropic);
+    const anthropicUser = mock.captured.anthropic.body && mock.captured.anthropic.body.messages
+      .find(function (message) { return message.role === 'user'; });
+    check('qq.anthropicImageInput', anthropicMediaResult && anthropicMediaResult.text === 'Claude 回复正文。'
+      && anthropicMediaResult.imageCount === 0 && anthropicUser && Array.isArray(anthropicUser.content)
+      && anthropicUser.content.some(function (part) { return part.type === 'image' && part.source
+        && part.source.media_type === 'image/png' && part.source.data === 'iVBORw0KGgo='; }));
+
+    mock.captured.openai.seen = false;
+    const openAiMediaResult = await evaluate(cdp, "(async function(){ var r=await window.IB.chat.callExternalReplyMedia('contract_oai',[{role:'system',content:'role system'},{role:'user',content:[{type:'text',text:'请看图。'},{type:'_image',mime:'image/png',base64:'iVBORw0KGgo='}]}],'qq-official:mock:c2c:user'); return {text:r.text,imageCount:(r.images||[]).length}; })()");
+    await waitCaptured(mock.captured.openai);
+    const openAiUser = mock.captured.openai.body && mock.captured.openai.body.messages
+      .find(function (message) { return message.role === 'user'; });
+    check('qq.openAiImageInput', openAiMediaResult && openAiMediaResult.text === 'OpenAI 回复正文。'
+      && openAiMediaResult.imageCount === 0 && openAiUser && Array.isArray(openAiUser.content)
+      && openAiUser.content.some(function (part) { return part.type === 'image_url'
+        && part.image_url && part.image_url.url === 'data:image/png;base64,iVBORw0KGgo='; }));
+
+    mock.captured.openai.seen = false;
+    const localVisionResult = await evaluate(cdp, "(async function(){ var originalFetch=window.fetch; window.fetch=function(url,options){ if(String(url)==='http://127.0.0.1:8765/vision')return Promise.resolve({ok:true,json:async function(){return {result:'图片包含一只猫和一把蓝色椅子。'}}}); return originalFetch.apply(this,arguments); }; try{ var r=await window.IB.chat.callExternalReplyMedia('contract_qq_local_vision',[{role:'system',content:'role system'},{role:'user',content:[{type:'text',text:'请描述图片。'},{type:'_image',mime:'image/png',base64:'iVBORw0KGgo='}]}],'qq-official:mock:c2c:user'); return {text:r.text,imageCount:(r.images||[]).length}; } finally {window.fetch=originalFetch;} })()");
+    await waitCaptured(mock.captured.openai);
+    const localVisionUser = mock.captured.openai.body && mock.captured.openai.body.messages
+      .filter(function (message) { return message.role === 'user'; }).pop();
+    check('qq.deepseekUsesExistingLocalVision', localVisionResult && localVisionResult.text === 'OpenAI 回复正文。'
+      && localVisionResult.imageCount === 0 && localVisionUser && typeof localVisionUser.content === 'string'
+      && localVisionUser.content.indexOf('图片包含一只猫和一把蓝色椅子') !== -1
+      && localVisionUser.content.indexOf('image_url') === -1);
+    mock.captured.openai.seen = false;
+    const visionFailure = await evaluate(cdp, "(async function(){ var originalFetch=window.fetch; window.fetch=function(url,options){ if(String(url)==='http://127.0.0.1:8765/vision')return Promise.reject(new Error('private vision failure detail')); return originalFetch.apply(this,arguments); }; try{ await window.IB.chat.callExternalReplyMedia('contract_qq_local_vision',[{role:'system',content:'role system'},{role:'user',content:[{type:'text',text:'请描述图片。'},{type:'_image',mime:'image/png',base64:'iVBORw0KGgo='}]}],'qq-official:mock:c2c:user'); return 'unexpected-success'; }catch(error){return String(error&&error.code||'');}finally{window.fetch=originalFetch;} })()");
+    check('qq.visualFailureIsSafeAndStopsBeforeProvider', visionFailure === 'QQ_VISION_UNAVAILABLE' && mock.captured.openai.seen !== true);
+
     /* ═══ 对照组 OpenAI 主聊天链（确认未回归） ═══ */
     mock.captured.openai.seen = false;
     await evaluate(cdp, "activeFriendId='contract_oai'");
@@ -481,6 +591,62 @@ async function browserChatContractTest() {
     await waitCaptured(mock.captured.openai);
     check('oai.branchEntered', mock.captured.openai.seen === true, mock.captured.openai.url || '(unreached)');
     check('oai.replyRendered', await waitFor(cdp, "(function(){ var m=document.getElementById('chat-messages'); return !!m && m.textContent.indexOf('OpenAI 回复正文。')!==-1; })()", 15000));
+
+    /* ═══ GLM-5.3: stale stream-off config, reasoning-first SSE, fallback, Stop ═══ */
+    mock.captured.glm.respondWithContent = true;
+    const glmNormalStart = mock.captured.glm.requests.length;
+    await evaluate(cdp, "activeFriendId='contract_glm_stream'; openChatPanel(); document.getElementById('chat-input').value='请简短回答。'; sendChatMessage();");
+    const glmNormalWait = Date.now() + 15000;
+    while (mock.captured.glm.requests.length < glmNormalStart + 1 && Date.now() < glmNormalWait) await new Promise(resolve => setTimeout(resolve, 50));
+    check('glm.normalReplyUsesOneStreamingRequest', mock.captured.glm.requests.length === glmNormalStart + 1
+      && mock.captured.glm.requests[glmNormalStart] && mock.captured.glm.requests[glmNormalStart].stream === true);
+    check('glm.reasoningStaysOutOfVisibleReply', await waitFor(cdp, "(function(){var m=document.getElementById('chat-messages');return !!m&&m.textContent.indexOf('GLM 流式回答完成。')!==-1&&m.textContent.indexOf('hidden GLM reasoning')<0})()", 15000));
+    check('glm.streamedAnswerIsStoredWithSeparateReasoning', await waitFor(cdp, "(async function(){var a=(await dbGetAll('chatMessages')).filter(function(m){return m.friendId==='contract_glm_stream'&&m.role==='assistant'}).pop();return !!a&&a.content==='GLM 流式回答完成。'&&String(a.reasoning_content||'').indexOf('hidden GLM reasoning')>=0})()", 15000));
+
+    mock.captured.glm.partialThenError = true;
+    const glmPartialStart = mock.captured.glm.requests.length;
+    await evaluate(cdp, "activeFriendId='contract_glm_partial'; openChatPanel(); document.getElementById('chat-input').value='保留已有流式内容。'; sendChatMessage();");
+    check('glm.partialStreamIsPreservedWithoutDuplicateRetry', await waitFor(cdp, "(async function(){var a=(await dbGetAll('chatMessages')).filter(function(m){return m.friendId==='contract_glm_partial'&&m.role==='assistant'}).pop();return !!a&&a.content==='GLM 部分回答。'})()", 15000)
+      && mock.captured.glm.requests.length === glmPartialStart + 1);
+    mock.captured.glm.partialThenError = false;
+
+    mock.captured.glm.respondWithContent = false;
+    const glmFallbackStart = mock.captured.glm.requests.length;
+    await evaluate(cdp, "activeFriendId='contract_glm'; openChatPanel(); document.getElementById('chat-input').value='请简短回答。'; sendChatMessage();");
+    const glmFirstWait = Date.now() + 15000;
+    while (mock.captured.glm.requests.length < glmFallbackStart + 2 && Date.now() < glmFirstWait) await new Promise(resolve => setTimeout(resolve, 50));
+    check('glm.legacyDisabledConfigStillSendsStreamingRequest', mock.captured.glm.requests[glmFallbackStart] && mock.captured.glm.requests[glmFallbackStart].stream === true);
+    check('glm53ThinkingModeIsExplicitlyEnabled', mock.captured.glm.requests[glmFallbackStart] && mock.captured.glm.requests[glmFallbackStart].thinking
+      && mock.captured.glm.requests[glmFallbackStart].thinking.type === 'enabled');
+    check('glm.reasoningOnlyStreamFallsBackToNonStreaming', mock.captured.glm.requests[glmFallbackStart + 1] && mock.captured.glm.requests[glmFallbackStart + 1].stream !== true);
+    check('glm.fallbackReplyIsStoredWithoutProtocolLeak', await waitFor(cdp, "(async function(){var a=(await dbGetAll('chatMessages')).filter(function(m){return m.friendId==='contract_glm'&&m.role==='assistant'}).pop();return !!a&&a.content==='GLM 回答正文。'&&a.content.indexOf('<ws_mem_write>')<0&&String(a.reasoning_content||'').indexOf('hidden GLM reasoning')>=0})()", 15000));
+
+    mock.captured.glm.rejectStreaming = true;
+    const glmErrorStart = mock.captured.glm.requests.length;
+    await evaluate(cdp, "activeFriendId='contract_glm_error'; openChatPanel(); document.getElementById('chat-input').value='流式端点异常回退。'; sendChatMessage();");
+    const glmErrorWait = Date.now() + 15000;
+    while (mock.captured.glm.requests.length < glmErrorStart + 2 && Date.now() < glmErrorWait) await new Promise(resolve => setTimeout(resolve, 50));
+    check('glm.streamHttpErrorFallsBackToNonStreaming', mock.captured.glm.requests.length >= glmErrorStart + 2
+      && mock.captured.glm.requests[glmErrorStart].stream === true
+      && mock.captured.glm.requests[glmErrorStart + 1].stream !== true);
+    check('glm.httpFallbackAnswerIsStored', await waitFor(cdp, "(async function(){var a=(await dbGetAll('chatMessages')).filter(function(m){return m.friendId==='contract_glm_error'&&m.role==='assistant'}).pop();return !!a&&a.content==='GLM 回答正文。'})()", 15000));
+    mock.captured.glm.rejectStreaming = false;
+
+    mock.captured.glm.holdFallback = true;
+    const glmStopStart = mock.captured.glm.requests.length;
+    await evaluate(cdp, "(function(){activeFriendId='contract_glm_stop'; openChatPanel(); document.getElementById('chat-input').value='测试停止回退。'; sendChatMessage(); return true;})()");
+    const glmStopWait = Date.now() + 15000;
+    while (mock.captured.glm.requests.length < glmStopStart + 2 && Date.now() < glmStopWait) await new Promise(resolve => setTimeout(resolve, 50));
+    check('glm.fallbackRequestStartedForStopTest', mock.captured.glm.requests.length >= glmStopStart + 2);
+    await evaluate(cdp, "stopStreaming()");
+    const glmStopEnd = Date.now() + 10000;
+    let glmStopDone = false;
+    while (!glmStopDone && Date.now() < glmStopEnd) {
+      glmStopDone = await evaluate(cdp, "!window._chatCallStates||!window._chatCallStates[activeFriendId]");
+      if (!glmStopDone) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    check('glm.nonStreamingFallbackRemainsStopCancellable', glmStopDone);
+    check('glm.stoppedFallbackDoesNotPersistAssistantReply', await evaluate(cdp, "(async function(){var a=await dbGetAll('chatMessages');return !a.some(function(m){return m.friendId==='contract_glm_stop'&&m.role==='assistant'&&m.content==='停不掉的 GLM 回复。'})})()"));
 
     return { cdpReady: true, failures };
   } finally {

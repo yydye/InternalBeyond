@@ -191,7 +191,9 @@ const FROZEN = {
   'assets/js/autonomy-core.js': ['FE1011F1', '9F2956F8'],
   'assets/js/agent-capability-registry.js': ['78AE9DFE', '273BF7A2'],
   'assets/js/agent-orchestration-core.js': ['BA4A3DFA', 'AC204F79'],
-  'apps/ib-app-cinema.js': ['CE581CF2', '65B97B58'],
+  /* Cinema v1.2: progress identity/resume and role-guidance update, explicitly accepted. */
+  /* Reviewed Cinema v1.2 source snapshot: 3A574786. */
+  'apps/ib-app-cinema.js': ['3A574786', 'C1817BCD'],
   'assets/js/communication/voice.js': ['7DE44751', '6228B3B8'],
   /* P27-C：activity-runtime.js 的**整文件哈希**已移除（HASH_COUPLING_DEBT 结构性修复）——
      改用 tests/activity-partitions.js 的**语义分区**断言（见本文件下方的 activityRuntimeLegacyPartitionsUnchanged）。 */

@@ -1190,6 +1190,9 @@ equest.character.id（caller
          Browser（逐字抽取的真实 body builder）× Node（core + node-model-port）parity /
          role invariant / 非 anthropic wire 不变化） */
       ['test_anthropic_wire_contract.js'],
+      /* QQ Official P3：Dev 配置导出白名单 / 凭据引用拒绝 / 正式环境差异确认、
+         角色重新映射、会话隔离及 Dev 断连与 Credential Vault 重新绑定门禁。 */
+      ['test_qq_official_migration.js'],
       ['test_installer.js'],
       ['test_packaging_auto_discovery.js'],
       ['test_installer_mock.js'],

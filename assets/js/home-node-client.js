@@ -54,12 +54,14 @@ function _ls(key) {
 }
 function ibHomeNodeBase() {
   if(window.__IB_DEV_MODE__===true){
+    if(_sessionBase)return _sessionBase;
     var dev=window.__IB_DEV_SERVICE_CONFIG__;
     return dev&&(dev.mode==='dev'||dev.mode==='synthetic')&&/^https?:\/\/127\.0\.0\.1:\d+$/.test(DEFAULT_BASE)
       ? DEFAULT_BASE.replace(/\/+$/, '') : '';
   }
   var v = _ls('ib_home_node_http');
   if (v) return String(v).replace(/\/+$/, '');
+  if(_sessionBase)return _sessionBase;
   return DEFAULT_BASE;
 }
 function ibHomeNodeMode() {
@@ -101,6 +103,8 @@ function _ibTauriInvoke() {
    状态查询本身是同步的（ibHomeNodeToken），因为它在 _request 里被调用；
    取凭据是异步的，只发生一次。 */
 var _sessionToken = null;          /* null = 还没试过；'' = 试过且没有 */
+var _sessionBase = null;           /* 由当前 Tauri Host 确认的 loopback endpoint */
+var _sessionEndpointRefreshPending = false;
 var _provisionPromise = null;
 var _provisionFailure = null;
 
@@ -135,6 +139,7 @@ function ibHomeNodeProvisionCredential(options) {
       var credential = (result && typeof result.credential === 'string') ? result.credential : '';
       if (credential) {
         _sessionToken = credential;
+        acceptHomeNodeEndpoint(result);
         _provisionFailure = null;
         return { ok: true, source: 'tauri-host-bridge' };
       }
@@ -223,12 +228,40 @@ function ibHomeNodeCredentialState() {
   };
 }
 
+function acceptHomeNodeEndpoint(result) {
+  var endpoint=String(result&&result.homeNodeUrl||'').trim();
+  if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))return false;
+  _sessionBase=endpoint.replace(/\/+$/,'');
+  if(window.__IB_DEV_SERVICE_CONFIG__)window.__IB_DEV_SERVICE_CONFIG__.homeNodeUrl=_sessionBase;
+  window.__IB_HOME_NODE_PORT__=Number(_sessionBase.slice(_sessionBase.lastIndexOf(':')+1))||window.__IB_HOME_NODE_PORT__;
+  _sessionEndpointRefreshPending=false;
+  return true;
+}
+
+function ensureHomeNodeEndpoint() {
+  if(_ls('ib_home_node_http'))return Promise.resolve({ok:true,source:'local-storage-configured'});
+  if(_sessionBase&&!_sessionEndpointRefreshPending)return Promise.resolve({ok:true,source:'session'});
+  var invoke=_ibTauriInvoke();
+  if(!invoke)return Promise.resolve({ok:false,error:'home-node-endpoint-unavailable'});
+  _sessionEndpointRefreshPending=false;
+  return invoke('home_node_endpoint').then(function(result){
+    var ok=acceptHomeNodeEndpoint(result);
+    if(!ok)_sessionEndpointRefreshPending=true;
+    return ok?{ok:true,source:'tauri-host-bridge'}:{ok:false,error:'home-node-endpoint-unavailable'};
+  },function(){
+    _sessionEndpointRefreshPending=true;
+    return{ok:false,error:'home-node-endpoint-unavailable'};
+  });
+}
+
 /* 服务端说"你没带凭据 / 你带的凭据不对"时，丢掉本轮会话里那份并允许重取。
    这件事必须存在，理由很具体：Home Node 重启会重新读取（或重新生成）凭据，
    而页面还活着。没有这条，用户会看到一个**永久**的 401，直到手动刷新页面 ——
    一个"重启服务就再也配不了"的故障，正是本阶段要消灭的那一类。 */
 function ibHomeNodeForgetCredential() {
   _sessionToken = null;
+  _sessionBase = null;
+  _sessionEndpointRefreshPending = false;
   _provisionPromise = null;
   _provisionFailure = null;
 }
@@ -241,7 +274,13 @@ function ibHomeNodeForgetCredential() {
      而不是"失败之后永不再试"。 */
 function ensureCredential() {
   if (ibHomeNodeToken()) return Promise.resolve();   /* 显式配置：不用取 */
-  if (_sessionToken) return Promise.resolve();        /* 本轮已经取到 */
+  if (_sessionToken && !_sessionEndpointRefreshPending) return Promise.resolve(); /* 本轮已经取到 */
+  if (_sessionEndpointRefreshPending) {
+    _sessionToken = null;
+    _sessionBase = null;
+    _sessionEndpointRefreshPending = false;
+    _provisionFailure = null;
+  }
   if (_provisionFailure && _provisionFailure.retryable !== true) {
     /* 服务端**明确拒绝交付**（例如凭据来自部署、或自动 provisioning 关着）。
        这不是暂时故障，重试同一个答案没有意义 —— 但也不缓存成"永久失败"：
@@ -324,14 +363,15 @@ function _attempt(url, init, responseType) {
 
 function _request(pathname, options) {
   options = options || {};
-  var base = ibHomeNodeBase();
-  if(window.__IB_DEV_MODE__===true&&!base){
-    return Promise.resolve({ok:false,error:'dev-service-config-unavailable',retryable:false,offline:false,protocolVersion:1});
-  }
-  var url = base + pathname;
+  var safeToReplayAfterEndpointChange = ['GET','HEAD'].indexOf(String(options.method || 'GET').toUpperCase()) >= 0;
   var timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
 
   function send() {
+    var base = ibHomeNodeBase();
+    if(window.__IB_DEV_MODE__===true&&!base){
+      return Promise.resolve({ok:false,error:'dev-service-config-unavailable',retryable:false,offline:false,protocolVersion:1});
+    }
+    var url = base + pathname;
     var headers = { 'X-IB-Protocol': '1' };
     if(window.__IB_DEV_MODE__===true){
       var dev=window.__IB_DEV_SERVICE_CONFIG__;
@@ -373,7 +413,7 @@ function _request(pathname, options) {
      ★ 没有凭据可取时（显式关掉了自动 provisioning、或 Home Node 拒绝交付）
        ensureCredential 会如实返回失败，请求照发 —— 拒绝由服务端权威给出，
        这一层不抢它的活。 */
-  return ensureCredential().then(function () {
+  return ensureCredential().then(ensureHomeNodeEndpoint).then(function () {
     return send();
   }).then(function (res) {
     /* ── 凭据被服务端拒绝（401 / 403）──────────────────────────────────
@@ -389,12 +429,51 @@ function _request(pathname, options) {
        ★ 重发的是**同一个请求体**、同一个幂等键，因此 canonical store 的
          一次性语义不受影响；这条重试不可能把一次写"自动变成成功"。 */
     var credentialRejected = res && (res.status === 401 || res.status === 403);
-    if (!credentialRejected) return res;
-    if (ibHomeNodeToken()) return res;      /* 显式配置的凭据：重取没有意义 */
-    if (!_sessionToken) return res;         /* 本来就没有凭据可取 */
+    var endpointUnreachable = res && res.offline === true;
+    var endpointNotRecognized = res && (res.status === 404 || res.status === 501);
+    if (!credentialRejected && !endpointUnreachable && !endpointNotRecognized) return res;
+    if (ibHomeNodeToken()) {
+      /* Keep an explicitly configured token. The endpoint-only IPC may still
+         refresh a Runner-selected port without reading or replacing that token. */
+      if ((!endpointUnreachable && !endpointNotRecognized) || !_ibTauriInvoke() || _ls('ib_home_node_http')) return res;
+      var configuredBase = ibHomeNodeBase();
+      _sessionBase = null;
+      _sessionEndpointRefreshPending = true;
+      return ensureHomeNodeEndpoint().then(function () {
+        var currentBase = ibHomeNodeBase();
+        if (safeToReplayAfterEndpointChange && currentBase && currentBase !== configuredBase) return send();
+        _sessionEndpointRefreshPending = true;
+        return res;
+      });
+    }
+    if (!_sessionToken) {
+      if (!endpointUnreachable && !endpointNotRecognized) return res;
+      var missingCredentialBase = ibHomeNodeBase();
+      return ensureHomeNodeEndpoint().then(function () {
+        var currentBase = ibHomeNodeBase();
+        if (safeToReplayAfterEndpointChange && currentBase && currentBase !== missingCredentialBase) return send();
+        _sessionEndpointRefreshPending = true;
+        return res;
+      });
+    }
+    var previousBase = ibHomeNodeBase();
     ibHomeNodeForgetCredential();
     return ibHomeNodeProvisionCredential({ timeoutMs: 4000 }).then(function () {
-      return send();
+      var currentBase = ibHomeNodeBase();
+      /* A transport failure can mean the Runner moved Home Node after a port
+         race. Retry only when the Host supplies a different endpoint; an
+         ambiguous request to the same endpoint is never replayed. */
+      if ((endpointUnreachable || endpointNotRecognized) &&
+          (!safeToReplayAfterEndpointChange || !currentBase || currentBase === previousBase)) {
+        _sessionEndpointRefreshPending = true;
+        return res;
+      }
+      return send().then(function (retryResult) {
+        if (retryResult && (retryResult.offline === true || retryResult.status === 401 || retryResult.status === 403 || retryResult.status === 404 || retryResult.status === 501)) {
+          _sessionEndpointRefreshPending = true;
+        }
+        return retryResult;
+      });
     });
   });
 }
@@ -410,13 +489,13 @@ function _request(pathname, options) {
    Credential provisioning and one 401/403 refresh follow the normal Home Node path. */
 function _requestUpload(pathname, file, options) {
   options = options || {};
-  var base = ibHomeNodeBase();
-  if (window.__IB_DEV_MODE__ === true && !base) {
-    return Promise.resolve({ ok: false, error: 'dev-service-config-unavailable', retryable: false, offline: false, protocolVersion: 1 });
-  }
-  var url = base + pathname;
   var timeoutMs = Math.max(1000, Number(options.timeoutMs) || (20 * 60 * 1000));
   function send() {
+    var base = ibHomeNodeBase();
+    if (window.__IB_DEV_MODE__ === true && !base) {
+      return Promise.resolve({ ok: false, error: 'dev-service-config-unavailable', retryable: false, offline: false, protocolVersion: 1 });
+    }
+    var url = base + pathname;
     return new Promise(function (resolve) {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', url, true);
@@ -459,7 +538,12 @@ function _requestUpload(pathname, file, options) {
       catch (_) { resolve({ ok: false, error: 'upload-failed', retryable: false, offline: false, protocolVersion: 1 }); }
     });
   }
-  return ensureCredential().then(send).then(function (result) {
+  return ensureCredential().then(ensureHomeNodeEndpoint).then(send).then(function (result) {
+    if (result && result.offline === true && _ibTauriInvoke() && !_ls('ib_home_node_http')) {
+      _sessionBase = null;
+      _sessionEndpointRefreshPending = true;
+      return ensureHomeNodeEndpoint().then(function () { _sessionEndpointRefreshPending = true; return result; });
+    }
     if (!result || (result.status !== 401 && result.status !== 403)) return result;
     if (ibHomeNodeToken() || !_sessionToken) return result;
     ibHomeNodeForgetCredential();
@@ -778,6 +862,13 @@ function createMemoryRemote(deps) {
       if (query.ownerId) qs.push('ownerId=' + encodeURIComponent(query.ownerId));
       if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
       return _request('/memory/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    fathomSnapshot: function (viewer, options) {
+      options = options || {};
+      if (viewer == null || String(viewer).trim() === '') return Promise.resolve({ ok: false, error: 'no-principal' });
+      var qs = ['viewer=' + encodeURIComponent(String(viewer))];
+      if (options.limit) qs.push('limit=' + encodeURIComponent(options.limit));
+      return _request('/memory/fathom?' + qs.join('&'), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
     },
     changes: function (cursor, options) {
       options = options || {};
@@ -1800,8 +1891,203 @@ function createExplicitPreferenceReportRemote(deps) {
   };
 }
 
+function createQQOneBotRemote(deps) {
+  deps = deps || {};
+  function unavailable() {
+    return Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false, protocolVersion: 1 });
+  }
+  return {
+    setup: function (accountId) {
+      return ensureCredential().then(ensureHomeNodeEndpoint).then(function () {
+        var base = ibHomeNodeBase();
+        return base ? _request('/internal/qq-onebot/v1/setup', {
+          method: 'POST', body: { accountId: String(accountId || ''), baseUrl: base },
+          timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+        }) : unavailable();
+      });
+    },
+    configure: function (input) {
+      var src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+      return _request('/internal/qq-onebot/v1/config', {
+        method: 'POST', body: { accounts: Array.isArray(src.accounts) ? src.accounts : [], paused: src.paused !== false },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    status: function () {
+      return _request('/internal/qq-onebot/v1/status', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    heartbeat: function () {
+      return _request('/internal/qq-onebot/v1/heartbeat', {
+        method: 'POST', body: {}, timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    poll: function (waitMs) {
+      var boundedWait = Math.max(0, Math.min(1000, Number(waitMs) || 0));
+      return _request('/internal/qq-onebot/v1/poll', {
+        method: 'POST', body: { waitMs: boundedWait },
+        timeoutMs: Math.max(3000, boundedWait + 2000)
+      });
+    },
+    complete: function (requestId, reply) {
+      return _request('/internal/qq-onebot/v1/complete', {
+        method: 'POST', body: { requestId: String(requestId || ''), reply: String(reply || '') },
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatEnvironment: function () {
+      return _request('/internal/qq-onebot/v1/napcat/environment', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    napcatLatestRelease: function () {
+      return _request('/internal/qq-onebot/v1/napcat/release', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    napcatDownloadStatus: function () {
+      return _request('/internal/qq-onebot/v1/napcat/download/status', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    napcatStartDownload: function (confirmation) {
+      var src = confirmation && typeof confirmation === 'object' ? confirmation : {};
+      return _request('/internal/qq-onebot/v1/napcat/download', {
+        method: 'POST', body: {
+          confirmed: src.confirmed === true,
+          tag: String(src.tag || ''),
+          sha256: String(src.sha256 || '')
+        }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatCancelDownload: function () {
+      return _request('/internal/qq-onebot/v1/napcat/download/cancel', {
+        method: 'POST', body: {}, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatOpenFolder: function () {
+      return _request('/internal/qq-onebot/v1/napcat/open-folder', {
+        method: 'POST', body: {}, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatRemoveDownload: function (confirmed) {
+      return _request('/internal/qq-onebot/v1/napcat/download/remove', {
+        method: 'POST', body: { confirmed: confirmed === true }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatAccountStatus: function (accountId) {
+      return _request('/internal/qq-onebot/v1/napcat/account/status?accountId=' + encodeURIComponent(String(accountId || '')),
+        { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    napcatStartAccount: function (input) {
+      var src = input && typeof input === 'object' ? input : {};
+      return _request('/internal/qq-onebot/v1/napcat/account/start', {
+        method: 'POST', body: {
+          accountId: String(src.accountId || ''), callbackUrl: String(src.callbackUrl || ''), confirmed: src.confirmed === true
+        }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatCancelAccountStart: function (accountId) {
+      return _request('/internal/qq-onebot/v1/napcat/account/cancel', {
+        method: 'POST', body: { accountId: String(accountId || '') }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatStopAccount: function (accountId) {
+      return _request('/internal/qq-onebot/v1/napcat/account/stop', {
+        method: 'POST', body: { accountId: String(accountId || '') }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    napcatOpenWebUi: function (accountId) {
+      return _request('/internal/qq-onebot/v1/napcat/account/open-webui', {
+        method: 'POST', body: { accountId: String(accountId || '') }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    }
+  };
+}
+
+function createQQOfficialRemote(deps) {
+  deps = deps || {};
+  function unavailable() {
+    return Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false, protocolVersion: 1 });
+  }
+  return {
+    configure: function (input) {
+      var src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+      return _request('/internal/qq-official/v1/config', {
+        method: 'POST', body: {
+          paused: src.paused !== false,
+          accounts: Array.isArray(src.accounts) ? src.accounts.map(function (row) {
+            row = row && typeof row === 'object' ? row : {};
+            return {
+              appId: String(row.appId || ''),
+              roleId: String(row.roleId || ''),
+              takeover: row.takeover === true,
+              combinedIntentConsent: row.combinedIntentConsent === true,
+              allowedUserOpenIds: Array.isArray(row.allowedUserOpenIds) ? row.allowedUserOpenIds.map(String) : [],
+              privateRoleSelections: Array.isArray(row.privateRoleSelections) ? row.privateRoleSelections.map(function (selection) {
+                selection = selection && typeof selection === 'object' && !Array.isArray(selection) ? selection : {};
+                return {
+                  userOpenId: String(selection.userOpenId || ''),
+                  roleId: String(selection.roleId || ''),
+                  sessionId: String(selection.sessionId || 'default')
+                };
+              }) : [],
+              groups: Array.isArray(row.groups) ? row.groups.map(function (group) {
+                group = group && typeof group === 'object' && !Array.isArray(group) ? group : {};
+                return {
+                  groupOpenId: String(group.groupOpenId || ''),
+                  roleId: String(group.roleId || ''),
+                  takeover: group.takeover === true,
+                  adminMemberOpenIds: Array.isArray(group.adminMemberOpenIds) ? group.adminMemberOpenIds.map(String) : [],
+                  sessionId: String(group.sessionId || 'default')
+                };
+              }) : []
+            };
+          }) : []
+        }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    status: function () {
+      return _request('/internal/qq-official/v1/status', { timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS });
+    },
+    heartbeat: function () {
+      return _request('/internal/qq-official/v1/heartbeat', {
+        method: 'POST', body: {}, timeoutMs: deps.readTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    connect: function (appId) {
+      return _request('/internal/qq-official/v1/connect', {
+        method: 'POST', body: { appId: String(appId || '') }, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    disconnect: function (appId) {
+      return _request('/internal/qq-official/v1/disconnect', {
+        method: 'POST', body: { appId: String(appId || '') },
+        timeoutMs: Math.max(35000, deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS)
+      });
+    },
+    poll: function (waitMs) {
+      var boundedWait = Math.max(0, Math.min(1000, Number(waitMs) || 0));
+      return _request('/internal/qq-official/v1/poll', {
+        method: 'POST', body: { waitMs: boundedWait }, timeoutMs: Math.max(3000, boundedWait + 2000)
+      });
+    },
+    progress: function (requestId, stage, errorCode) {
+      var body = { requestId: String(requestId || ''), stage: String(stage || '') };
+      if (errorCode) body.errorCode = String(errorCode);
+      return _request('/internal/qq-official/v1/progress', {
+        method: 'POST', body: body, timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    complete: function (requestId, reply, images) {
+      var body = { requestId: String(requestId || ''), reply: String(reply || '') };
+      if (Array.isArray(images) && images.length) body.images = images;
+      return _request('/internal/qq-official/v1/complete', {
+        method: 'POST', body: body,
+        timeoutMs: deps.writeTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+    unavailable: unavailable
+  };
+}
+
 NS.createRuntimeRemote = createRuntimeRemote;
 NS.createExplicitPreferenceReportRemote = createExplicitPreferenceReportRemote;
+NS.createQQOneBotRemote = createQQOneBotRemote;
+NS.createQQOfficialRemote = createQQOfficialRemote;
 NS.createWorkRunRemote = createWorkRunRemote;
 NS.createWorkRetentionRemote = createWorkRetentionRemote;
 NS.createAgentMemoryRemote = createAgentMemoryRemote;

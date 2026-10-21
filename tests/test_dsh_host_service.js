@@ -68,20 +68,27 @@ test('the process Home Node keeps DSH execution disabled by default', () => {
 
 test('Dev opt-in auto-configures the embedded ACP runtime in the real Home Node process', async t => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-dsh-h2-H3'));
-  const root = path.join(fixtureRoot, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+  const root = path.join(fixtureRoot, '.dev-data', 'synthetic', 'dev-sandbox');
   const dataDir = path.join(root, 'home-node');
   const credentialDir = path.join(root, 'credential-vault');
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(credentialDir, { recursive: true });
+  const envDataDirs = [dataDir, credentialDir, path.join(root, 'local-app-data'), path.join(root, 'roaming-app-data'),
+    path.join(root, 'temp'), path.join(root, 'logs'), path.join(root, 'host')];
+  for (const directory of envDataDirs) fs.mkdirSync(directory, { recursive: true });
   const port = await freeLoopbackPort();
   const devIdentity = { instanceId: crypto.randomUUID(), sessionToken: crypto.randomBytes(32).toString('hex') };
   const env = Object.assign({}, process.env, {
+    LOCALAPPDATA: path.join(root, 'local-app-data'),
+    APPDATA: path.join(root, 'roaming-app-data'),
+    TEMP: path.join(root, 'temp'), TMP: path.join(root, 'temp'),
     IB_DEV_MODE: '1',
     IB_DEV_SYNTHETIC: '1',
+    IB_DEV_PROJECT_ROOT: fixtureRoot,
     IB_DEV_INSTANCE_ID: devIdentity.instanceId,
     IB_DEV_SESSION_TOKEN: devIdentity.sessionToken,
     IB_DEV_DSH_ENABLED: '1',
     IB_DEV_SANDBOX_ROOT: root,
+    IB_BOOT_STATE_DIR: path.join(root, 'host'),
+    IB_LOG_DIR: path.join(root, 'logs'),
     IB_ACTIVE_DATA_DIR: path.join(root, 'active'),
     IB_BRIDGE_DATA_DIR: path.join(root, 'bridge'),
     IB_HOME_NODE_DATA_DIR: dataDir,
@@ -138,13 +145,14 @@ test('Dev opt-in auto-configures the embedded ACP runtime in the real Home Node 
 
 test('the real Dev Home Node runs embedded DSH through Fake Provider, Consent, and the existing Project Tool', async t => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-dsh-h2-H3run'));
-  const root = path.join(fixtureRoot, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+  const root = path.join(fixtureRoot, '.dev-data', 'synthetic', 'dev-sandbox');
   const dataDir = path.join(root, 'home-node');
   const credentialDir = path.join(root, 'credential-vault');
   const workspaceRoot = path.join(root, 'workspace');
   const homeNodePort = await freeLoopbackPort();
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(credentialDir, { recursive: true });
+  const envDataDirs = [dataDir, credentialDir, path.join(root, 'local-app-data'), path.join(root, 'roaming-app-data'),
+    path.join(root, 'temp'), path.join(root, 'logs'), path.join(root, 'host')];
+  for (const directory of envDataDirs) fs.mkdirSync(directory, { recursive: true });
   fs.mkdirSync(path.join(workspaceRoot, 'src'), { recursive: true });
   fs.mkdirSync(path.join(workspaceRoot, 'private'), { recursive: true });
   fs.writeFileSync(path.join(workspaceRoot, 'src', 'review.txt'), ALLOWED_CONTENT + '\n', 'utf8');
@@ -194,12 +202,18 @@ test('the real Dev Home Node runs embedded DSH through Fake Provider, Consent, a
   const providerUrl = 'http://127.0.0.1:' + providerServer.address().port + '/v1/chat/completions';
   const devIdentity = { instanceId: crypto.randomUUID(), sessionToken: crypto.randomBytes(32).toString('hex') };
   const childEnv = Object.assign({}, process.env, {
+    LOCALAPPDATA: path.join(root, 'local-app-data'),
+    APPDATA: path.join(root, 'roaming-app-data'),
+    TEMP: path.join(root, 'temp'), TMP: path.join(root, 'temp'),
     IB_DEV_MODE: '1',
     IB_DEV_SYNTHETIC: '1',
+    IB_DEV_PROJECT_ROOT: fixtureRoot,
     IB_DEV_INSTANCE_ID: devIdentity.instanceId,
     IB_DEV_SESSION_TOKEN: devIdentity.sessionToken,
     IB_DEV_DSH_ENABLED: '1',
     IB_DEV_SANDBOX_ROOT: root,
+    IB_BOOT_STATE_DIR: path.join(root, 'host'),
+    IB_LOG_DIR: path.join(root, 'logs'),
     IB_ACTIVE_DATA_DIR: path.join(root, 'active'),
     IB_BRIDGE_DATA_DIR: path.join(root, 'bridge'),
     IB_HOME_NODE_DATA_DIR: dataDir,

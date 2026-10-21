@@ -131,13 +131,25 @@ function startMockApi(delayMs) {
       res.end(JSON.stringify({ hits, maxInFlight, maxFlare, maxSun, inFlight }));
       return;
     }
+    if (req.method === 'POST' && /\/chat\/completions/i.test(req.url || '')) {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        let model = '', prompt = '';
+        try { const j = JSON.parse(body || '{}'); model = String(j.model || ''); prompt = String((j.messages && j.messages[j.messages.length - 1] && j.messages[j.messages.length - 1].content) || ''); } catch (error) { /* ignore */ }
+        hits.push({ kind: 'chat', model, prompt, url: String(req.url || ''), auth: String(req.headers.authorization || '') });
+        res.writeHead(200, headers);
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'deepseek mock reply' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+      });
+      return;
+    }
     if (req.method === 'POST' && /images\/generations/i.test(req.url || '')) {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
         let model = '', prompt = '';
         try { const j = JSON.parse(body || '{}'); model = String(j.model || ''); prompt = String(j.prompt || ''); } catch (error) { /* ignore */ }
-        hits.push({ model, prompt, auth: String(req.headers.authorization || '') });
+        hits.push({ kind: 'image', model, prompt, url: String(req.url || ''), auth: String(req.headers.authorization || '') });
         inFlight++;
         maxInFlight = Math.max(maxInFlight, inFlight);
         if (/sunburst/.test(model)) { sun++; maxSun = Math.max(maxSun, sun); } else { flare++; maxFlare = Math.max(maxFlare, flare); }
@@ -182,21 +194,35 @@ function startMockApi(delayMs) {
     cdp.on('Runtime.consoleAPICalled', p => { if (p.type === 'error') consoleErrors.push(JSON.stringify(p.args || []).slice(0, 200)); });
     check('page.routerLoaded', await waitFor(cdp, "window.IBImageRouterCore&&window.IB&&IB.imageRouter&&IB.imageRouter.available===true&&typeof _wsExecImageGen==='function'"));
     check('page.executorIsExistingOne', await evaluate(cdp, "IB.imageRouter.IMAGE_MODELS.flare==='gpt-image-2.5-flare'&&IB.imageRouter.IMAGE_MODELS.sunburst==='gpt-image-2.5-sunburst'"));
+    check('ui.credentialSelectorReplacesForcedReuseField', await evaluate(cdp, "!!document.getElementById('api-imagegen-credential')&&!document.getElementById('api-imagegen-apikey')&&document.body.textContent.indexOf('图片请求复用角色的 Credential Vault API Key')<0"));
 
-    /* 种子角色：gpt-image 家族模型 → 双模型策略管辖 */
-    await evaluate(cdp, "(async function(){await dbPut('apiConfigs',{id:'ir1',provider:'openai',model:'ir-text',endpoint:'" + EP + "',apiKey:'sk-text',nickname:'昔涟',systemPrompt:'你是测试角色',imageGen:true,imageGenModel:'gpt-image-1',imageGenEndpoint:'" + IMG_EP + "',imageGenApiKey:'sk-image-secret'});await loadApiConfigs();return true})()");
+    /* DeepSeek 聊天角色通过独立 OpenAI 图片配置生图：endpoint/model/credentialRef 分开。 */
+    await evaluate(cdp, "(async function(){await dbPut('apiConfigs',{id:'ir1',provider:'deepseek',model:'deepseek-chat',endpoint:'" + EP + "',credentialRef:'ir1-chat-ref',nickname:'昔涟',systemPrompt:'你是测试角色',imageGen:true,imageGenModel:'gpt-image-1',imageGenProvider:'openai',imageGenEndpoint:'" + IMG_EP + "',imageGenCredentialRef:'ir-image-vault-ref'});await dbPut('apiConfigs',{id:'ir-image-vault',provider:'openai',model:'image-credential',endpoint:'https://api.openai.com/v1/chat/completions',credentialRef:'ir-image-vault-ref',nickname:'图片凭据'});await loadApiConfigs();editApi('ir1');return true})()");
+    check('ui.imageCredentialOptionsUseVaultReferences', await evaluate(cdp, "(function(){var s=document.getElementById('api-imagegen-credential');var o=s&&[].filter.call(s.options,function(x){return x.value==='ir-image-vault-ref'})[0];var chatRef=s&&[].some.call(s.options,function(x){return x.value==='ir1-chat-ref'});return !!o&&o.textContent.indexOf('图片凭据')>=0&&s.value==='ir-image-vault-ref'&&!chatRef})()"));
+    const savedImageCredential = await evaluate(cdp, "(async function(){var s=document.getElementById('api-imagegen-credential');s.value='ir-image-vault-ref';await saveCurrentApi(null);await loadApiConfigs();var c=apiConfigs.find(function(a){return a.id==='ir1'});return{ref:c&&c.imageGenCredentialRef,hasImageKey:!!(c&&c.imageGenApiKey),provider:c&&c.provider}})()");
+    check('ui.imageCredentialValueIsOnlyReference', savedImageCredential && savedImageCredential.ref === 'ir-image-vault-ref' && !savedImageCredential.hasImageKey && savedImageCredential.provider === 'deepseek', JSON.stringify(savedImageCredential));
 
     /* ① UI：Fast ─ Auto ─ Precision 卡片存在、默认 Auto */
     const ui = await evaluate(cdp, "(function(){var host=document.getElementById('mb-adv-image');var ticks=host?host.querySelectorAll('.mb-tick'):[];var labels=host?Array.from(host.querySelectorAll('.mb-lbl')).map(function(x){return x.textContent}):[];var sum=document.getElementById('mb-image-summary');var hint=document.getElementById('mb-adv-image-hint');return{ticks:ticks.length,labels:labels,summary:sum?sum.textContent:'',hint:hint?hint.textContent:'',mode:(IB.middleBrain&&IB.middleBrain.middleBrainImageMode)?'has':'no'}})()");
     check('ui.imageCard', ui.ticks === 3 && ui.labels.join('/') === 'Fast/Auto/Precision', JSON.stringify(ui));
     check('ui.defaultAuto', ui.summary === 'Auto' && ui.hint === 'Let Middle Brain choose', JSON.stringify(ui));
 
-    /* ② Chat gen_image → Router → 现有执行器 → provider（Auto → Flare） */
+    const chatProvider = await evaluate(cdp, "(async function(){var cfg=apiConfigs.find(function(a){return a.id==='ir1'});var result=await callApi(cfg,'独立聊天模型请求',{});return{ok:String(result||'').indexOf('deepseek mock reply')>=0,model:cfg.model,provider:cfg.provider}})()");
+    check('chain.chatProviderModelCall', chatProvider && chatProvider.ok === true && chatProvider.model === 'deepseek-chat' && chatProvider.provider === 'deepseek', JSON.stringify(chatProvider));
+
+    /* ② Chat gen_image → Router → 现有执行器 → 独立 OpenAI 图片 Provider（Auto → Flare） */
     const chat = await evaluate(cdp, "(async function(){var cfg=apiConfigs.find(function(a){return a.id==='ir1'});var ops=_parseWsOps('<ws_gen_image prompt=\"一只坐在窗边的猫\" size=\"1024x1024\"/>').ops;var rs=await _execWsOps(ops,'昔涟',cfg);var r=rs[0]||{};var resp=await _processWsResponse('<ws_gen_image prompt=\"另一只猫\"/>','昔涟',cfg);return{ok:r.ok===true,model:r.model,cards:(resp.cards||[]).length,cardLabel:resp.cards&&resp.cards[0]?String(resp.cards[0].textContent||'').slice(0,24):''}})()");
     check('chain.chatGenImageFlare', chat && chat.ok === true && chat.model === 'gpt-image-2.5-flare' && chat.cards === 1, JSON.stringify(chat));
     const stats1 = await (await fetch('http://127.0.0.1:' + mock.port + '/stats')).json();
-    check('chain.providerSawFlare', stats1.hits.some(h => h.model === 'gpt-image-2.5-flare' && h.prompt.indexOf('窗边') >= 0), JSON.stringify(stats1.hits));
-    check('chain.imageKeyForwarded', stats1.hits[0] && stats1.hits[0].auth === 'Bearer sk-image-secret', JSON.stringify(stats1.hits[0] || {}));
+    const firstConfig = await evaluate(cdp, "(function(){var c=apiConfigs.find(function(a){return a.id==='ir1'});return c&&{provider:c.provider,imageRef:c.imageGenCredentialRef,imageKey:c.imageGenApiKey}})()");
+    const chatHit = stats1.hits.find(h => h.kind === 'chat');
+    const imageHit = stats1.hits.find(h => h.kind === 'image');
+    check('chain.chatProviderEndpoint', chatHit && /\/v1\/chat\/completions$/.test(chatHit.url || '') && chatHit.model === 'deepseek-chat', JSON.stringify(chatHit || {}));
+    check('chain.providerSawFlare', stats1.hits.some(h => h.kind === 'image' && h.model === 'gpt-image-2.5-flare' && h.prompt.indexOf('窗边') >= 0), JSON.stringify(stats1.hits));
+    check('chain.imageEndpointIndependentOfChat', imageHit && /\/v1\/images\/generations$/.test(imageHit.url || '') && firstConfig && firstConfig.provider === 'deepseek', JSON.stringify({ hit: imageHit || {}, config: firstConfig }));
+    check('chain.noPlaintextImageKeyStored', imageHit && String(imageHit.auth || '').indexOf('sk-image-secret') < 0 && firstConfig && !firstConfig.imageKey);
+    const switchedProvider = await evaluate(cdp, "(async function(){var c=apiConfigs.find(function(a){return a.id==='ir1'});await _persistApiConfig(Object.assign({},c,{provider:'anthropic'}));await loadApiConfigs();var after=apiConfigs.find(function(a){return a.id==='ir1'});IB.imageRouter.reset();var ops=_parseWsOps('<ws_gen_image prompt=\"聊天 Provider 已切换\"/>').ops;var rs=await _execWsOps(ops,'昔涟',after);var r=rs[0]||{};return{ok:r.ok===true,provider:after.provider,imageRef:after.imageGenCredentialRef,model:r.model}})()");
+    check('chain.chatProviderSwitchKeepsImageCredential', switchedProvider && switchedProvider.ok === true && switchedProvider.provider === 'anthropic' && switchedProvider.imageRef === 'ir-image-vault-ref', JSON.stringify(switchedProvider));
 
     /* ③ Moments 后台 → 同一 Router；优先级 P3 + 来源 ai_moments。
        P25-2D：companion 事件必须过 Autonomy（cooldown/prefs），且 canonical Moment id 由

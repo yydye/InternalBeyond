@@ -184,6 +184,164 @@
     };
   }
 
+  function tauriLive2dModels(invoke, target) {
+    function command(name, args) {
+      return invoke(name, args).then(function (value) {
+        if (value && typeof value === 'object' && value.ok === false) throw new Error(safeString(value.error || 'live2d-command-failed'));
+        return value;
+      });
+    }
+    function assetUrl(path) {
+      var convert = target && target.__TAURI__ && target.__TAURI__.core && target.__TAURI__.core.convertFileSrc;
+      if (typeof convert !== 'function') throw new Error('live2d-asset-protocol-unavailable');
+      var filePath = String(path || '');
+      /* Keep Windows separators as URL separators so .model3.json resources
+         resolve beside their parent model instead of at the asset host root. */
+      var normalized = filePath.replace(/^\\\\\?\\/, '').replace(/\\/g, '/');
+      if (/^[A-Za-z]:\//.test(normalized)) {
+        return 'http://asset.localhost/' + normalized.split('/').map(function (part) { return encodeURIComponent(part); }).join('/');
+      }
+      return convert(filePath, 'asset');
+    }
+    return Object.freeze({
+      available: true,
+      list: function () { return command('ib_live2d_models_list').then(function (rows) { return Array.isArray(rows) ? rows : []; }); },
+      begin: function (mode) { return command('ib_live2d_import_begin', { mode: safeString(mode) }); },
+      writeChunk: function (request) {
+        request = request || {};
+        return command('ib_live2d_import_chunk', {
+          importId: safeString(request.importId), relativePath: safeString(request.relativePath),
+          offset: Number(request.offset) || 0, totalSize: Number(request.totalSize) || 0,
+          chunk: Array.isArray(request.chunk) ? request.chunk : []
+        });
+      },
+      finish: function (importId) { return command('ib_live2d_import_finish', { importId: safeString(importId) }); },
+      abort: function (importId) { return command('ib_live2d_import_abort', { importId: safeString(importId) }); },
+      resolve: function (modelRef) {
+        return command('ib_live2d_model_resolve', { modelRef: safeString(modelRef) }).then(assetUrl);
+      },
+      runtimeUrl: function () { return command('ib_live2d_runtime_resolve').then(assetUrl); }
+    });
+  }
+
+  function browserLive2dModels() {
+    function unavailable() { return rejected('live2d-native-storage-unavailable', 'Live2D 模型导入需要 Tauri 桌面版'); }
+    return Object.freeze({
+      available: false,
+      list: function () { return Promise.resolve([]); },
+      begin: unavailable, writeChunk: unavailable, finish: unavailable, abort: function () { return Promise.resolve(); },
+      resolve: unavailable, runtimeUrl: unavailable
+    });
+  }
+
+  function tauriPuppetBundles(invoke, target) {
+    function command(name, args) {
+      return invoke(name, args).then(function (value) {
+        if (value && typeof value === 'object' && value.ok === false) throw new Error(safeString(value.error || 'puppet-command-failed'));
+        return value;
+      });
+    }
+    function assetUrl(path) {
+      var convert = target && target.__TAURI__ && target.__TAURI__.core && target.__TAURI__.core.convertFileSrc;
+      if (typeof convert !== 'function') throw new Error('puppet-asset-protocol-unavailable');
+      var filePath = String(path || ''), normalized = filePath.replace(/^\\\\\?\\/, '').replace(/\\/g, '/');
+      if (/^[A-Za-z]:\//.test(normalized)) return 'http://asset.localhost/' + normalized.split('/').map(function (part) { return encodeURIComponent(part); }).join('/');
+      return convert(filePath, 'asset');
+    }
+    return Object.freeze({
+      available: true,
+      list: function () { return command('ib_puppet_bundles_list').then(function (rows) { return Array.isArray(rows) ? rows : []; }); },
+      begin: function (mode) { return command('ib_puppet_import_begin', { mode: safeString(mode) }); },
+      writeChunk: function (request) {
+        request = request || {};
+        return command('ib_puppet_import_chunk', {
+          importId: safeString(request.importId), relativePath: safeString(request.relativePath),
+          offset: Number(request.offset) || 0, totalSize: Number(request.totalSize) || 0,
+          chunk: Array.isArray(request.chunk) ? request.chunk : []
+        });
+      },
+      finish: function (importId) { return command('ib_puppet_import_finish', { importId: safeString(importId) }); },
+      abort: function (importId) { return command('ib_puppet_import_abort', { importId: safeString(importId) }); },
+      resolve: function (bundleId) { return command('ib_puppet_bundle_resolve', { bundleId: safeString(bundleId) }).then(assetUrl); },
+      export: function (bundleId) { return command('ib_puppet_bundle_export', { bundleId: safeString(bundleId) }); }
+    });
+  }
+
+  function browserPuppetBundles() {
+    function unavailable() { return rejected('puppet-native-storage-unavailable', '角色动画素材导入需要 Tauri 桌面版'); }
+    return Object.freeze({
+      available: false,
+      list: function () { return Promise.resolve([]); },
+      begin: unavailable, writeChunk: unavailable, finish: unavailable, abort: function () { return Promise.resolve(); }, resolve: unavailable, export: unavailable
+    });
+  }
+
+  function tauriPuppetProjects(invoke) {
+    function command(name, args) {
+      return invoke(name, args).then(function (value) {
+        if (value && typeof value === 'object' && value.ok === false) throw new Error(safeString(value.error || 'puppet-project-command-failed'));
+        return value;
+      });
+    }
+    return Object.freeze({
+      available: true,
+      list: function () { return command('ib_puppet_projects_list').then(function (rows) { return Array.isArray(rows) ? rows : []; }); },
+      save: function (projectJson) { return command('ib_puppet_project_save', { projectJson: safeString(projectJson) }); },
+      load: function (projectId) { return command('ib_puppet_project_load', { projectId: safeString(projectId) }); },
+      export: function (projectJson) { return command('ib_puppet_project_export', { projectJson: safeString(projectJson) }); },
+      compileRuntime: function (projectId) { return command('ib_puppet_project_compile', { projectId: safeString(projectId) }); }
+    });
+  }
+
+  function browserPuppetProjects() {
+    function unavailable() { return rejected('puppet-project-native-storage-unavailable', '可编辑工程库需要 Tauri 桌面版'); }
+    return Object.freeze({
+      available: false,
+      list: function () { return Promise.resolve([]); },
+      save: unavailable, load: unavailable, export: unavailable, compileRuntime: unavailable
+    });
+  }
+
+  function tauriPuppetAi(invoke) {
+    function command(name, args) {
+      return invoke(name, args).then(function (value) {
+        if (value && typeof value === 'object' && value.ok === false) throw new Error(safeString(value.error || 'puppet-ai-command-failed'));
+        return value;
+      });
+    }
+    return Object.freeze({
+      available: true,
+      pickPath: function (kind) { return command('ib_puppet_ai_pick_path', { kind: safeString(kind) }); },
+      status: function () { return command('ib_puppet_ai_status'); },
+      install: function (request) {
+        request = request || {};
+        return command('ib_puppet_ai_install', {
+          componentRoot: safeString(request.componentRoot), sourceRoot: safeString(request.sourceRoot),
+          pythonExecutable: safeString(request.pythonExecutable), modelDirectory: safeString(request.modelDirectory),
+          licenseAcknowledged: request.licenseAcknowledged === true
+        });
+      },
+      uninstall: function (request) { request = request || {}; return command('ib_puppet_ai_uninstall', { removeManagedEnvironment: request.removeManagedEnvironment === true }); },
+      clearCache: function (removeModels) { return command('ib_puppet_ai_clear_cache', { removeModels: removeModels === true }); },
+      run: function (request) {
+        request = request || {};
+        return command('ib_puppet_ai_run', { sourceDataUrl: safeString(request.sourceDataUrl), inputName: safeString(request.inputName) });
+      },
+      readResultChunk: function (jobId, offset, maxBytes) {
+        return command('ib_puppet_ai_result_read_chunk', { jobId: safeString(jobId), offset: Number(offset) || 0, maxBytes: Number(maxBytes) || 262144 });
+      }
+    });
+  }
+
+  function browserPuppetAi() {
+    function unavailable() { return rejected('puppet-ai-tauri-required', '本地 AI 组件管理需要 Windows Tauri 桌面版；图片导入和手动分层仍可使用。'); }
+    return Object.freeze({
+      available: false, pickPath: unavailable, install: unavailable, uninstall: unavailable,
+      clearCache: unavailable, run: unavailable, readResultChunk: unavailable,
+      status: function () { return Promise.resolve({ installed: false, ready: false, message: '本地 AI 组件需要 Tauri 桌面版。' }); }
+    });
+  }
+
   function browserFiles(target) {
     return {
       pickFile: function (options) {
@@ -254,7 +412,7 @@
     };
   }
 
-  function capabilities(target, platform, projectKnowledge, nativeInvoke, credentialResolverAvailable) {
+  function capabilities(target, platform, projectKnowledge, nativeInvoke, credentialResolverAvailable, live2dModelsAvailable, puppetBundlesAvailable) {
     var protocol = target && target.location ? safeString(target.location.protocol) : '';
     var browserStatic = !nativeInvoke && protocol !== 'file:';
     var navigator = target && target.navigator;
@@ -278,6 +436,16 @@
         requestScoped: true,
         transport: credentialResolverAvailable ? 'tauri-command' : 'unavailable'
       }),
+      live2dModels: Object.freeze({
+        available: !!live2dModelsAvailable,
+        userData: !!live2dModelsAvailable,
+        transport: live2dModelsAvailable ? 'tauri-command' : 'unavailable'
+      }),
+      characterPuppets: Object.freeze({
+        available: !!puppetBundlesAvailable,
+        userData: !!puppetBundlesAvailable,
+        transport: puppetBundlesAvailable ? 'tauri-command' : 'unavailable'
+      }),
       filesystem: Object.freeze({ available: !!(target && target.showOpenFilePicker), transport: 'web-api' }),
       clipboard: Object.freeze({ available: hasClipboard, transport: 'web-api' }),
       notifications: Object.freeze({ available: hasNotification, transport: 'web-api' }),
@@ -295,7 +463,11 @@
     var recoveryOnly = !!(target && (target.__IB_RECOVERY_ONLY__ === true || target.__IB_RECOVERY_BOOT_BLOCKED__ === true));
     var credentialResolverAvailable = !!invoke && !recoveryOnly;
     var credentialResolver = credentialResolverAvailable ? tauriCredentialResolver(invoke) : browserCredentialResolver();
-    var caps = capabilities(target, initialPlatform, projectKnowledge, !!invoke, credentialResolverAvailable);
+    var live2dModels = invoke && !recoveryOnly ? tauriLive2dModels(invoke, target) : browserLive2dModels();
+    var puppetBundles = invoke && !recoveryOnly ? tauriPuppetBundles(invoke, target) : browserPuppetBundles();
+    var puppetProjects = invoke && !recoveryOnly ? tauriPuppetProjects(invoke) : browserPuppetProjects();
+    var puppetAi = invoke && !recoveryOnly ? tauriPuppetAi(invoke) : browserPuppetAi();
+    var caps = capabilities(target, initialPlatform, projectKnowledge, !!invoke, credentialResolverAvailable, !!invoke && !recoveryOnly, !!invoke && !recoveryOnly);
     return Object.freeze({
       version: CONTRACT_VERSION,
       platform: function () { return invoke || hasTauriRuntime(target) ? 'tauri' : 'browser'; },
@@ -306,7 +478,11 @@
       external: browserExternal(target),
       projectKnowledge: projectKnowledge,
       credentialStatus: credentialStatus,
-      credentialResolver: credentialResolver
+      credentialResolver: credentialResolver,
+      live2dModels: live2dModels,
+      characterPuppets: puppetBundles,
+      puppetProjects: puppetProjects,
+      puppetAi: puppetAi
     });
   }
 

@@ -1,16 +1,18 @@
 ﻿(function (root, factory) {
   'use strict';
-  var api = factory();
+  var api = factory(root);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) {
     root.IBAppBuilderCore = api;
     if (root.IB) { root.IB.appBuilder = api; }
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
   'use strict';
   var FILE_NAMES = Object.freeze(['index.html', 'styles.css', 'app.js']);
   var FILE_LIMIT = 24 * 1024;
   var TOTAL_LIMIT = 64 * 1024;
+  var livePreviewIds = Object.create(null);
+  var pagehideCleanupInstalled = false;
   function validFiles(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value)
       && FILE_NAMES.every(function (name) {
@@ -56,8 +58,14 @@
     if (!draft) return '';
     var csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; font-src data:; connect-src \'none\'; form-action \'none\'; navigate-to \'none\'; object-src \'none\'; base-uri \'none\'; frame-src \'none\'">';
     var html = draft.files['index.html'];
-    var bootData = JSON.stringify({ css: draft.files['styles.css'], js: draft.files['app.js'] }).replace(/</g, '\\u003c');
-    var boot = '<script>(function(p){var seq=0,pending=Object.create(null);window.addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.type!=="ib-generated-app-storage-response")return;var wait=pending[e.data.requestId];if(wait){delete pending[e.data.requestId];wait(e.data)}});function call(action,key,value){return new Promise(function(resolve){var requestId="appstore-"+(++seq)+"-"+Date.now();pending[requestId]=resolve;parent.postMessage({type:"ib-generated-app-storage-request",requestId:requestId,action:action,key:String(key||""),value:value},"*");setTimeout(function(){if(pending[requestId]){delete pending[requestId];resolve({ok:false,error:"storage-timeout"})}},3000)})}window.AppStorage=Object.freeze({get:function(k){return call("get",k)},set:function(k,v){return call("set",k,v)},remove:function(k){return call("remove",k)}});document.addEventListener("DOMContentLoaded",function(){var style=document.createElement("style");style.textContent=p.css;document.head.appendChild(style);var app=document.createElement("script");app.textContent=p.js;document.body.appendChild(app)})})(' + bootData + ');<\/script>';
+    var bootData = JSON.stringify({ draftRef: draft.draftRef, css: draft.files['styles.css'], js: draft.files['app.js'] }).replace(/</g, '\\u003c');
+    /* Clear exposed globals where the WebView permits it. The native invoke
+       key/origin checks remain the authority if Tauri installs a non-configurable internal bridge in a child. */
+    var boot = '<script>(function(p){var seq=0,pending=Object.create(null),runtimeError=false;function notify(type){try{parent.postMessage({type:type,draftRef:p.draftRef},"*")}catch(_){}}' +
+      'function scrubTauriBridge(){if(window.top!==window){["__TAURI__","__TAURI_INTERNALS__"].forEach(function(key){try{window[key]=undefined;delete window[key]}catch(_){try{Object.defineProperty(window,key,{value:undefined,configurable:false})}catch(__){}}})}}scrubTauriBridge();' +
+      'window.addEventListener("error",function(){runtimeError=true;notify("ib-generated-app-runtime-error")});window.addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.type!=="ib-generated-app-storage-response")return;var wait=pending[e.data.requestId];if(wait){delete pending[e.data.requestId];wait(e.data)}});' +
+      'function call(action,key,value){return new Promise(function(resolve){var requestId="appstore-"+(++seq)+"-"+Date.now();pending[requestId]=resolve;parent.postMessage({type:"ib-generated-app-storage-request",requestId:requestId,action:action,key:String(key||""),value:value},"*");setTimeout(function(){if(pending[requestId]){delete pending[requestId];resolve({ok:false,error:"storage-timeout"})}},3000)})}' +
+      'window.AppStorage=Object.freeze({get:function(k){return call("get",k)},set:function(k,v){return call("set",k,v)},remove:function(k){return call("remove",k)}});document.addEventListener("DOMContentLoaded",function(){scrubTauriBridge();var style=document.createElement("style");style.textContent=p.css;document.head.appendChild(style);var app=document.createElement("script");app.textContent=p.js;document.body.appendChild(app);setTimeout(function(){if(!runtimeError)notify("ib-generated-app-ready")},0)})})(' + bootData + ');<\/script>';
     var head = /<head(?:\s[^>]*)?>/i;
     if (head.test(html)) html = html.replace(head, function (match) { return match + csp + boot; });
     else html = '<!doctype html><html><head>' + csp + '</head><body>' + html + boot + '</body></html>';
@@ -80,6 +88,83 @@
       + 'else if(d.action==="set"){var rawValue=JSON.stringify(d.value);if(typeof rawValue!=="string"||rawValue.length>262144)throw new Error("storage-value-invalid");localStorage.setItem(key,rawValue);result.ok=true}'
       + 'else if(d.action==="remove"){localStorage.removeItem(key);result.ok=true}else throw new Error("storage-action-invalid");error.textContent=""}catch(e){result.error=String(e&&e.message||"local-storage-unavailable");error.textContent="此浏览器无法访问本地存储；请用允许本地文件存储的浏览器重新打开。"}respond(result)});'
       + 'frame.setAttribute("sandbox","allow-scripts");frame.srcdoc=p.srcdoc})(' + data + ');</script></body></html>';
+  }
+  function sandboxServiceOrigin() {
+    var dev = root && root.__IB_DEV_SERVICE_CONFIG__;
+    var candidate = dev && typeof dev.webOrigin === 'string' ? dev.webOrigin : '';
+    var loc = root && root.location;
+    if (!candidate && loc && /^https?:\/\/tauri\.localhost(?::\d+)?$/i.test(String(loc.origin || ''))) {
+      candidate = 'http://127.0.0.1:23120';
+    }
+    if (!candidate && loc && /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]|::1)(?::\d+)?$/i.test(String(loc.origin || ''))) {
+      candidate = String(loc.origin);
+    }
+    var parsed;
+    try { parsed = new URL(candidate); } catch (_) { return ''; }
+    if (parsed.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(String(parsed.hostname).toLowerCase())) return '';
+    return parsed.origin;
+  }
+  function appPreviewHeaders() {
+    var headers = { 'Content-Type': 'application/json' };
+    var dev = root && root.__IB_DEV_SERVICE_CONFIG__;
+    if (dev && dev.mode && dev.mode !== 'production') {
+      if (typeof dev.sessionToken !== 'string' || typeof dev.instanceId !== 'string') return null;
+      headers['X-IB-Dev-Session'] = dev.sessionToken;
+      headers['X-IB-Dev-Instance'] = dev.instanceId;
+    }
+    return headers;
+  }
+  function canUseLocalSrcdocPreview() {
+    var loc = root && root.location;
+    /* Preserve the offline file:// App Store mode. A Tauri-origin WebView can
+       never take this branch, even if its location is later changed to file:. */
+    return !!(loc && loc.protocol === 'file:' && !root.__TAURI__ && !root.__TAURI_INTERNALS__);
+  }
+  /* srcdoc inherits the host document's CSP, including Tauri's build-time
+     script hashes. App Store preview therefore uses a short-lived local HTTP
+     document with its own strict CSP; callers still apply sandbox=allow-scripts
+     without allow-same-origin. Standalone export remains self-contained. */
+  async function publishSandboxedPreview(value) {
+    var draft = normalizeDraft(value), origin = sandboxServiceOrigin(), headers = appPreviewHeaders();
+    if (!draft || !origin || !headers || typeof root.fetch !== 'function') throw new Error('generated-app-preview-unavailable');
+    var response = await root.fetch(origin + '/__ib-generated-app', {
+      method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store', headers: headers,
+      body: JSON.stringify({ draft: draft })
+    });
+    var result = null;
+    try { result = await response.json(); } catch (_) {}
+    if (!response.ok || !result || result.ok !== true || typeof result.id !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result.id)) {
+      throw new Error('generated-app-preview-publish-failed');
+    }
+    livePreviewIds[result.id] = origin;
+    if (!pagehideCleanupInstalled && root && typeof root.addEventListener === 'function') {
+      pagehideCleanupInstalled = true;
+      root.addEventListener('pagehide', function () {
+        var navigator = root.navigator;
+        if (!navigator || typeof navigator.sendBeacon !== 'function') return;
+        Object.keys(livePreviewIds).forEach(function (id) {
+          var serviceOrigin = livePreviewIds[id];
+          try { navigator.sendBeacon(serviceOrigin + '/__ib-generated-app/cleanup/' + id, ''); } catch (_) {}
+          delete livePreviewIds[id];
+        });
+      });
+    }
+    return { id: result.id, url: origin + '/__ib-generated-app/' + result.id };
+  }
+  async function revokeSandboxedPreview(id, options) {
+    id = String(id || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return false;
+    var origin = sandboxServiceOrigin(), headers = appPreviewHeaders();
+    if (!origin || !headers || typeof root.fetch !== 'function') return false;
+    try {
+      var response = await root.fetch(origin + '/__ib-generated-app/' + id, {
+        method: 'DELETE', mode: 'cors', credentials: 'omit', cache: 'no-store', headers: headers,
+        keepalive: !!(options && options.keepalive)
+      });
+      if (response.ok) delete livePreviewIds[id];
+      return response.ok;
+    } catch (_) { return false; }
   }
   function crc32(bytes) {
     var crc = 0xffffffff;
@@ -135,5 +220,7 @@
   }
   return Object.freeze({ FILE_NAMES: FILE_NAMES, FILE_LIMIT: FILE_LIMIT, TOTAL_LIMIT: TOTAL_LIMIT,
     validFiles: validFiles, normalizeDraft: normalizeDraft, appIdForDraft: appIdForDraft, diff: diff,
-    buildSrcdoc: buildSrcdoc, buildStandaloneHtml: buildStandaloneHtml, buildSourceZip: buildSourceZip });
+    buildSrcdoc: buildSrcdoc, buildStandaloneHtml: buildStandaloneHtml, buildSourceZip: buildSourceZip,
+    canUseLocalSrcdocPreview: canUseLocalSrcdocPreview,
+    publishSandboxedPreview: publishSandboxedPreview, revokeSandboxedPreview: revokeSandboxedPreview });
 });

@@ -20,8 +20,8 @@
 /* Chat 归档入口自 P3.1 起使用通用 .arch-toggle 基座（位于页头工具区）；chat 专属覆写已退役 */
 #api-arch-toggle{position:relative;top:-3px}
 /* API 页归档行：只读、低饱和；行内含恢复与彻底删除两个操作 */
-.api-arch-item{cursor:default;opacity:0.6;transition:opacity 0.25s}
-.api-arch-item:hover{opacity:0.85}
+.api-arch-item{cursor:default;opacity:0.86;transition:opacity 0.25s}
+.api-arch-item:hover{opacity:1}
 .api-arch-item .api-item-avatar{filter:grayscale(0.55)}
 .api-arch-item .arch-ops{display:flex;align-items:center;gap:12px;flex-shrink:0;margin-left:12px}
 .arch-restore-btn{background:none;border:none;padding:0 2px;cursor:pointer;color:var(--content-muted);display:inline-flex;align-items:center;transition:color 0.3s}

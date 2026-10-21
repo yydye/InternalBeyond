@@ -126,9 +126,12 @@ async function main() {
     const fakeUrl = new URL(dev.fakeProviderUrl);
     if (dev.mode !== 'synthetic' || fakeUrl.protocol !== 'http:' || fakeUrl.hostname !== '127.0.0.1'
       || fakeUrl.port !== '23139' || !process.env.LOCALAPPDATA) throw new Error('Synthetic Fake Provider route required');
-    const sandboxRoot = path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+    const projectRoot = path.resolve(__dirname, '..');
+    const sandboxRoot = process.env.IB_DEV_SANDBOX_ROOT || path.join(projectRoot, '.dev-data', 'synthetic', 'dev-sandbox');
     const fakeEnvironment = {
-      IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DEV_SANDBOX_ROOT: sandboxRoot,
+      LOCALAPPDATA: path.join(sandboxRoot, 'local-app-data'), APPDATA: path.join(sandboxRoot, 'roaming-app-data'),
+      TEMP: path.join(sandboxRoot, 'temp'), TMP: path.join(sandboxRoot, 'temp'), IB_LOG_DIR: path.join(sandboxRoot, 'logs'),
+      IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DEV_PROJECT_ROOT: projectRoot, IB_DEV_SANDBOX_ROOT: sandboxRoot,
       IB_DEV_INSTANCE_ID: dev.instanceId, IB_DEV_SESSION_TOKEN: dev.sessionToken,
       IB_WEB_PORT: new URL(dev.webOrigin).port, IB_BRIDGE_PORT: '23135', IB_ACTIVE_PORT: '23134',
       IB_RESTART_PORT: '23136', IB_HOME_NODE_PORT: new URL(dev.homeNodeUrl).port, IB_DEV_FAKE_PROVIDER_PORT: fakeUrl.port,

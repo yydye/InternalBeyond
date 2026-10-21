@@ -55,7 +55,7 @@ section('HTML 最小挂载（不动样式表 / 内联样式预算）');
 const scriptTags = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleTags = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]);
 check('HTML 只挂载一次 diagnostics.js', scriptTags.filter(s => s === 'assets/js/diagnostics.js').length === 1);
-check('HTML 没有新增样式表', styleTags.length === 20, styleTags.length);
+check('诊断样式仍由模块运行时注入，不新增 HTML 样式链接', !styleTags.includes('assets/css/diagnostics.css'));
 check('HTML 没有 diagnostics.css 的 <link>', !styleTags.includes('assets/css/diagnostics.css'));
 check('HTML 有独立导航入口', /<a[^>]*data-page=["']diagnostics["'][^>]*>/.test(html));
 check('导航入口带 href（与其它导航一致）', /<a[^>]*href=["']#diagnostics["'][^>]*data-page=["']diagnostics["']/.test(html));
@@ -71,7 +71,7 @@ check('只读 P2 /__boot-state', /BOOT_URL\s*=\s*'\/__boot-state'/.test(jsSrc));
 check('不自己写 boot-state 文件 / 不建第二套 schema', jsSrc.indexOf('internalbeyond.boot-state') === -1 && !/buildBootState|writeBootState/.test(jsSrc));
 check('用户文案走 P3 IBERR', /window\.IBERR\.present/.test(jsSrc) && /window\.IBERR\.redact/.test(jsSrc) && /window\.IBERR\.redactUrl/.test(jsSrc));
 check('不新建错误分类表（无 category 字面量表）', !/var\s+CATEGORIES\s*=\s*\[/.test(jsSrc) && !/COPY\s*=\s*\{/.test(jsSrc));
-check('组件词表 = P2 的 static/bridge/active/restart/vision', /\[.static.,\s*.bridge.,\s*.active.,\s*.restart.,\s*.vision.\]/.test(jsSrc));
+check('组件词表沿用 P2 的现有组件 ID', /\['static',\s*'bridge',\s*'active',\s*'restart',\s*'homeNode',\s*'vision'\]/.test(jsSrc));
 check('不复制 provider endpoint', jsSrc.indexOf('api.openai.com') === -1 && jsSrc.indexOf('api.anthropic.com') === -1 && jsSrc.indexOf('generativelanguage.googleapis.com') === -1);
 check('不复制 provider 默认模型', jsSrc.indexOf('gpt-4o-mini') === -1 && jsSrc.indexOf('claude-sonnet-4-6') === -1);
 check('端口唯一来源是 boot-state（代码里没有端口字面量）', !/23115|23114|23116|23120|8765/.test(codeOnly), (codeOnly.match(/23115|23114|23116|23120|8765/g) || []).slice(0, 3));
@@ -88,9 +88,12 @@ check('修复不换端口 / 不无限重试', !/while\s*\(\s*true/.test(jsSrc) &
 
 section('用户可见文案不含开发者术语（技术详情除外）');
 const CAP_TEXT = ['基础运行', 'AI 聊天', '本地增强功能', '后台主动功能', '语音功能', '视觉功能'];
-const STATUS_TEXT = ['正常', '需要注意', '不可用', '未安装（可选）', '检查中', '状态未知'];
+const STATUS_TEXT = ['正常', '异常', '不可用', '未配置', '检查中', '未检查'];
 check('能力层词表 = 6 项', CAP_TEXT.every(t => jsSrc.indexOf(t) !== -1));
 check('状态词表 = 6 种', STATUS_TEXT.every(t => jsSrc.indexOf(t) !== -1));
+check('面板包含四个诊断区域与手动检查入口', ['系统概览', '核心服务', '资源与性能', '近期错误', 'ib-diag-recheck'].every(t => jsSrc.indexOf(t) !== -1));
+check('状态来源复用 Home Node / Credential Vault 现有只读接口', jsSrc.includes("var url = 'http://127.0.0.1:' + port + '/health';") && /statusHost\.query\(remote\)/.test(jsSrc));
+check('CPU 无可信来源时明确显示不可用', /CPU 使用率：不可用/.test(jsSrc));
 /* 文案段落 = 去掉注释后的代码；技术详情由 bootLines/probeLines 单独构造，
    不在「用户文案」范围内（它们本来就该出现组件名与端口）。 */
 check('文案表本身不含开发者术语', (() => {
@@ -100,7 +103,7 @@ check('文案表本身不含开发者术语', (() => {
 })());
 check('用户文案里的字符串字面量不含开发者术语', (() => {
   const copyStart = codeOnly.indexOf('function deriveCaps');
-  const copyEnd = codeOnly.indexOf('function bootLines');
+  const copyEnd = codeOnly.indexOf('function deriveServices');
   const seg = codeOnly.slice(copyStart, copyEnd);
   const literals = [...seg.matchAll(/'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"/g)]
     .map(m => (m[1] !== undefined ? m[1] : m[2]))
@@ -280,14 +283,43 @@ function probesAllOk(extra) {
     vision: pOk(), visionInstall: pOk({ installed: true })
   }, extra || {});
 }
-function rolesReady(restartOk) { return { roles: [{ id: 'r1', label: '小明' }], currentRole: { id: 'r1', label: '小明', ready: true, reason: '' }, aiTest: null, restartOk: restartOk !== false, clientMissing: {} }; }
+function rolesReady(restartOk) { return { roles: [{ id: 'r1', label: '小明' }], currentRole: { id: 'r1', label: '小明', ready: true, reason: '' }, aiTest: { state: 'ok', roleId: 'r1' }, restartOk: restartOk !== false, clientMissing: {} }; }
 function st(res, id) { const r = res.rows.filter(x => x.id === id)[0] || {}; return r.status; }
 function rowOf(res, id) { return res.rows.filter(x => x.id === id)[0] || {}; }
 
 /* 1. 全部正常 */
 const S1 = T.deriveCaps(bootOf('normal', HEALTHY_COMPS), probesAllOk(), rolesReady());
 check('1) 全部正常 → overall=ok / 标题=系统运行正常', S1.overall === 'ok' && S1.headline === '系统运行正常', S1.headline);
-check('1) 六项能力全部「正常」', ['base', 'chat', 'bridge', 'active', 'voice', 'vision'].every(id => st(S1, id) === 'ok'), S1.rows.map(r => r.id + ':' + r.status));
+check('1) 已测试的聊天与核心能力正常；Voice 配置存在但未发起请求', ['base', 'chat', 'bridge', 'active', 'vision'].every(id => st(S1, id) === 'ok') && st(S1, 'voice') === 'unknown', S1.rows.map(r => r.id + ':' + r.status));
+const S1untested = T.deriveCaps(bootOf('normal', HEALTHY_COMPS), probesAllOk(), Object.assign(rolesReady(), { aiTest: null }));
+check('1) 配置角色但未做 Provider 测试 → AI 聊天未检查', st(S1untested, 'chat') === 'unknown' && S1untested.overall === 'unknown', rowOf(S1untested, 'chat'));
+function serviceOf(rows, id) { return rows.filter(x => x.id === id)[0] || {}; }
+const healthyServices = T.deriveServices({
+  static: pOk({ json: { ok: true, server: 'InternalBeyond Web' } }),
+  restart: pOk({ json: { service: 'InternalBeyond Restart', state: 'idle' } }),
+  homeNode: pOk({ json: { identityOk: true, serving: true, open: true, stores: [] } }),
+  active: pOk(), bridge: pOk(),
+  credentialVault: { state: 'done', ok: true, healthy: true, responding: true, counts: { ready: 2, missing: 0, unavailable: 0, remote: 2, local: 0 } },
+  memory: pOk({ json: { mode: 'canonical', authority: 'home-node', authorityEffective: true, degraded: false } })
+}, S1.rows);
+check('核心服务覆盖 Runner / Home Node / Active / Bridge / Vault / Memory', ['runner', 'homeNode', 'active', 'bridge', 'credentialVault', 'memory'].every(id => !!serviceOf(healthyServices, id).label));
+check('服务健康有明确身份或服务级证据时才标为正常', ['runner', 'homeNode', 'active', 'bridge', 'credentialVault', 'memory'].every(id => serviceOf(healthyServices, id).status === 'ok'));
+const disconnectedServices = T.deriveServices({
+  static: pOk(), restart: pOk({ json: { service: 'InternalBeyond Restart', state: 'idle' } }),
+  homeNode: pOk({ healthy: false, json: { identityOk: true, serving: false, open: false, stores: [{ store: 'chatMessages', open: false, category: 'store-closed' }] } }),
+  active: pOk(), bridge: pDown(), credentialVault: { state: 'done', unconfigured: true, counts: { ready: 0, missing: 0, unavailable: 0, remote: 0, local: 0 } },
+  memory: pOk({ json: { mode: 'canonical', authority: 'home-node', authorityEffective: false, degraded: true } })
+}, S1.rows);
+check('模拟 Bridge 断开 → Bridge 显示不可用', serviceOf(disconnectedServices, 'bridge').status === 'down');
+check('HTTP 有响应但 Home Node 报告存储异常 → 不显示正常并给出安全分类', serviceOf(disconnectedServices, 'homeNode').status === 'attention' && (serviceOf(disconnectedServices, 'homeNode').categories || []).includes('store-closed'));
+check('未配置 Vault 凭据明确显示未配置', serviceOf(disconnectedServices, 'credentialVault').status === 'optional');
+const localMemoryServices = T.deriveServices({ memory: pOk({ json: { mode: 'local', authority: 'indexeddb', authorityEffective: false } }) }, []);
+check('本地 Memory 模式无存储健康指标时显示未检查', serviceOf(localMemoryServices, 'memory').status === 'unknown');
+T.setBoot(bootOf('normal', HEALTHY_COMPS));
+T.setProbes(probesAllOk({ homeNode: pOk({ healthy: false, json: { identityOk: true, serving: false, open: false, stores: [] } }) }));
+T.setAiTest({ state: 'ok', roleId: 'r1' });
+T.compute();
+check('Home Node 有响应但未就绪时，总览不能显示系统正常', D.status().overall === 'attention' || D.status().overall === 'down', D.status().headline);
 
 /* 2. boot-state stale */
 const S2 = T.deriveCaps(bootOf('degraded', HEALTHY_COMPS, true), probesAllOk(), rolesReady());
@@ -348,8 +380,8 @@ T.setProbes(probesAllOk({ bridge: pDown(), active: pDown() }));
 T.setAiTest(null);
 T.compute();
 const pageText = allText(doc.getElementById('page-diagnostics'));
-check('17) 主页面含能力层文案', /本地增强功能/.test(pageText) && /后台主动功能/.test(pageText) && /部分功能暂时不可用/.test(pageText));
-check('17) 主页面不含 Bridge / Active / 端口 / 127.0.0.1 / Node', ['Bridge', 'Active', '23115', '23114', '127.0.0.1', 'Node', '端口', 'WebSocket'].every(w => pageText.indexOf(w) === -1), pageText.slice(0, 400));
+check('17) 主页面显示概览、核心模块和异常状态', /系统概览/.test(pageText) && /核心服务/.test(pageText) && /Home Node/.test(pageText) && /Credential Vault/.test(pageText) && /部分功能暂时不可用/.test(pageText));
+check('17) 主页面不泄露端口 / loopback 地址 / WebSocket', ['23115', '23114', '127.0.0.1', 'WebSocket'].every(w => pageText.indexOf(w) === -1), pageText.slice(0, 500));
 const tech = T.technicalText();
 check('17) 技术详情才出现组件名 / 端口 / bootId / Node 版本', /bridge：/.test(tech) && /port=23115/.test(tech) && /bootId：/.test(tech) && /v24\.18\.0/.test(tech), tech.slice(0, 300));
 
@@ -482,6 +514,7 @@ let fetchCalls = 0;
     jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk',
     query: 'https://api.example.com/v1/chat/completions?key=SECRET-QUERY-VALUE',
     cookie: 'Cookie: session=SECRETCOOKIEVALUE123',
+    vaultRef: 'vault-binding-ref-sensitive-should-not-export',
     prompt: '我的系统提示词是：你是一个秘密角色，不要告诉任何人。',
     chat: '聊天正文：昨天我们去海边看了日落，这句话只应该留在本地。'
   };
@@ -504,8 +537,19 @@ let fetchCalls = 0;
   T.setAiTest({ state: 'fail', at: Date.now(), code: 'IBERR.AUTH.401', title: 'API 密钥无法使用', message: '密钥无效', suggestion: '检查密钥', roleId: 'r1', latencyMs: 120 });
   store.apiConfigs = [{
     id: 'r1', nickname: SECRETS.prompt, provider: 'openai', model: 'gpt-4o-mini',
-    endpoint: SECRETS.query, apiKey: SECRETS.sk, systemPrompt: SECRETS.prompt
+    endpoint: SECRETS.query, apiKey: SECRETS.sk, credentialRef: SECRETS.vaultRef, systemPrompt: SECRETS.prompt
   }];
+  let queriedBindings = null;
+  sandbox.IB.host = {
+    capabilities() { return { credentialStatus: { available: true } }; },
+    credentialStatus: { query(bindings) {
+      queriedBindings = bindings;
+      return Promise.resolve({ ok: true, results: bindings.map(binding => ({ bindingId: binding.bindingId, status: 'ready', secretPresent: true })) });
+    } }
+  };
+  hostileProbes.credentialVault = await T.PROBES.credentialVault();
+  check('Vault 诊断只查询 has-only 状态，不解析密钥', hostileProbes.credentialVault.healthy && queriedBindings.length === 1 && queriedBindings[0].bindingId === SECRETS.vaultRef);
+  check('Vault 状态结果仅保留计数，不保留 credentialRef', !Object.prototype.hasOwnProperty.call(hostileProbes.credentialVault, 'results') && !Object.prototype.hasOwnProperty.call(hostileProbes.credentialVault, 'bindings'));
   T.state().errorLog = [{ code: 'IBERR.LOCAL_SERVICE.BRIDGE', category: 'local_service', at: Date.now() }];
   T.compute();
 

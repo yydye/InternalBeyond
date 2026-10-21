@@ -41,17 +41,13 @@ global.window = {};
 global.window.IBImageModelsCore = MODELS;
 global.window.IB = { expose: (name, obj) => { const node = (global.window.IB[name] = global.window.IB[name] || {}); Object.assign(node, obj); return node; } };
 global.window.IB.imageRouter = { imageRejectText: CORE.imageRejectText, reloadConfig: () => true };
-/* provider 推断桩：显式 imageGenProvider > provider；anthropic/deepseek + 有生图模型 → 按模型名推断 */
+/* provider 推断桩：只看图片配置；聊天 Provider 不参与图片 Provider 回退。 */
 global.window._imgResolveProvider = (cfg) => {
   cfg = cfg || {};
   const ip = String(cfg.imageGenProvider || '').trim().toLowerCase();
   if (ip) return ip;
-  const prov = String(cfg.provider || '').trim().toLowerCase();
-  if (prov === 'anthropic' || prov === 'deepseek') {
-    const m = String(cfg.imageGenModel || '').toLowerCase();
-    return m ? (/gemini/i.test(m) ? 'gemini' : 'openai') : prov;
-  }
-  return prov;
+  const model = String(cfg.imageGenModel || '').toLowerCase();
+  return model && /gemini/i.test(model) ? 'gemini' : 'openai';
 };
 /* 编辑能力桩：与 workspace.js._imgEditCapability 的判定边界一致 */
 global.window._imgEditCapability = (cfg) => {
@@ -117,6 +113,16 @@ const openaiCfg = (id, over) => Object.assign({
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY };
   let r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.inheritUsesCharacterCfg', r.ok === true && r.mode === 'inherit' && r.cfg.id === 'char1' && r.model === '' && r.modelSource === 'auto');
+  const deepseekChat = openaiCfg('deepseek-chat', {
+    provider: 'deepseek', endpoint: 'https://api.deepseek.com/v1/chat/completions',
+    imageGenProvider: '', imageGenEndpoint: '', imageGenModel: 'gpt-image-1',
+    credentialRef: '', imageGenCredentialRef: 'image-openai-ref'
+  });
+  r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: deepseekChat } });
+  check('resolve.imageProviderEndpointCredentialAreIndependent', r.ok === true && r.provider === 'openai'
+    && r.endpoint === 'https://api.openai.com/v1/images/generations'
+    && r.cfg.imageGenEndpoint === r.endpoint && r.cfg.credentialRef === ''
+    && r.cfg.imageGenCredentialRef === 'image-openai-ref', JSON.stringify(r));
   r = await CFG.resolveRoute({ operation: 'edit', opts: {} });
   check('resolve.inheritWithoutContextFails', r.ok === false && r.code === 'IMAGE_NO_CONFIG');
 
@@ -135,7 +141,7 @@ const openaiCfg = (id, over) => Object.assign({
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.missingConfig', r.ok === false && r.code === 'IMAGE_ROUTER_CONFIG_MISSING');
 
-  seedConfigs([openaiCfg('nokey', { apiKey: '', imageGenApiKey: '', endpoint: 'https://api.openai.com/v1/chat/completions', imageGenEndpoint: '' })]);
+  seedConfigs([openaiCfg('nokey', { credentialRef: '', apiKey: '', imageGenApiKey: '', endpoint: 'https://api.openai.com/v1/chat/completions', imageGenEndpoint: '' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'nokey' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.missingKey', r.ok === false && r.code === 'IMAGE_ROUTER_NO_KEY');
@@ -145,25 +151,25 @@ const openaiCfg = (id, over) => Object.assign({
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'noep' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.emptyEndpointUsesProviderDefault', r.ok === true && r.endpoint === 'https://api.openai.com/v1/images/generations', JSON.stringify(r));
-  seedConfigs([openaiCfg('noep2', { provider: 'custom', endpoint: '', imageGenEndpoint: '', imageGenProvider: '' })]);
+  seedConfigs([openaiCfg('noep2', { provider: 'deepseek', endpoint: 'https://chat.example.com/v1/chat/completions', imageGenEndpoint: '', imageGenProvider: 'custom' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'noep2' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.missingEndpoint', r.ok === false && r.code === 'IMAGE_ROUTER_NO_ENDPOINT', JSON.stringify(r));
   /* 本地/内网端点允许不填 Key（local-first / Bridge 本地服务的常态，不得判死） */
-  seedConfigs([openaiCfg('local', { endpoint: 'http://127.0.0.1:23115/v1/chat/completions', apiKey: '', imageGenApiKey: '' })]);
+  seedConfigs([openaiCfg('local', { credentialRef: '', endpoint: 'https://chat.example.com/v1/chat/completions', imageGenEndpoint: 'http://127.0.0.1:23115/v1/images/generations', apiKey: '', imageGenApiKey: '' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'local' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.localKeylessAllowed', r.ok === true && r.warnings.includes('no_key_local'), JSON.stringify(r));
-  seedConfigs([openaiCfg('lan', { endpoint: 'http://192.168.1.9:8000/v1/chat/completions', apiKey: '', imageGenApiKey: '' })]);
+  seedConfigs([openaiCfg('lan', { credentialRef: '', endpoint: 'https://chat.example.com/v1/chat/completions', imageGenEndpoint: 'http://192.168.1.9:8000/v1/images/generations', apiKey: '', imageGenApiKey: '' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'lan' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.privateLanKeylessAllowed', r.ok === true && r.warnings.includes('no_key_local'));
 
-  seedConfigs([openaiCfg('anth', { provider: 'anthropic', imageGenProvider: '' })]);
+  seedConfigs([openaiCfg('anth', { provider: 'deepseek', imageGenProvider: 'anthropic' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'anth' } }) };
   r = await CFG.resolveRoute({ operation: 'generate', opts: { cfg: character } });
   check('resolve.unsupportedProvider', r.ok === false && r.code === 'IMAGE_ROUTER_PROVIDER_UNSUPPORTED');
-  r = await CFG.resolveRoute({ operation: 'edit', opts: { cfg: openaiCfg('anthChar', { provider: 'anthropic', imageGenProvider: '' }) } });
+  r = await CFG.resolveRoute({ operation: 'edit', opts: { cfg: openaiCfg('anthChar', { provider: 'deepseek', imageGenProvider: 'deepseek' }) } });
   check('resolve.unsupportedProviderEditInherit', r.ok === false && r.code === 'IMAGE_EDIT_UNSUPPORTED', JSON.stringify(r));
 
   /* ── ④ 模型能力校验 ────────────────────────────────────────────────── */
@@ -225,7 +231,7 @@ const openaiCfg = (id, over) => Object.assign({
   router = CORE.createImageRouter({ executor: exec, resolveProvider: () => 'openai', ...routeStub({ ok: false, code: 'IMAGE_ROUTER_NO_KEY', reason: '缺少 API Key' }) });
   out = await router.routeImageRequest({ prompt: '一只猫', cfg: openaiCfg('char1'), source: 'chat' });
   check('core.configErrorNoRequest', out.ok === false && out.code === 'IMAGE_ROUTER_NO_KEY' && calls.length === 0, JSON.stringify(out));
-  check('core.configErrorText', CORE.imageRejectText(out).includes('Image Router'));
+  check('core.configErrorText', CORE.imageRejectText(out).includes('Credential Vault') && CORE.imageRejectText(out).includes('设置 → API'));
 
   calls.length = 0;
   router = CORE.createImageRouter({ executor: exec, resolveProvider: () => 'openai', ...routeStub({ ok: true, cfg: openaiCfg('img3', { imageGenModel: 'dall-e-3' }), model: 'dall-e-3', mode: 'bound', routeName: 'editing', warnings: [], fallback: null }) });
@@ -258,7 +264,7 @@ const openaiCfg = (id, over) => Object.assign({
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ editing: { apiConfigId: 'ghost' } }) };
   const d2 = await CFG.describe();
   check('describe.missingConfigCode', d2.status.editing.ok === false && d2.status.editing.code === 'IMAGE_ROUTER_CONFIG_MISSING');
-  seedConfigs([openaiCfg('localUi', { nickname: '本地', endpoint: 'http://127.0.0.1:23115/v1/chat/completions', apiKey: '', imageGenApiKey: '' })]);
+  seedConfigs([openaiCfg('localUi', { nickname: '本地', endpoint: 'https://chat.example.com/v1/chat/completions', imageGenEndpoint: 'http://127.0.0.1:23115/v1/images/generations', credentialRef: '', apiKey: '', imageGenApiKey: '' })]);
   store.apiSettings[CFG.CFG_KEY] = { id: CFG.CFG_KEY, routes: CFG.normalizeRoutes({ generation: { apiConfigId: 'localUi' } }) };
   const d3 = await CFG.describe();
   check('describe.localKeylessWarns', d3.status.generation.ok === true && d3.status.generation.warnings.includes('no_key_local'), JSON.stringify(d3.status.generation));

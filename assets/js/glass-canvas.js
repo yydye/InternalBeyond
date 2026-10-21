@@ -32,7 +32,12 @@ var fogKnob=null,brushKnob=null;
   var im=new Image();
   im.onload=function(){
     var el=document.getElementById('gw-img');
-    if(el)el.style.backgroundImage='url("'+name+'")';
+    if(el){
+      var defaultImage='url("'+name+'")';
+      el.setAttribute('data-ib-diy-default-bg',defaultImage);
+      el.style.backgroundImage=defaultImage;
+      if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyCanvasBackground();
+    }
     /* 按图片真实比例校准 --gw-ar：画窗高度公式自动跟随，换图无需改 CSS */
     if(im.naturalWidth>0&&im.naturalHeight>0){
       document.documentElement.style.setProperty('--gw-ar',(im.naturalWidth/im.naturalHeight).toFixed(6));

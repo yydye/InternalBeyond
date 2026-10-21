@@ -55,27 +55,29 @@ async function _wsArchiveFileBlocks(files,author,provenance){
 /* ── 图像生成执行器：按好友配置调用生图接口，成功返回 dataUrl/base64 ──
    OpenAI 兼容（官方/中转站）走 /images/generations；Gemini 走 generateContent + responseModalities；
    用量（若接口回传）按生图模型名计入 Token 仪表盘，单价可在仪表盘中为该模型单独设置。
-   图片凭证与文字模型解耦（可选字段，全部留空 = 完全复用文字凭证/接口/协议）：
-     imageGenProvider  'openai'（OpenAI 兼容）/'gemini'；留空=跟随文字 cfg.provider
-     imageGenEndpoint  图片接口地址；留空=复用文字 cfg.endpoint
-     imageGenApiKey    图片专用 Key；留空=复用文字 cfg.apiKey
-   只有"最终图片协议域"（imageGenProvider || provider）为 anthropic/deepseek 时才拒绝。 */
-/* 图片服务商推断：显式 imageGenProvider > 跟随文字 provider；文字 provider 不支持生图（anthropic/deepseek）
-   但显式填了生图模型时，按模型名推断（gemini → Gemini，否则 OpenAI 兼容），让"填了生图模型就能生图"生效。 */
+   图片协议独立于聊天配置：
+     imageGenProvider       显式 OpenAI 兼容 / Gemini；留空按图片模型判断，无模型时默认 OpenAI 兼容
+     imageGenEndpoint       图片接口地址；留空使用所选图片 Provider 的默认地址
+     imageGenCredentialRef 图片凭据 Vault 引用；imageGenCredentialProvider 是 Vault 凭据 Provider 身份
+       （与图片 wire provider 分开）；留空时才跟随角色聊天凭据及其 Provider 身份
+   只有图片 Provider 自身为 anthropic/deepseek 时才拒绝。 */
+/* 图片服务商推断：仅看图片配置与图片模型，绝不从聊天 Provider 回退。 */
 function _imgResolveProvider(cfg){
   try{
     cfg=cfg||{};
     var ip=String(cfg.imageGenProvider||'').trim().toLowerCase();
     if(ip)return ip;
-    var prov=String(cfg.provider||'').trim().toLowerCase();
-    if(prov==='anthropic'||prov==='deepseek'){
-      var m=String(cfg.imageGenModel||'').toLowerCase();
-      return m?(/gemini/i.test(m)?'gemini':'openai'):prov;/* 无生图模型 → 保持原 provider（维持拒绝语义） */
-    }
-    return prov;
-  }catch(e){return String((cfg&&cfg.provider)||'').toLowerCase()}
+    var model=String(cfg.imageGenModel||'').toLowerCase();
+    return model&&/gemini/i.test(model)?'gemini':'openai';
+  }catch(e){return 'openai'}
 }
 window._imgResolveProvider=_imgResolveProvider;
+function _imgDefaultEndpoint(provider){
+  var p=String(provider||'').trim().toLowerCase();
+  if(p==='openai')return 'https://api.openai.com/v1/images/generations';
+  if(p==='gemini')return 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent';
+  return '';
+}
 
 /* ── 图片执行器公共能力（生图与编辑共用，不新建第二套 provider 链路） ── */
 /* 尺寸白名单：生图/编辑接口只接受枚举值，任意尺寸（如 200x200）会直接 400 */
@@ -233,10 +235,29 @@ async function _wsExecImageGen(cfg,prompt,size,opts){
   var bridge=(typeof window!=='undefined'&&window._ibWithRuntimeApiCredential)||null;
   if(typeof bridge!=='function')return{ok:false,code:'CREDENTIAL_UNAVAILABLE',reason:'Credential Vault resolver unavailable'};
   try{
-    var expectedImageProvider=_imgResolveProvider(cfg)||cfg.imageGenProvider||cfg.provider;
-    return await bridge(cfg,function(runtimeCfg){return _wsExecImageGenWithRuntimeCredential(runtimeCfg,prompt,size,opts);},{
-      endpoint:cfg.imageGenEndpoint||cfg.endpoint,
-      expectedProvider:expectedImageProvider,
+    var expectedImageProvider=_imgResolveProvider(cfg);
+    if(expectedImageProvider==='anthropic'||expectedImageProvider==='deepseek'){
+      if(String(opts.operation||'').toLowerCase()==='edit'){
+        var unsupported=_imgEditCapability(cfg);
+        return{ok:false,code:unsupported.code||'IMAGE_EDIT_UNSUPPORTED',reason:unsupported.reason||'当前图片服务商不支持图片编辑'};
+      }
+      return{ok:false,code:'IMAGE_ROUTER_PROVIDER_UNSUPPORTED',reason:(expectedImageProvider==='anthropic'?'Anthropic':'DeepSeek')+' 不支持图像生成；请在图片设置中选择 OpenAI 兼容或 Gemini'};
+    }
+    var imageEndpoint=String(cfg.imageGenEndpoint||'').trim()||_imgDefaultEndpoint(expectedImageProvider);
+    if(!imageEndpoint)return{ok:false,code:'IMAGE_ROUTER_NO_ENDPOINT',reason:'图片配置没有可用的图片接口地址'};
+    var credentialCfg=Object.assign({},cfg,{imageGenEndpoint:imageEndpoint});
+    var imageCredentialRef=String(cfg.imageGenCredentialRef||'').trim();
+    var expectedCredentialProvider=imageCredentialRef
+      ?String(cfg.imageGenCredentialProvider||expectedImageProvider).trim().toLowerCase()
+      :String(cfg.provider||expectedImageProvider).trim().toLowerCase();
+    if(imageCredentialRef){
+      credentialCfg.credentialRef=imageCredentialRef;
+      credentialCfg.endpoint=imageEndpoint;
+    }
+    credentialCfg.provider=expectedCredentialProvider;
+    return await bridge(credentialCfg,function(runtimeCfg){return _wsExecImageGenWithRuntimeCredential(runtimeCfg,prompt,size,opts);},{
+      endpoint:imageEndpoint,
+      expectedProvider:expectedCredentialProvider,
       rejectImageGenSecret:true
     });
   }catch(e){
@@ -246,7 +267,7 @@ async function _wsExecImageGen(cfg,prompt,size,opts){
 async function _wsExecImageGenWithRuntimeCredential(cfg,prompt,size,opts){
   cfg=cfg||{};opts=opts||{};
   var iprov=_imgResolveProvider(cfg);
-  var iEp=String(cfg.imageGenEndpoint||'').trim()||String(cfg.endpoint||'').trim();
+  var iEp=String(cfg.imageGenEndpoint||'').trim();
   var iKey=String(cfg.apiKey||'').trim();
   var model=(cfg.imageGenModel||'').trim()||(iprov==='gemini'?'gemini-2.5-flash-image':'gpt-image-1');
   var ctrl=new AbortController();var _tm=setTimeout(function(){try{ctrl.abort()}catch(e){}},120000);
@@ -262,7 +283,7 @@ async function _wsExecImageGenWithRuntimeCredential(cfg,prompt,size,opts){
         var unsupportedEditContext={model:model,iprov:iprov,iEp:iEp,iKey:iKey,ctrl:ctrl};
         try{return await _wsExecImageEdit(cfg,prompt,opts,unsupportedEditContext)}finally{unsupportedEditContext.iKey=''}
       }
-      return{ok:false,code:'IMAGE_ROUTER_PROVIDER_UNSUPPORTED',reason:(iprov==='anthropic'?'Anthropic':'DeepSeek')+' 不支持图像生成；请把图片服务商改为 OpenAI 兼容或 Gemini（可在 API 设置中单独配置图片服务商/接口/Key）'};
+      return{ok:false,code:'IMAGE_ROUTER_PROVIDER_UNSUPPORTED',reason:(iprov==='anthropic'?'Anthropic':'DeepSeek')+' 不支持图像生成；请在图片设置中选择 OpenAI 兼容或 Gemini'};
     }
     /* 图片编辑：同一执行器入口，内部委托薄的编辑 wire format 函数（模型/并发/优先级仍由 Router 决定） */
     if(String(opts.operation||'').toLowerCase()==='edit'){
@@ -405,7 +426,35 @@ async function _execWsOps(ops,authorName,cfg,ictx){
   var results=[];
   for(var op of ops){
     try{
-    if(op.type==='gen_image'||op.type==='edit_image'){
+    if(op.type==='mem_write'){
+      results.push({type:'mem_write',ok:false,reason:'Memory 操作必须经普通 Chat 的 canonical Authority 执行'});
+    }else if(op.type==='trip'||op.type==='trip_note'){
+      var _mapApi=window.IBMap;
+      if(!_mapApi||typeof _mapApi.tripExec!=='function'){
+        results.push({type:op.type,ok:false,reason:'Map 环球旅行模块尚未就绪'});
+      }else{
+        var _mapResult=await _mapApi.tripExec(cfg,op,{friendId:String(ictx.friendId||''),threadId:String(ictx.threadId||''),userMessageId:String(ictx.userMessageId||'')});
+        _mapResult=Object.assign({type:op.type},_mapResult||{ok:false,reason:'Map 旅行没有返回结果'});
+        if(_mapResult.ok&&_mapResult.response)_pushOpFeedback(String(_mapResult.response).slice(0,18000));
+        results.push(_mapResult);
+      }
+    }else if(op.type==='traces'){
+      var _traceApi=window.IBMapTraces;
+      if(!_traceApi||typeof _traceApi.execute!=='function')results.push({type:'traces',ok:false,reason:'Map 行迹模块尚未就绪'});
+      else{var _traceResult=Object.assign({type:'traces'},await _traceApi.execute(cfg,op)||{ok:false,reason:'Map 行迹查询没有返回结果'});if(_traceResult.ok&&_traceResult.response)_pushOpFeedback(String(_traceResult.response).slice(0,6000));results.push(_traceResult)}
+    }else if(op.type==='music'){
+      var _musicApi=window.IBMusic;
+      if(!_musicApi||typeof _musicApi.executeChatCommand!=='function')results.push({type:'music',action:op.action||'',query:op.query||'',ok:false,executionKnown:true,reason:'Music 播放器尚未就绪。'});
+      else{
+        var _musicResult=Object.assign({type:'music'},await _musicApi.executeChatCommand(op,cfg,ictx)||{ok:false,reason:'Music 没有返回执行结果。'});
+        if(_musicResult.permissionGranted&&_musicResult.intentAccepted){
+          var _musicFeedback=String(_musicResult.response||_musicResult.summary||_musicResult.reason||'操作结果未提供。').slice(0,1200);
+          if(Array.isArray(_musicResult.matches)&&_musicResult.matches.length)_musicFeedback+='\n本地曲库匹配：'+_musicResult.matches.slice(0,8).map(function(item){return String(item.title||'')+(item.artist?' — '+String(item.artist):'')}).join('；');
+          _pushOpFeedback('Music 操作回执：'+_musicFeedback+'。只依据该回执向用户说明结果；不要声称访问了在线曲库或听到了音频。');
+        }
+        results.push(_musicResult);
+      }
+    }else if(op.type==='gen_image'||op.type==='edit_image'){
       var _giIsEdit=(op.type==='edit_image');
       var _giPrompt=(op.prompt||'').trim();
       if(op.truncated&&!_giPrompt){results.push({type:'gen_image',op:_giIsEdit?'edit':'generate',prompt:'',ok:false,reason:_giIsEdit?'输出被截断，编辑指令不完整':'输出被截断，提示词不完整'});continue}
@@ -620,9 +669,23 @@ function _buildWsOpCard(d){
   /* 指向默认文件夹的 <ws_project> 不出卡：并没有创建任何项目，文件只是照常落进默认文件夹「ICode」；
      真正创建/选定具名项目时才显示卡片（失败卡照常显示） */
   if(d.type==='project'&&d.ok!==false&&!d.malformed&&(d.isDefault||d.projId===WS_DEFAULT_PROJ_ID||_wsIsDefaultName(d.name)))return null;
+  if(d.type==='trip_note'){
+    var tripUnknown=d.executionKnown===false,tripFailed=d.ok===false;
+    var tripCard=document.createElement('div');tripCard.className='ib-map-trip-result'+((tripUnknown||tripFailed)?' fail':'');
+    var tripHead=document.createElement('div');tripHead.className='ib-map-trip-result-head';tripHead.textContent=tripUnknown?'Map 游记状态未确认':(tripFailed?'Map 游记没有保存':('Map 游记已归档 · '+String(d.trip&&d.trip.title||d.title||'旅行')));tripCard.appendChild(tripHead);
+    if(tripUnknown||tripFailed){var tripErr=document.createElement('div');tripErr.className='ib-map-trip-result-error';tripErr.textContent=String(d.reason||'没有收到 Map 执行回执；这条回复不能证明游记已保存。');tripCard.appendChild(tripErr)}
+    else if(d.trip&&window.IBMap&&typeof window.IBMap.tripCardElement==='function'){var postcard=window.IBMap.tripCardElement(d.trip);if(postcard)tripCard.appendChild(postcard)}
+    return tripCard;
+  }
+  if(d.type==='trip'||d.type==='traces'){
+    var mapUnknown=d.executionKnown===false,mapFailed=d.ok===false;
+    var mapOp=document.createElement('div');mapOp.className='ib-map-tool-result'+((mapUnknown||mapFailed)?' fail':'');
+    var mapLabel=document.createElement('strong');mapLabel.textContent=d.type==='trip'?(mapUnknown?'Map 旅行状态未确认':(mapFailed?'Map 旅行未能出发':'Map · 目的地资料已备好')):(mapUnknown?'Map 行迹查询状态未确认':(mapFailed?'Map 行迹查询未完成':'Map · 行迹查询'));mapOp.appendChild(mapLabel);
+    var mapDetail=document.createElement('span');mapDetail.textContent=String((mapUnknown||mapFailed)?(d.reason||'没有收到 Map 执行回执；不能把普通回复当作旅行或查询已完成。'):(d.detail||'正在继续整理结果。'));mapOp.appendChild(mapDetail);return mapOp;
+  }
   var card=document.createElement('div');card.className='ws-op-card';
   var ok=d.ok!==false&&!d.malformed;
-  var icons={project:WS_ICON.proj,create:WS_ICON.create,edit:WS_ICON.edit,read:WS_ICON.read,read_image:WS_ICON.image,run:WS_ICON.run,tool:WS_ICON.tool,gen_image:WS_ICON.image,make_docx:WS_ICON.create,make_pdf:WS_ICON.create,make_xlsx:WS_ICON.create};
+  var icons={project:WS_ICON.proj,create:WS_ICON.create,edit:WS_ICON.edit,read:WS_ICON.read,read_image:WS_ICON.image,run:WS_ICON.run,tool:WS_ICON.tool,gen_image:WS_ICON.image,mem_write:WS_ICON.mem,make_docx:WS_ICON.create,make_pdf:WS_ICON.create,make_xlsx:WS_ICON.create,music:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'};
   var label;
   if(d.type==='project')label=ok?(d.existed?'已选定项目':'已创建项目'):'项目操作失败';
   else if(d.type==='create')label=ok?(d.truncated?'已创建文件（可能不完整）':(d.renamedFrom?'已创建文件（重名自动改名）':'已创建文件')):'创建失败';
@@ -648,11 +711,13 @@ function _buildWsOpCard(d){
     else label=(d.op==='edit'?'图片编辑请求':'生图请求');
   }
   else if(d.type==='read_image')label=ok?'已读取图片（下一条消息注入）':'读取图片失败';
+  else if(d.type==='mem_write')label='记忆操作未执行';
+  else if(d.type==='music')label=d.executionKnown===false?'音乐操作结果未存档':(ok?(d.action==='search'?'本地曲库已搜索':d.action==='play'?'已播放本地音乐':d.action==='pause'?'已暂停音乐':d.action==='next'?'已切换到下一首':'已切换到上一首'):'音乐操作未完成');
   else label=ok?'已读取文件':'读取失败';
-  var detail=d.type==='project'?(d.name||''):d.type==='run'?(d.entry||'内联代码'):d.type==='tool'?(d.name||''):d.type==='gen_image'?String(d.prompt||'').slice(0,40)+(String(d.prompt||'').length>40?'…':''):(d.path||'');
+  var detail=d.type==='project'?(d.name||''):d.type==='run'?(d.entry||'内联代码'):d.type==='tool'?(d.name||''):d.type==='gen_image'?String(d.prompt||'').slice(0,40)+(String(d.prompt||'').length>40?'…':''):d.type==='music'?(d.query||({search:'搜索本地曲库',play:'播放当前曲目',pause:'暂停',next:'下一首',prev:'上一首'}[d.action]||'音乐操作')):(d.path||'');
   var size=d.size!==undefined?d.size:(d.type!=='run'&&d.content!==undefined?new Blob([d.content]).size:undefined);
   var sizeStr=(d.type==='create'||d.type==='read'||d.type.slice(0,5)==='make_')&&ok&&size!==undefined?' ('+_fmtFileSize(size)+')':'';
-  var expandable=(d.type==='create'&&d.content!==undefined)||(d.type==='edit'&&d.find!==undefined)||(d.type==='run'&&(d.code||d.output!==undefined||d.errText||(d.images&&d.images.length)))||(d.type==='tool'&&(d.args||d.response!==undefined||d.pendingConfirm||(d.images&&d.images.length)))||(d.type==='gen_image'&&(d.dataUrl||d.prompt));
+  var expandable=(d.type==='create'&&d.content!==undefined)||(d.type==='edit'&&d.find!==undefined)||(d.type==='run'&&(d.code||d.output!==undefined||d.errText||(d.images&&d.images.length)))||(d.type==='tool'&&(d.args||d.response!==undefined||d.pendingConfirm||(d.images&&d.images.length)))||(d.type==='gen_image'&&(d.dataUrl||d.prompt))||(d.type==='music'&&Array.isArray(d.matches)&&d.matches.length>0);
   if(!ok)card.classList.add('fail');
   if(expandable)card.classList.add('expandable');
   var html=(icons[d.type]||'')
@@ -707,6 +772,9 @@ function _buildWsOpCard(d){
         _gMeta.textContent='模型: '+(d.model||'?')+(d.path?' · 已存入 ICode: '+d.path:'');
         det.appendChild(_gMeta);
       }
+    }else if(d.type==='music'){
+      det.textContent=String(d.summary||d.reason||'');
+      if(Array.isArray(d.matches)&&d.matches.length){var _ml=document.createElement('ul');_ml.className='music-result-list';d.matches.slice(0,8).forEach(function(item){var _mi=document.createElement('li');_mi.textContent=String(item.title||'')+(item.artist?' — '+String(item.artist):'');_ml.appendChild(_mi)});det.appendChild(_ml)}
     }else{
       det.textContent='- '+(d.find||'').slice(0,300)+((d.find||'').length>300?'…':'')+'\n+ '+(d.replace||'').slice(0,300)+((d.replace||'').length>300?'…':'');
     }
@@ -717,7 +785,7 @@ function _buildWsOpCard(d){
       dl.onclick=function(ev){ev.stopPropagation();_downloadTextFile(d.path,d.content)};
       acts.appendChild(dl);
     }
-    if(d.type!=='tool'&&!(d.type==='gen_image'&&!d.path)){/* 工具调用与工作区文件无关，不出"打开 ICode"入口；生图未归档成功时同样不出 */
+    if(d.type!=='tool'&&d.type!=='music'&&!(d.type==='gen_image'&&!d.path)){/* 工具调用与工作区文件无关，不出"打开 ICode"入口；生图未归档成功时同样不出 */
       var go=document.createElement('button');go.className='ws-file-btn';go.textContent='打开 ICode';
       go.onclick=function(ev){ev.stopPropagation();openWorkspace();var pj=d.projId||_wsActiveProject;if(pj)renderWsFiles(pj)};
       acts.appendChild(go);
@@ -859,9 +927,9 @@ function _wsMakeStreamWriters(refs){
    避免整屏原始代码炸进气泡；最终以完整回复为准重新渲染 ── */
 /* 顺序敏感：更长的标签必须排在它的前缀标签之前（<ws_edit_image 在 <ws_edit 之前），
    否则流式拦截器会把它误判成前缀标签 */
-var _WS_STREAM_STARTS=['<ws_project','<ws_create','<ws_edit_image','<ws_edit','<ws_read','<ws_read_image','<ws_run','<ws_tool','<ws_gen_image','<ws_make_docx','<ws_make_pdf','<ws_make_xlsx','```file:'];
+var _WS_STREAM_STARTS=['<ws_project','<ws_create','<ws_edit_image','<ws_edit','<ws_read','<ws_read_image','<ws_run','<ws_tool','<ws_gen_image','<ws_mem_write','<ws_make_docx','<ws_make_pdf','<ws_make_xlsx','```file:'];
 function _wsMakeStreamFilter(writers){
-  var buf='',mode=0,closer='',pend=[],pendPath='',pendKind='',contentLen=0,liveTail='',pendTimer=null;
+  var buf='',mode=0,closer='',pend=[],pendPath='',pendKind='',contentLen=0,liveTail='',pendTimer=null,suppressAfterMemoryWrite=false;
   var _LIVE_CAP=4000;/* 直播详情只保留末尾 4000 字，防超长文件拖垮 DOM */
   var _liveMd=_mkLiveMdCleaner();/* 直播期 Markdown 净化；收尾重渲染以 _mdSoften 为最终口径 */
   var _liveMode=_mdMode();
@@ -876,8 +944,8 @@ function _wsMakeStreamFilter(writers){
   }
   function beginPending(kind,pathOrName){
     pendKind=kind;pendPath=pathOrName;contentLen=0;liveTail='';
-    var lbl=kind==='edit'?'正在编辑文件':kind==='run'?'正在编写脚本':kind==='tool'?'正在调用工具':kind==='gen_image'?'正在提交生图请求':kind==='edit_image'?'正在提交图片编辑请求':kind==='make_docx'?'正在生成 Word 文档':kind==='make_pdf'?'正在生成 PDF':kind==='make_xlsx'?'正在生成 Excel 表格':'正在创建文件';
-    var ic=kind==='edit'?WS_ICON.edit:kind==='run'?WS_ICON.run:kind==='tool'?WS_ICON.tool:(kind==='gen_image'||kind==='edit_image')?WS_ICON.image:WS_ICON.create;
+    var lbl=kind==='mem_write'?'正在识别记忆操作':kind==='edit'?'正在编辑文件':kind==='run'?'正在编写脚本':kind==='tool'?'正在调用工具':kind==='gen_image'?'正在提交生图请求':kind==='edit_image'?'正在提交图片编辑请求':kind==='make_docx'?'正在生成 Word 文档':kind==='make_pdf'?'正在生成 PDF':kind==='make_xlsx'?'正在生成 Excel 表格':'正在创建文件';
+    var ic=kind==='mem_write'?WS_ICON.mem:kind==='edit'?WS_ICON.edit:kind==='run'?WS_ICON.run:kind==='tool'?WS_ICON.tool:(kind==='gen_image'||kind==='edit_image')?WS_ICON.image:WS_ICON.create;
     pend=writers.map(function(w){
       return w.card(function(){
         /* 直播中的操作卡即刻可展开：点开就能看到正在写入的内容（工作过程） */
@@ -903,6 +971,7 @@ function _wsMakeStreamFilter(writers){
   function growPending(chunk){
     if(!chunk)return;
     contentLen+=chunk.length;
+    if(pendKind==='mem_write')return;/* Memory JSON 只交给 Host 解析，不进直播卡详情 */
     liveTail+=chunk;
     if(liveTail.length>_LIVE_CAP)liveTail=liveTail.slice(liveTail.length-_LIVE_CAP);
     var s=' ('+_fmtFileSize(contentLen)+'…)';
@@ -915,7 +984,7 @@ function _wsMakeStreamFilter(writers){
   }
   function endPending(){
     if(pendTimer){clearInterval(pendTimer);pendTimer=null}
-    var lbl=pendKind==='edit'?'已编辑文件':pendKind==='run'?'脚本已提交':pendKind==='tool'?'已提交调用':pendKind==='gen_image'?'已提交生图请求':pendKind.slice(0,5)==='make_'?'已提交生成':'已创建文件';
+    var lbl=pendKind==='mem_write'?'已识别记忆操作':pendKind==='edit'?'已编辑文件':pendKind==='run'?'脚本已提交':pendKind==='tool'?'已提交调用':pendKind==='gen_image'?'已提交生图请求':pendKind.slice(0,5)==='make_'?'已提交生成':'已创建文件';
     pend.forEach(function(c){
       c.classList.remove('pending');
       if(pendKind==='gen_image')c.dataset.giWait='1';/* 标记：生图请求已提交，执行阶段（真正调用生图接口）由 _execWsOps 接管读秒 */
@@ -936,6 +1005,7 @@ function _wsMakeStreamFilter(writers){
     })});
   }
   function scanText(){
+    if(suppressAfterMemoryWrite){buf='';return}
     for(;;){
       var low=buf.toLowerCase();
       var idx=-1,which=-1;
@@ -989,6 +1059,10 @@ function _wsMakeStreamFilter(writers){
         beginPending('edit_image',_eiv);closer='</ws_edit_image>';mode=1;
         return scanIn();
       }
+      if(st==='<ws_mem_write'){
+        beginPending('mem_write','canonical Memory');closer='</ws_mem_write>';mode=1;
+        return scanIn();
+      }
       if(st.slice(0,9)==='<ws_make_'){/* 生成指令：源内容（Markdown/HTML/CSV）收进直播卡，避免整段原文炸进气泡 */
         var mkKind=st.slice(4);
         beginPending(mkKind,val||(st.slice(9).toUpperCase()+' 文件'));
@@ -1009,14 +1083,16 @@ function _wsMakeStreamFilter(writers){
       return;
     }
     growPending(buf.slice(0,idx));
+    var completedKind=pendKind;
     endPending();
     buf=buf.slice(idx+closer.length);
     mode=0;
+    if(completedKind==='mem_write'){suppressAfterMemoryWrite=true;buf='';return}
     return scanText();
   }
   return{
-    push:function(ch){buf+=ch;if(mode===0)scanText();else scanIn()},
-    finish:function(){if(pendTimer){clearInterval(pendTimer);pendTimer=null}if(mode===0)flushText(buf);buf='';var _rest=_liveMd.finish();if(_rest)writers.forEach(function(w){w.text(_rest)})},
+    push:function(ch){if(suppressAfterMemoryWrite)return;buf+=ch;if(mode===0)scanText();else scanIn()},
+    finish:function(){if(pendTimer){clearInterval(pendTimer);pendTimer=null}if(!suppressAfterMemoryWrite&&mode===0)flushText(buf);buf='';if(!suppressAfterMemoryWrite){var _rest=_liveMd.finish();if(_rest)writers.forEach(function(w){w.text(_rest)})}},
     card:function(build){var els=[];writers.forEach(function(w){els.push(w.card(build))});return els}
   };
 }

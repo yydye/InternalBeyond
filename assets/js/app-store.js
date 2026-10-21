@@ -28,14 +28,28 @@
     if(!draft)return false;
     var id=core.appIdForDraft(draft.draftRef);if(!id||!ID_RE.test(id))return false;
     _defs[id]={id:id,name:draft.name,version:'1.'+String(draft.version||0),sdk:2,
-      mount:function(body,ctx){
+      mount:async function(body,ctx){
         var frame=document.createElement('iframe');frame.className='ib-generated-app-frame';
         frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');
-        frame.title=draft.name;frame.srcdoc=core.buildSrcdoc(draft);body.appendChild(frame);
+        frame.title=draft.name;
+        var status=document.createElement('div');status.className='ib-generated-app-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+        status.textContent='正在启动隔离应用…';
+        var active={frame:frame,status:status,previewId:'',receive:null,readyTimer:0};
         function receive(event){
-          if(event.source!==frame.contentWindow||event.origin!=='null'||!event.data||event.data.type!=='ib-generated-app-storage-request')return;
-          var data=event.data,key=String(data.key||''),action=String(data.action||''),value;
-          var response={type:'ib-generated-app-storage-response',requestId:String(data.requestId||''),ok:false};
+          if(event.source!==frame.contentWindow||event.origin!=='null'||!event.data)return;
+          var data=event.data;
+          if(data.type==='ib-generated-app-ready'&&data.draftRef===draft.draftRef){
+            if(active.readyTimer)clearTimeout(active.readyTimer);active.readyTimer=0;
+            status.hidden=true;return;
+          }
+          if(data.type==='ib-generated-app-runtime-error'&&data.draftRef===draft.draftRef){
+            if(active.readyTimer)clearTimeout(active.readyTimer);active.readyTimer=0;
+            status.hidden=false;status.textContent='生成应用脚本发生错误，请返回后重试。';return;
+          }
+          if(data.type!=='ib-generated-app-storage-request'||typeof data.requestId!=='string'
+            ||!/^[A-Za-z0-9-]{1,100}$/.test(data.requestId))return;
+          var key=String(data.key||''),action=String(data.action||''),value;
+          var response={type:'ib-generated-app-storage-response',requestId:data.requestId,ok:false};
           if(!/^[A-Za-z0-9_.:-]{1,64}$/.test(key)||!['get','set','remove'].includes(action)){
             response.error='storage-scope-denied';
           }else if(action==='get'){
@@ -48,10 +62,46 @@
           }
           try{frame.contentWindow.postMessage(response,'*')}catch(e){}
         }
+        active.receive=receive;defState[id]=active;
         window.addEventListener('message',receive);
-        defState[id]={frame:frame,receive:receive};
+        body.appendChild(status);body.appendChild(frame);
+        try{
+          if(!core||typeof core.publishSandboxedPreview!=='function')throw new Error('preview-host-unavailable');
+          if(typeof core.canUseLocalSrcdocPreview==='function'&&core.canUseLocalSrcdocPreview()){
+            var localPreview=core.buildSrcdoc(draft);
+            if(!localPreview)throw new Error('preview-draft-invalid');
+            frame.srcdoc=localPreview;
+            active.readyTimer=setTimeout(function(){
+              if(defState[id]===active&&!status.hidden)status.textContent='生成应用未能启动，请返回后重试。';
+            },8000);
+            return;
+          }
+          var published=await core.publishSandboxedPreview(draft);
+          if(defState[id]!==active||!frame.isConnected){
+            if(typeof core.revokeSandboxedPreview==='function')void core.revokeSandboxedPreview(published.id);
+            return;
+          }
+          active.previewId=published.id;
+          frame.src=published.url;
+          active.readyTimer=setTimeout(function(){
+            if(defState[id]===active&&!status.hidden)status.textContent='生成应用未能启动，请检查本地预览服务后重试。';
+          },8000);
+        }catch(e){
+          status.hidden=false;status.textContent='隔离应用预览暂不可用，请返回后重试。';
+        }
       },
-      unmount:function(){var active=defState[id];if(active){window.removeEventListener('message',active.receive);delete defState[id];}}
+      unmount:function(){
+        var active=defState[id];
+        if(active){
+          if(active.readyTimer)clearTimeout(active.readyTimer);
+          window.removeEventListener('message',active.receive);
+          try{active.frame.remove()}catch(e){}
+          delete defState[id];
+          if(active.previewId&&window.IBAppBuilderCore&&typeof window.IBAppBuilderCore.revokeSandboxedPreview==='function'){
+            void window.IBAppBuilderCore.revokeSandboxedPreview(active.previewId);
+          }
+        }
+      }
     };
     var existing=(_catalog||[]).filter(function(entry){return entry&&entry.id!==id;});
     existing.push({id:id,name:draft.name,desc:'DSH 生成的本地 APP · v'+String(draft.version||0),icon:'',file:'generated',generated:true,builtin:false,draftRef:draft.draftRef});

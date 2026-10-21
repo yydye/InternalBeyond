@@ -18,7 +18,7 @@
      only the ten primary places. The narrow sidebar (<769px) keeps the full grouped
      inventory; routes not listed here keep their pages, hashes and programmatic access. */
   const DESKTOP_ROUTE_ORDER = Object.freeze([
-    'settings', 'about', 'blog', 'moments', 'game', 'chat', 'letters', 'memory', 'api', 'diy'
+    'settings', 'about', 'blog', 'map', 'moments', 'game', 'chat', 'letters', 'memory', 'api', 'diy'
   ]);
 
   function storedCollapsed(storage) {

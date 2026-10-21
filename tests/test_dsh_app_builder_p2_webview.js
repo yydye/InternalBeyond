@@ -82,9 +82,12 @@ async function main() {
       || serviceIdentity.mode !== 'synthetic' || !process.env.LOCALAPPDATA) {
       throw new Error('refusing to start or connect outside the Synthetic Fake Provider route');
     }
-    const sandboxRoot = path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+    const projectRoot = path.resolve(__dirname, '..');
+    const sandboxRoot = process.env.IB_DEV_SANDBOX_ROOT || path.join(projectRoot, '.dev-data', 'synthetic', 'dev-sandbox');
     const fakeEnvironment = {
-      IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DEV_SANDBOX_ROOT: sandboxRoot,
+      LOCALAPPDATA: path.join(sandboxRoot, 'local-app-data'), APPDATA: path.join(sandboxRoot, 'roaming-app-data'),
+      TEMP: path.join(sandboxRoot, 'temp'), TMP: path.join(sandboxRoot, 'temp'), IB_LOG_DIR: path.join(sandboxRoot, 'logs'),
+      IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DEV_PROJECT_ROOT: projectRoot, IB_DEV_SANDBOX_ROOT: sandboxRoot,
       IB_DEV_INSTANCE_ID: serviceIdentity.instanceId, IB_DEV_SESSION_TOKEN: serviceIdentity.sessionToken,
       IB_WEB_PORT: new URL(serviceIdentity.webOrigin).port,
       IB_BRIDGE_PORT: '23135', IB_ACTIVE_PORT: '23134', IB_RESTART_PORT: '23136',
@@ -788,7 +791,7 @@ async function main() {
       'the ZIP contains source files from the selected immutable version');
     assert.match(sourceZip['README.md'], new RegExp('已提交草稿版本：v' + firstArtifact.version));
     assert.match(sourceZip['standalone.html'], /standalone-app-storage-request/);
-    assert.doesNotMatch(sourceZip['standalone.html'], /ib-generated-app-storage-request|Home Node|__TAURI__|fetch\(/);
+    assert.doesNotMatch(sourceZip['standalone.html'], /ib-generated-app-storage-request|Home Node|window\.__TAURI__(?:_INTERNALS__)?|fetch\(/);
 
     await sourceVersionSelect.selectOption(String(secondArtifact.version));
     const [webDownload] = await Promise.all([
@@ -799,7 +802,7 @@ async function main() {
     await panel.locator('[data-app-export-status="true"]').filter({ hasText: '已开始下载' }).waitFor();
     const webAppHtml = await fs.promises.readFile(webAppPath, 'utf8');
     assert.match(webAppHtml, /standalone-app-storage-request/);
-    assert.doesNotMatch(webAppHtml, /ib-generated-app-storage-request|Home Node|__TAURI__|fetch\(/);
+    assert.doesNotMatch(webAppHtml, /ib-generated-app-storage-request|Home Node|window\.__TAURI__(?:_INTERNALS__)?|fetch\(/);
     const stateAfterExport = await page.evaluate(async input => {
       const link = await IB.homeNode.workRuns.getDshSession(input.sessionId);
       const draft = await IB.homeNode.workRuns.getAppDraft(link.run.appDraftRef, link.run.projectRef, link.run.runId);
@@ -832,18 +835,84 @@ async function main() {
     await page.locator('#appstore-grid').locator('[data-open="' + appId + '"]').click();
     const installedFrame = page.locator('#ib-app-overlay iframe.ib-generated-app-frame');
     await installedFrame.waitFor();
+    const installedFrameBoundary = await installedFrame.evaluate(frame => ({
+      src: frame.src,
+      srcdoc: frame.srcdoc,
+      sandbox: frame.getAttribute('sandbox'),
+      referrerPolicy: frame.getAttribute('referrerpolicy')
+    }));
+    assert.match(installedFrameBoundary.src, /\/__ib-generated-app\/[0-9a-f-]{36}$/i,
+      'App Store generated content is served as a separate HTTP document');
+    assert.equal(installedFrameBoundary.srcdoc, '', 'the Tauri page no longer places generated scripts in inherited srcdoc');
+    assert.equal(installedFrameBoundary.sandbox, 'allow-scripts', 'the frame cannot acquire same-origin or navigation capabilities');
+    assert.equal(installedFrameBoundary.referrerPolicy, 'no-referrer');
     let installedApp = page.frameLocator('#ib-app-overlay iframe.ib-generated-app-frame');
     await installedApp.locator('#todo-list li').filter({ hasText: '买牛奶' }).waitFor();
+    const generatedFrame = page.frames().find(frame => frame.url().includes('/__ib-generated-app/'));
+    assert.ok(generatedFrame, 'the generated app has a distinct frame document');
+    const generatedBoundary = await generatedFrame.evaluate(() => {
+      let parentDom = 'blocked';
+      try { void parent.document.documentElement; parentDom = 'readable'; } catch (_) {}
+      return {
+        origin: self.origin,
+        parentDom: parentDom,
+        tauri: typeof window.__TAURI__,
+        tauriInternals: typeof window.__TAURI_INTERNALS__,
+        storage: typeof window.AppStorage
+      };
+    });
+    assert.deepEqual(generatedBoundary, {
+      origin: 'null', parentDom: 'blocked', tauri: 'undefined', tauriInternals: 'undefined', storage: 'object'
+    }, 'the sandbox can run its app and use only its scoped storage adapter');
+    assert.equal(await page.evaluate(() => typeof window.__TAURI__?.core?.invoke), 'function',
+      'the trusted main WebView retains required Tauri IPC');
+    await installedApp.getByLabel('新待办').fill('安装后保留');
+    await installedApp.getByRole('button', { name: '添加' }).click();
+    await installedApp.locator('#todo-list li').filter({ hasText: '安装后保留' }).waitFor();
+    await generatedFrame.goto(installedFrameBoundary.src, { waitUntil: 'domcontentloaded' });
+    installedApp = page.frameLocator('#ib-app-overlay iframe.ib-generated-app-frame');
+    await installedApp.locator('#todo-list li').filter({ hasText: '安装后保留' }).waitFor();
+    const activePreviewUrl = installedFrameBoundary.src;
     await page.evaluate(() => location.reload());
     await page.waitForFunction(() => window.__IB_DEV_SYNTHETIC__ === true && !!window.IB?.apps, null, { timeout: 30000 });
+    const exitedPreviewStatus = await page.evaluate(async url => (await fetch(url, { cache: 'no-store' })).status, activePreviewUrl);
+    assert.equal(exitedPreviewStatus, 404, 'page exit releases the in-memory preview document');
     await page.waitForFunction(input => IB.apps.isGeneratedInstalled(input.draftRef), { draftRef: firstArtifact.draftRef }, { timeout: 20000 });
     const restoredAppId = await page.evaluate(draftRef => IB.apps.generatedAppId(draftRef), firstArtifact.draftRef);
     await page.locator('#appstore-grid').locator('[data-open="' + restoredAppId + '"]').waitFor();
     await page.locator('#appstore-grid').locator('[data-open="' + restoredAppId + '"]').click();
     installedApp = page.frameLocator('#ib-app-overlay iframe.ib-generated-app-frame');
     await installedApp.locator('#todo-list li').filter({ hasText: '买牛奶' }).waitFor();
+    await installedApp.locator('#todo-list li').filter({ hasText: '安装后保留' }).waitFor();
     evidence.install = await page.evaluate(input => ({ appId: IB.apps.generatedAppId(input.draftRef),
       installed: IB.apps.isGeneratedInstalled(input.draftRef), page: window.currentPage || location.hash }), { draftRef: firstArtifact.draftRef });
+
+    const errorApp = await page.evaluate(() => {
+      const draftRef = 'ad_' + crypto.randomUUID();
+      const result = IB.apps.installGeneratedApp({
+        draftRef: draftRef, projectRef: 'dsh_synthetic_workspace', name: 'Runtime error probe', version: 1,
+        files: {
+          'index.html': '<!doctype html><html><head><title>Error probe</title></head><body><main>probe</main></body></html>',
+          'styles.css': 'main{color:#123}',
+          'app.js': 'function {'
+        }
+      }, { confirmed: true });
+      if (!result || result.ok !== true) throw new Error('synthetic runtime-error probe could not be installed');
+      return { appId: result.appId };
+    });
+    await page.evaluate(appIdValue => IB.apps.open(appIdValue), errorApp.appId);
+    const runtimeErrorStatus = page.locator('#ib-app-overlay .ib-generated-app-status');
+    await runtimeErrorStatus.filter({ hasText: '生成应用脚本发生错误' }).waitFor();
+    const errorPreviewUrl = await page.locator('#ib-app-overlay iframe.ib-generated-app-frame').getAttribute('src');
+    await page.evaluate(() => IB.apps.close());
+    await page.waitForFunction(async url => (await fetch(url, { cache: 'no-store' })).status === 404, errorPreviewUrl);
+    await page.evaluate(appIdValue => {
+      IB.apps.uninstall(appIdValue);
+      const stored = JSON.parse(localStorage.getItem('ib_generated_apps_v1') || '{}');
+      delete stored[appIdValue];
+      localStorage.setItem('ib_generated_apps_v1', JSON.stringify(stored));
+    }, errorApp.appId);
+    evidence.sandboxRuntimeError = { reported: true, previewReleased: true, syntheticFixtureRemoved: true };
 
     await page.evaluate(() => { if (IB.apps.isOpen()) IB.apps.close(); navTo('work-mode'); });
     await page.locator('#wm-use-dsh').click();

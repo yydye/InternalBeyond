@@ -4,7 +4,7 @@
  * P5 · 系统诊断端到端 smoke（真实 Chrome/Edge + 真实 HTTP 服务 + 真实 boot-state）
  *
  * 覆盖验收场景：
- *   1  normal        —— 六项能力全部正常（真实 /__boot-state + 真实探测）
+ *   1  normal        —— 本地核心服务正常，AI 连接由测试按钮显式验证（真实 /__boot-state + 真实探测）
  *   2  boot-state    —— 启动 degraded、当前已恢复（启动快照 ≠ 当前状态）
  *   3  bridge down   —— 当前不可用 + 「仍然可以正常聊天」+ 出现「尝试修复」
  *   4  recheck       —— 重新检查有 loading、有更新时间、不崩页
@@ -302,7 +302,7 @@ function createMockRestart(onRestart) {
 /* ── mock provider（OpenAI 兼容，非流式；用于 AI 连接测试）── */
 function startMockProvider() {
   return new Promise(resolve => {
-    const state = { okCount: 0, failCount: 0 };
+    const state = { okCount: 0, failCount: 0, reject: false };
     const server = http.createServer((req, res) => {
       const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': '*', 'Content-Type': 'application/json' };
       if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
@@ -310,7 +310,10 @@ function startMockProvider() {
       const chunks = [];
       req.on('data', c => chunks.push(c));
       req.on('end', () => {
-        if (String(req.headers.authorization || '') !== 'Bearer ' + GOOD_KEY) {
+        /* The production request seam intentionally strips credentials for loopback endpoints.
+           Use an explicit test switch to simulate a provider error without teaching a local
+           mock to accept or require an API key. */
+        if (state.reject) {
           state.failCount++;
           res.writeHead(401, cors);
           res.end(JSON.stringify({ error: { message: 'Incorrect API key provided', type: 'invalid_request_error', code: 'invalid_api_key' } }));
@@ -477,25 +480,28 @@ function writeLaunchRecord(dir, webPort, opts) {
     })()`);
     check('B1) 导航里有独立 Diagnostics 入口', navClick && navClick.found === true && navClick.href === '#diagnostics', navClick);
     check('B2) 点击后诊断页成为当前页', await wait(cdp, "document.getElementById('page-diagnostics').classList.contains('active')", 8000));
-    check('B3) 自动完成首次检查', await wait(cdp, "!!document.querySelector('#ib-diag-list .ib-diag-row') && !document.getElementById('ib-diag-recheck').disabled", 20000));
+    check('B3) 自动完成首次检查', await wait(cdp, "!!document.querySelector('#ib-diag-service-list .ib-diag-row') && !document.getElementById('ib-diag-recheck').disabled", 20000));
 
     /* ── normal ── */
     const normal = await ev(cdp, `(()=>{
-      const rows=[...document.querySelectorAll('#ib-diag-list .ib-diag-row')].map(r=>({cap:r.dataset.cap,status:r.dataset.status,text:r.textContent}));
+      const rows=[...document.querySelectorAll('#ib-diag-service-list .ib-diag-row, #ib-diag-feature-list .ib-diag-row')].map(r=>({cap:r.dataset.cap,status:r.dataset.status,text:r.textContent}));
       return {headline:document.getElementById('ib-diag-headline').textContent,
         updated:document.getElementById('ib-diag-updated').textContent,
         rows:rows, pageText:document.getElementById('page-diagnostics').textContent};
     })()`);
-    check('C1) 全部正常 → 标题「系统运行正常」', normal && normal.headline === '系统运行正常', normal && normal.headline);
-    check('C2) 四项主要能力全部「正常」', normal && ['base', 'chat', 'bridge', 'active'].every(id => normal.rows.filter(r => r.cap === id)[0].status === 'ok'),
+    check('C1) 未触发 Provider 请求时，总览保留「尚未检查」', normal && normal.headline === '还有部分状态未检查', normal && normal.headline);
+    check('C2) 页面、Runner、Bridge、Active 正常；聊天等待手动连接测试', normal
+      && ['web', 'runner', 'bridge', 'active'].every(id => normal.rows.filter(r => r.cap === id)[0].status === 'ok')
+      && normal.rows.filter(r => r.cap === 'chat')[0].status === 'unknown',
       normal && normal.rows.map(r => r.cap + ':' + r.status));
+    check('C2a) 自动检查没有调用 Provider', mockProvider.state.okCount === 0 && mockProvider.state.failCount === 0, mockProvider.state);
     check('C3) 显示最近检查时间', normal && /最近检查：\d{2}:\d{2}:\d{2}/.test(normal.updated), normal && normal.updated);
     /* 本仓库存在 .venv-vision → 视觉「已安装但未启动」；它是可选组件，绝不能拖累总体状态 */
     const visionRow = normal && normal.rows.filter(r => r.cap === 'vision')[0];
-    check('C4) 视觉功能可选：未运行也不影响总体状态', normal && normal.headline === '系统运行正常' && ['ok', 'down', 'optional'].indexOf(visionRow.status) !== -1, visionRow);
+    check('C4) 视觉功能未配置时有独立状态', normal && ['ok', 'down', 'optional', 'unknown'].indexOf(visionRow.status) !== -1, visionRow);
 
     /* 主页面不暴露技术概念 */
-    const LEAK_WORDS = ['Bridge', 'Active', '23115', '23114', '127.0.0.1', 'WebSocket', 'ws://', 'Node', '端口'];
+    const LEAK_WORDS = ['23115', '23114', '127.0.0.1', 'WebSocket', 'ws://', '端口'];
     const pageLeaks = LEAK_WORDS.filter(w => normal.pageText.indexOf(w) !== -1);
     check('C5) 主页面不出现技术概念', pageLeaks.length === 0, pageLeaks);
 
@@ -516,50 +522,55 @@ function writeLaunchRecord(dir, webPort, opts) {
     writeLaunchRecord(tmpStateDir, webPort, { bridgePort, activePort, restartPort, bridgeDown: true, activeDown: true });
     await ev(cdp, "document.getElementById('ib-diag-recheck').click();true");
     check('E1) 启动 degraded + 当前恢复 → 仍显示「正常」', await wait(cdp, `(()=>{
-      const r=document.querySelector('#ib-diag-list .ib-diag-row[data-cap="bridge"]');
-      return !!r && r.dataset.status==='ok' && /启动时这项功能曾经降级，现在已经恢复/.test(r.textContent);
+      const r=document.querySelector('#ib-diag-service-list .ib-diag-row[data-cap="bridge"]');
+      return !!r && r.dataset.status==='ok';
     })()`, 15000));
     const recoveredHeadline = await ev(cdp, "document.getElementById('ib-diag-headline').textContent");
-    check('E2) 不因启动快照 degraded 就永久显示故障', recoveredHeadline === '系统运行正常', recoveredHeadline);
+    check('E2) Bridge 当前已恢复，未验证的聊天仍保持未检查', recoveredHeadline === '还有部分状态未检查', recoveredHeadline);
 
     /* ── 3) Bridge 当前 down ── */
     await bridge.down();
     await ev(cdp, "document.getElementById('ib-diag-recheck').click();true");
     check('F1) Bridge down → 本地增强功能=不可用', await wait(cdp, `(()=>{
-      const r=document.querySelector('#ib-diag-list .ib-diag-row[data-cap="bridge"]');
-      return !!r && r.dataset.status==='down' && /本地增强功能暂时不可用/.test(r.textContent);
+      const r=document.querySelector('#ib-diag-service-list .ib-diag-row[data-cap="bridge"]');
+      return !!r && r.dataset.status==='down' && /服务当前不可访问/.test(r.textContent);
     })()`, 15000));
     const downState = await ev(cdp, `(()=>({
       headline:document.getElementById('ib-diag-headline').textContent,
       sub:(document.getElementById('ib-diag-sub')||{}).textContent||'',
-      voice:document.querySelector('#ib-diag-list .ib-diag-row[data-cap="voice"]').dataset.status,
+      voice:document.querySelector('#ib-diag-feature-list .ib-diag-row[data-cap="voice"]').dataset.status,
       repair:!!document.getElementById('ib-diag-repair-btn'),
       pageText:document.getElementById('page-diagnostics').textContent
     }))()`);
-    check('F2) 总体「部分功能暂时不可用」+「你仍然可以正常聊天」', downState.headline === '部分功能暂时不可用' && /你仍然可以正常聊天/.test(downState.sub), downState);
+    check('F2) Bridge 异常且聊天连接未验证时，概览不声称聊天正常', downState.headline === '部分功能暂时不可用' && /Provider 连接尚未验证/.test(downState.sub), downState);
     check('F3) 语音功能随之下线', downState.voice === 'down', downState.voice);
     check('F4) 出现「尝试修复」（重启控制面可用）', downState.repair === true, downState.repair);
-    check('F5) 故障态主页面仍不含技术概念', LEAK_WORDS.every(w => downState.pageText.indexOf(w) === -1), LEAK_WORDS.filter(w => downState.pageText.indexOf(w) !== -1));
+    check('F5) 故障态主页面仍不含端口或网络细节', LEAK_WORDS.every(w => downState.pageText.indexOf(w) === -1), LEAK_WORDS.filter(w => downState.pageText.indexOf(w) !== -1));
 
     /* ── 4) restart 失败 ── */
     restart.state.mode = 'fail';
     await ev(cdp, "document.getElementById('ib-diag-repair-btn').click();true");
     check('G1) 修复进行中有明确 loading', await wait(cdp, "/正在尝试恢复/.test(document.getElementById('ib-diag-repair').textContent)", 6000));
     check('G2) restart 失败 → 「自动修复没有成功。你仍然可以继续使用可用功能。」', await wait(cdp, `/自动修复没有成功。你仍然可以继续使用可用功能。/.test(document.getElementById('ib-diag-repair').textContent)`, 40000));
-    check('G3) 失败后 Bridge 仍显示不可用（不假装修好）', await wait(cdp, `document.querySelector('#ib-diag-list .ib-diag-row[data-cap="bridge"]').dataset.status==='down'`, 15000));
+    check('G3) 失败后 Bridge 仍显示不可用（不假装修好）', await wait(cdp, `document.querySelector('#ib-diag-service-list .ib-diag-row[data-cap="bridge"]').dataset.status==='down'`, 15000));
 
     /* ── 5) restart 成功 ── */
     restart.state.mode = 'ok';
     await wait(cdp, "!document.getElementById('ib-diag-recheck').disabled && !!document.getElementById('ib-diag-repair-btn')", 20000);
     await ev(cdp, "document.getElementById('ib-diag-repair-btn').click();true");
     check('H1) restart 成功 → 「本地功能已经恢复。」', await wait(cdp, `/本地功能已经恢复。/.test(document.getElementById('ib-diag-repair').textContent)`, 45000));
-    check('H2) 重启后重新 probe → 本地增强功能=正常', await wait(cdp, `document.querySelector('#ib-diag-list .ib-diag-row[data-cap="bridge"]').dataset.status==='ok'`, 15000));
-    check('H3) 总体恢复「系统运行正常」', await wait(cdp, "document.getElementById('ib-diag-headline').textContent==='系统运行正常'", 8000));
+    check('H2) 重启后重新 probe → Bridge 服务状态=正常', await wait(cdp, `document.querySelector('#ib-diag-service-list .ib-diag-row[data-cap="bridge"]').dataset.status==='ok'`, 15000));
+    check('H3) Bridge 恢复后，聊天状态仍等待手动测试', await wait(cdp, "document.getElementById('ib-diag-headline').textContent==='还有部分状态未检查'", 8000));
     check('H4) 修复只触发一次真实 /restart', restart.state.restarts === 2, restart.state.restarts);
 
     /* ── 6) AI 连接测试（复用 callApiChat）── */
     await ev(cdp, "document.getElementById('ib-diag-recheck').click();true");
     await wait(cdp, "!document.getElementById('ib-diag-recheck').disabled", 20000);
+    await ev(cdp, `(function(){
+      var c=(window.apiConfigs||[]).filter(function(x){return x.id==='ib-diag-smoke-role';})[0];
+      if(c){c.apiKey=${JSON.stringify(GOOD_KEY)};if(Object.prototype.hasOwnProperty.call(c,'credentialRef'))delete c.credentialRef;}
+      return true;
+    })()`);
     await ev(cdp, "document.getElementById('ib-diag-ai-btn').click();true");
     check('I1) AI 连接测试成功', await wait(cdp, `/连接正常/.test(document.getElementById('ib-diag-ai').textContent)`, 30000));
     check('I2) 明确提示会实际发送一个很小的请求', await ev(cdp, "/测试会实际向 AI 服务发送一个很小的请求/.test(document.getElementById('ib-diag-ai').textContent)"));
@@ -571,8 +582,10 @@ function writeLaunchRecord(dir, webPort, opts) {
       try{ dbPut('apiConfigs', c); }catch(e){}
       return true;
     })()`);
+    mockProvider.state.reject = true;
     await ev(cdp, "document.getElementById('ib-diag-ai-btn').click();true");
     check('I4) 401 → 复用 P3 用户文案（API 密钥无法使用）', await wait(cdp, `/API 密钥无法使用/.test(document.getElementById('ib-diag-ai').textContent)`, 30000));
+    mockProvider.state.reject = false;
     const aiFailText = await ev(cdp, "document.getElementById('ib-diag-ai').textContent");
     check('I5) 401 用户提示不含状态码 / 密钥 / 地址', ['401', BAD_KEY, 'sk-', 'http://', '127.0.0.1'].every(w => aiFailText.indexOf(w) === -1), aiFailText);
 

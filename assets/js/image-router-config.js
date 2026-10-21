@@ -6,7 +6,7 @@
         （enabled / apiConfigId / model / fallback），与既有并发覆盖字段共存于同一
         私有 key（**不新建第二套存储**，也不动 'middle_brain' / 角色配置契约）。
      ② 把一条路由解析成执行器能吃的 cfg + 模型：
-          route.apiConfigId → 已有 apiConfig（endpoint / credentialRef / provider metadata）
+          route.apiConfigId → 已有 apiConfig（图片 endpoint / provider metadata / imageGenCredentialRef）
           route.model       → 唯一 canonical 图片模型目录（image-models-core.js）
      ③ 在**发请求之前**给出明确、可执行的错误码（缺 Key / 缺 Endpoint / 配置不存在 /
         模型不支持该操作 / 路由被关闭），绝不把配置问题变成 fetch 401/404。
@@ -15,8 +15,8 @@
    解析语义（三条，缺一不可）：
      · apiConfigId 为空  → mode='inherit'：沿用调用方传入的角色 cfg（与 P12/P13 行为逐字一致，
        老用户不需要重新配置就能继续用；角色 cfg 缺 Key/Endpoint 时同样给出明确错误）。
-     · apiConfigId 有值  → mode='bound'：完全使用该 API 配置的 endpoint / Vault credentialRef / provider，
-       与"当时正在和谁聊天"解耦（后台任务、朋友圈、Activity 共用同一条路由）。
+     · apiConfigId 有值  → mode='bound'：使用该 API 配置的图片 endpoint / provider 与 imageGenCredentialRef；
+       未选择图片凭据时才跟随该配置的聊天 credentialRef。
      · model 为空        → 'auto'：交给 Image Router 的 Fast/Auto/Precision 双模型策略
        （Flare / Sunburst）。model 有值 → 用户显式选择，最高优先，Fast/Precision 覆盖不能改它。
    ==================================================================== */
@@ -133,8 +133,9 @@
     if (!fn) return { ok: true, wire: '', model: '' };
     try { return fn(cfg) || { ok: true }; } catch (e) { return { ok: true }; }
   }
-  function _endpointOf(cfg) { return _norm(cfg && cfg.imageGenEndpoint) || _norm(cfg && cfg.endpoint); }
+  function _endpointOf(cfg) { return _norm(cfg && cfg.imageGenEndpoint); }
   function _hasCredentialBinding(cfg) {
+    if (cfg && _norm(cfg.imageGenCredentialRef)) return true;
     if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'credentialRef')) return !!_norm(cfg.credentialRef);
     return !!_norm(cfg && cfg.id);
   }
@@ -208,22 +209,19 @@
           }
         }
 
-        /* 端点/凭证校验原则：只拦**确定不可用**的配置，其余如实警告放行。
-           · 端点留空但 provider 有官方默认端点 → 可用（与执行器回落一致）
-           · API Key 留空但端点是本地/内网 → 可用（local-first / 自建代理的常态）
-           · API Key 留空且端点在公网 → 必然 401，提前拦下并指明去哪修 */
+        /* 图片 Provider / Endpoint / 凭据均来自图片配置，不回退到聊天配置。 */
         var provider = _resolveProvider(cfg);
-        var endpoint = _endpointOf(cfg) || _providerDefaultEndpoint(provider);
-        if (!endpoint) return _fail('IMAGE_ROUTER_NO_ENDPOINT', label + ' 使用的 API 配置没有接口地址', { routeName: name, apiConfigId: route.apiConfigId });
-        if (!_hasCredentialBinding(cfg)) {
-          if (_isLocalHost(_hostOf(endpoint))) warnings.push('no_key_local');
-          else return _fail('IMAGE_ROUTER_NO_KEY', label + ' 使用的 API 配置没有 Vault credential binding', { routeName: name, apiConfigId: route.apiConfigId });
-        }
-
         if (provider === 'anthropic' || provider === 'deepseek') {
           return _fail(operation === 'edit' ? 'IMAGE_EDIT_UNSUPPORTED' : 'IMAGE_ROUTER_PROVIDER_UNSUPPORTED',
             (provider === 'anthropic' ? 'Anthropic' : 'DeepSeek') + ' 不支持' + (operation === 'edit' ? '图片编辑' : '图像生成') + '，请在 Image Router 中改绑 OpenAI 兼容或 Gemini 的 API 配置',
             { routeName: name, provider: provider });
+        }
+        var endpoint = _endpointOf(cfg) || _providerDefaultEndpoint(provider);
+        if (!endpoint) return _fail('IMAGE_ROUTER_NO_ENDPOINT', label + ' 使用的 API 配置没有接口地址', { routeName: name, apiConfigId: route.apiConfigId });
+        cfg.imageGenEndpoint = endpoint;
+        if (!_hasCredentialBinding(cfg)) {
+          if (_isLocalHost(_hostOf(endpoint))) warnings.push('no_key_local');
+          else return _fail('IMAGE_ROUTER_NO_KEY', label + ' 使用的 API 配置没有 Vault credential binding', { routeName: name, apiConfigId: route.apiConfigId });
         }
         /* 编辑：复用执行器唯一的能力判定（模型/端点能力不足时 0 次 provider 请求） */
         if (operation === 'edit') {
@@ -273,6 +271,7 @@
       var fbEndpoint = _endpointOf(cfg) || _providerDefaultEndpoint(fbProvider);
       if (!fbEndpoint) { warnings.push('fallback_incomplete'); return null; }
       if (!_hasCredentialBinding(cfg) && !_isLocalHost(_hostOf(fbEndpoint))) { warnings.push('fallback_incomplete'); return null; }
+      cfg.imageGenEndpoint = fbEndpoint;
       return { cfg: cfg, model: model, apiConfigId: fb.apiConfigId, modelSource: fb.model ? 'route_fallback' : 'api_config' };
     });
   }

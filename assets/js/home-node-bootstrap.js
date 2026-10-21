@@ -940,18 +940,76 @@ function bootstrap() {
    options.full 走 hydrate（整表以 Home Node 为准重建），否则走增量。
    boot 用 full:true —— 保证镜像在任何写入之前就是完整的。 */
 var memorySyncInFlight = null;
+var memorySyncRetryTimer = null;
+var memorySyncRetryAttempt = 0;
+var MEMORY_SYNC_RETRY_DELAYS = [3000, 10000, 30000, 60000];
+function notifyMemoryAuthoritySyncState(reason, result) {
+  try {
+    if (!window || typeof window.dispatchEvent !== 'function') return;
+    var detail = {
+      reason: String(reason || ''),
+      ok: !!(result && result.ok),
+      error: String((result && result.error) || '')
+    };
+    var event = typeof window.CustomEvent === 'function'
+      ? new window.CustomEvent('ib:memory-authority-sync', { detail: detail })
+      : null;
+    if (event) window.dispatchEvent(event);
+  } catch (e) { /* UI notification never changes authority semantics */ }
+}
+function memorySyncShouldRetry(result) {
+  if (!result || result.ok) return false;
+  if (result.offline === true || result.retryable === true) return true;
+  return /home-node-unreachable|home-node-endpoint-unavailable|timeout|transport-error|network-error|failed to fetch/i
+    .test(String((result && (result.error || result.detail)) || ''));
+}
+function clearMemorySyncRetry() {
+  if (memorySyncRetryTimer) clearTimeout(memorySyncRetryTimer);
+  memorySyncRetryTimer = null;
+}
+function scheduleMemorySyncRetry(result) {
+  if (memorySyncRetryTimer || MODE !== 'canonical' || !memoryAuthority || !memorySyncShouldRetry(result)) return;
+  var index = Math.min(memorySyncRetryAttempt, MEMORY_SYNC_RETRY_DELAYS.length - 1);
+  var delay = MEMORY_SYNC_RETRY_DELAYS[index];
+  memorySyncRetryAttempt = Math.min(memorySyncRetryAttempt + 1, MEMORY_SYNC_RETRY_DELAYS.length - 1);
+  memorySyncRetryTimer = setTimeout(function () {
+    memorySyncRetryTimer = null;
+    if (MODE !== 'canonical' || !memoryAuthority) return;
+    var status = memoryAuthority.status();
+    memorySyncOnce('reconnect', { full: status.hydrated !== true });
+  }, delay);
+  /* Node-based UI tests must not be kept alive by a pending browser recovery timer. */
+  try { if (memorySyncRetryTimer && typeof memorySyncRetryTimer.unref === 'function') memorySyncRetryTimer.unref(); } catch (e) { /* browser timer */ }
+}
 function memorySyncOnce(reason, options) {
   if (MODE !== 'canonical' || !memoryAuthority) return Promise.resolve({ ok: true, skipped: true });
   if (memorySyncInFlight) return memorySyncInFlight;
   memorySyncInFlight = memoryAuthority.sync(options || {}).then(function (res) {
     memorySyncInFlight = null;
-    if (res && res.ok) note('memory-sync', { reason: reason, cursor: res.cursor, upserts: res.upserts, deletes: res.deletes });
-    else note('memory-sync-degraded', { reason: reason, error: (res && res.error) || 'unknown' });
+    if (res && res.ok) {
+      clearMemorySyncRetry();
+      memorySyncRetryAttempt = 0;
+      note('memory-sync', { reason: reason, cursor: res.cursor, upserts: res.upserts, deletes: res.deletes });
+    } else {
+      note('memory-sync-degraded', { reason: reason, error: (res && res.error) || 'unknown' });
+      scheduleMemorySyncRetry(res);
+    }
+    notifyMemoryAuthoritySyncState(reason, res);
     return res;
   }, function (error) {
     memorySyncInFlight = null;
     note('memory-sync-fail', { reason: reason, error: String((error && error.message) || error) });
-    return { ok: false, error: 'sync-failed' };
+    var detail = String((error && error.message) || error || 'sync-failed');
+    var failure = {
+      ok: false,
+      error: /timeout/i.test(detail) ? 'timeout' : (/fetch|network|ECONN/i.test(detail) ? 'home-node-unreachable' : 'sync-failed'),
+      detail: detail,
+      offline: /fetch|network|ECONN|timeout/i.test(detail),
+      retryable: /fetch|network|ECONN|timeout/i.test(detail)
+    };
+    scheduleMemorySyncRetry(failure);
+    notifyMemoryAuthoritySyncState(reason, failure);
+    return failure;
   });
   return memorySyncInFlight;
 }
@@ -1142,6 +1200,12 @@ var agentMemoryRemote = _agentMemoryRemoteFactory ? _agentMemoryRemoteFactory({}
 var _workRetentionRemoteFactory = (NS && typeof NS.createWorkRetentionRemote === 'function')
   ? NS.createWorkRetentionRemote : null;
 var workRetentionRemote = _workRetentionRemoteFactory ? _workRetentionRemoteFactory({}) : null;
+var _qqOneBotRemoteFactory = (NS && typeof NS.createQQOneBotRemote === 'function')
+  ? NS.createQQOneBotRemote : null;
+var qqOneBotRemote = _qqOneBotRemoteFactory ? _qqOneBotRemoteFactory({}) : null;
+var _qqOfficialRemoteFactory = (NS && typeof NS.createQQOfficialRemote === 'function')
+  ? NS.createQQOfficialRemote : null;
+var qqOfficialRemote = _qqOfficialRemoteFactory ? _qqOfficialRemoteFactory({}) : null;
 function workRunRemoteMissing(operation) {
   return Promise.resolve({ ok: false, operation: operation, error: 'work-run-remote-missing' });
 }
@@ -1183,6 +1247,116 @@ var surface = {
   },
   characters: function () { return remoteDriver.characterCatalog(); },
   remote: remoteDriver,
+  qqOnebot: {
+    available: !!qqOneBotRemote,
+    setup: function (accountId) {
+      return qqOneBotRemote ? qqOneBotRemote.setup(accountId)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    configure: function (input) {
+      return qqOneBotRemote ? qqOneBotRemote.configure(input || {})
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    status: function () {
+      return qqOneBotRemote ? qqOneBotRemote.status()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false, accounts: [] });
+    },
+    heartbeat: function () {
+      return qqOneBotRemote ? qqOneBotRemote.heartbeat()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    poll: function (waitMs) {
+      return qqOneBotRemote ? qqOneBotRemote.poll(waitMs)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false, event: null });
+    },
+    complete: function (requestId, reply) {
+      return qqOneBotRemote ? qqOneBotRemote.complete(requestId, reply)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatEnvironment: function () {
+      return qqOneBotRemote ? qqOneBotRemote.napcatEnvironment()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatLatestRelease: function () {
+      return qqOneBotRemote ? qqOneBotRemote.napcatLatestRelease()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatDownloadStatus: function () {
+      return qqOneBotRemote ? qqOneBotRemote.napcatDownloadStatus()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatStartDownload: function (confirmed) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatStartDownload(confirmed)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatCancelDownload: function () {
+      return qqOneBotRemote ? qqOneBotRemote.napcatCancelDownload()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatOpenFolder: function () {
+      return qqOneBotRemote ? qqOneBotRemote.napcatOpenFolder()
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatRemoveDownload: function (confirmed) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatRemoveDownload(confirmed)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatAccountStatus: function (accountId) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatAccountStatus(accountId)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatStartAccount: function (input) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatStartAccount(input || {})
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatCancelAccountStart: function (accountId) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatCancelAccountStart(accountId)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatStopAccount: function (accountId) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatStopAccount(accountId)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    },
+    napcatOpenWebUi: function (accountId) {
+      return qqOneBotRemote ? qqOneBotRemote.napcatOpenWebUi(accountId)
+        : Promise.resolve({ ok: false, error: 'qq-onebot-remote-missing', retryable: false });
+    }
+  },
+  qqOfficial: {
+    available: !!qqOfficialRemote,
+    configure: function (input) {
+      return qqOfficialRemote ? qqOfficialRemote.configure(input || {})
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    },
+    status: function () {
+      return qqOfficialRemote ? qqOfficialRemote.status()
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false, accounts: [] });
+    },
+    heartbeat: function () {
+      return qqOfficialRemote ? qqOfficialRemote.heartbeat()
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    },
+    connect: function (appId) {
+      return qqOfficialRemote ? qqOfficialRemote.connect(appId)
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    },
+    disconnect: function (appId) {
+      return qqOfficialRemote ? qqOfficialRemote.disconnect(appId)
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    },
+    poll: function (waitMs) {
+      return qqOfficialRemote ? qqOfficialRemote.poll(waitMs)
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false, event: null });
+    },
+    progress: function (requestId, stage, errorCode) {
+      return qqOfficialRemote ? qqOfficialRemote.progress(requestId, stage, errorCode)
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    },
+    complete: function (requestId, reply) {
+      return qqOfficialRemote ? qqOfficialRemote.complete(requestId, reply)
+        : Promise.resolve({ ok: false, error: 'qq-official-remote-missing', retryable: false });
+    }
+  },
   log: function () { return (NS.homeNodeLog || []).slice(); },
   /* ── M1-C.2d Wave 2：canonical memory 的可观测面 ────────────────────
      权威状态必须**显式**可读，而不是让用户/支持人员去猜 IndexedDB 还是

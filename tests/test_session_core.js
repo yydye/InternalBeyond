@@ -224,7 +224,8 @@ check('G1.g7.productionSessionsActivityOnly',
 const FROZEN = {
   'assets/js/domain-event-core.js': ['3D8F339B', '12805562'],
   'assets/js/observation-core.js': ['077DA39B', 'E18ECC3F'],
-  'apps/ib-app-cinema.js': ['CE581CF2', '65B97B58'],
+  /* Reviewed Cinema v1.2 source snapshot: 3A574786. */
+  'apps/ib-app-cinema.js': ['3A574786', 'C1817BCD'],
   /* P27-C：activity-runtime.js 的**整文件哈希**已移除（HASH_COUPLING_DEBT 结构性修复）——
      改用 tests/activity-partitions.js 的**语义分区**断言（见本文件下方的 activityRuntimeLegacyPartitionsUnchanged）。 */
   'assets/js/activity/coread.js': ['C3DCBD8D', '1D0ACAAD'],

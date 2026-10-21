@@ -312,7 +312,7 @@
     IMAGE_ROUTER_DISABLED: '图片功能已关闭，可在 设置 → API → Image Router 中开启',
     IMAGE_ROUTER_UNBOUND: '尚未配置图片 API。请前往 设置 → API → Image Router 绑定一个 API 配置',
     IMAGE_ROUTER_CONFIG_MISSING: '绑定的 API 配置不存在（可能已被删除）。请前往 设置 → API → Image Router 重新选择',
-    IMAGE_ROUTER_NO_KEY: '图片 API 配置没有可用的 Credential Vault API Key。请前往 设置 → API 的角色配置补齐',
+    IMAGE_ROUTER_NO_KEY: '图片配置没有可用的 Credential Vault 凭据。请前往 设置 → API 选择图片凭据，或在 API 页顶部管理 Vault',
     IMAGE_ROUTER_NO_ENDPOINT: '图片 API 缺少接口地址。请前往 设置 → API → Image Router（或该角色的 API 设置）补齐',
     IMAGE_ROUTER_PROVIDER_UNSUPPORTED: '当前 API 配置的服务商不支持图像生成。请前往 设置 → API → Image Router 改绑 OpenAI 兼容或 Gemini',
     IMAGE_ROUTER_ERROR: '图片路由配置读取失败，请重启应用后重试',

@@ -1,72 +1,103 @@
-﻿/* InternalBeyond · P5 系统诊断页样式
-   由 assets/js/diagnostics.js 在运行时注入（不占用 HTML 的样式表预算）。
-   颜色一律使用 core.css 既有 token，深色 / 浅色主题都跟随。 */
+﻿﻿/* InternalBeyond · local diagnostics panel
+   Uses the shared IB surfaces, semantic status colors, spacing, and controls. */
 
-/* ── 导航规则已退役（P1 单源）──
-   这里原有「顶部横排导航横向滚动」补丁（为第 15 个入口让位）。P36 之后导航是纵向侧栏，
-   滚动由 navigation-shell.css 的 .nav-scroll-region 负责，本文件不再触碰导航。 */
-
-/* ── 页面容器 ── */
 #page-diagnostics{max-width:1140px}
-.ib-diag{padding:22px 24px;display:flex;flex-direction:column;gap:16px}
+/* The native startup banner is fixed near the top edge. Reserve room only while
+   it is visible so it cannot cover this page's title, including on narrow screens. */
+body:has(#ib-tauri-runtime-status:not([hidden])) #page-diagnostics{padding-top:138px}
 
-/* ── 顶部总览 ── */
-.ib-diag-head{display:flex;flex-direction:column;gap:4px}
-.ib-diag-headline{font-size:1.08rem;font-weight:500;letter-spacing:0.02em;color:var(--content-primary)}
+.ib-diag{padding:22px 24px;display:flex;flex-direction:column;gap:0;min-width:0}
+.ib-diag-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-bottom:18px}
+.ib-diag-title-block{min-width:0;display:flex;flex-direction:column;gap:4px}
+.ib-diag-title{margin:0;color:var(--content-primary);font-size:1.22rem;font-weight:600;letter-spacing:.01em}
+.ib-diag-kicker{margin:0;color:var(--content-secondary);font-size:.78rem;line-height:1.5}
+.ib-diag-headline{margin-top:8px;font-size:.92rem;font-weight:600;color:var(--content-primary)}
 .ib-diag-headline.is-ok{color:var(--status-success)}
 .ib-diag-headline.is-attention{color:var(--status-warning)}
 .ib-diag-headline.is-down{color:var(--status-danger)}
-.ib-diag-sub{font-size:0.84rem;color:var(--content-secondary)}
-.ib-diag-meta{font-size:0.76rem;color:var(--content-muted)}
+.ib-diag-sub{font-size:.82rem;color:var(--content-secondary);line-height:1.5}
+.ib-diag-meta{font-size:.74rem;color:var(--content-secondary);line-height:1.5}
+.ib-diag-check{flex:0 0 auto;min-width:92px}
 
-/* ── 能力列表 ── */
-.ib-diag-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
-.ib-diag-row{padding:11px 2px;border-top:1px solid var(--border-soft)}
+.ib-diag-section{min-width:0;border-top:1px solid var(--border-soft);padding:17px 0}
+.ib-diag-overview{border-top:0;padding-top:0}
+.ib-diag-overview-grid,.ib-diag-resource-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ib-diag-metric{min-width:0;padding:12px 13px;border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--surface-card)}
+.ib-diag-metric-label{font-size:.78rem;color:var(--content-secondary);line-height:1.4}
+.ib-diag-metric-value{margin-top:6px;color:var(--content-primary);font-size:1.03rem;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.ib-diag-metric-note{margin-top:4px;color:var(--content-secondary);font-size:.72rem;line-height:1.45}
+.ib-diag-error-count{display:block;margin-top:10px;color:var(--content-secondary);font-size:.76rem}
+
+.ib-diag-section-title{margin:0 0 9px;color:var(--content-primary);font-size:1rem;font-weight:600}
+.ib-diag-subtitle{margin:17px 0 5px;color:var(--content-secondary);font-size:.84rem;font-weight:600}
+.ib-diag-section-heading{display:flex;align-items:center;gap:9px}
+.ib-diag-section-heading .ib-diag-section-title{margin-bottom:0}
+.ib-diag-error-total{display:inline-flex;min-width:25px;height:22px;align-items:center;justify-content:center;padding:0 7px;border:1px solid var(--border-soft);border-radius:999px;color:var(--content-secondary);font-size:.72rem}
+
+.ib-diag-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.ib-diag-row{min-width:0;padding:10px 3px;border-top:1px solid var(--border-soft)}
 .ib-diag-row:first-child{border-top:0}
-.ib-diag-row-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.ib-diag-label{font-size:0.92rem;color:var(--content-primary);flex:1 1 auto;min-width:132px}
-.ib-diag-status{font-size:0.8rem;letter-spacing:0.02em;padding:2px 10px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-card);color:var(--content-secondary);white-space:nowrap}
+.ib-diag-row-top{display:flex;align-items:center;gap:12px;min-width:0}
+.ib-diag-label{flex:1 1 auto;min-width:0;color:var(--content-primary);font-size:.88rem;font-weight:500;overflow-wrap:anywhere}
+.ib-diag-status{flex:0 0 auto;padding:3px 9px;border:1px solid var(--border-soft);border-radius:999px;background:var(--surface-card);color:var(--content-secondary);font-size:.73rem;line-height:1.35;white-space:nowrap}
 .ib-diag-status.is-ok{color:var(--status-success);border-color:color-mix(in srgb,var(--status-success) 45%,transparent)}
 .ib-diag-status.is-attention{color:var(--status-warning);border-color:color-mix(in srgb,var(--status-warning) 45%,transparent)}
 .ib-diag-status.is-down{color:var(--status-danger);border-color:color-mix(in srgb,var(--status-danger) 45%,transparent)}
-.ib-diag-status.is-optional{color:var(--content-muted)}
+.ib-diag-status.is-optional{color:var(--content-secondary)}
 .ib-diag-status.is-checking{color:var(--accent-light);border-color:color-mix(in srgb,var(--accent-light) 45%,transparent)}
-.ib-diag-status.is-unknown{color:var(--content-muted)}
-.ib-diag-detail{margin:5px 0 0;font-size:0.82rem;color:var(--content-secondary)}
-.ib-diag-note{margin:3px 0 0;font-size:0.78rem;color:var(--content-muted)}
-.ib-diag-hint{margin:3px 0 0;font-size:0.78rem;color:var(--content-muted)}
+.ib-diag-status.is-unknown{color:var(--content-secondary)}
+.ib-diag-row-details{margin:6px 0 0 1px;color:var(--content-secondary);font-size:.76rem;line-height:1.55}
+.ib-diag-row-details summary{width:max-content;max-width:100%;cursor:pointer;color:var(--content-secondary);font-size:.74rem}
+.ib-diag-row-details summary:hover{color:var(--content-primary)}
+.ib-diag-detail,.ib-diag-note,.ib-diag-hint{margin:5px 0 0;color:var(--content-secondary);font-size:.76rem;line-height:1.55;overflow-wrap:anywhere}
+.ib-diag-hint{color:var(--content-primary)}
 
-/* ── 修复区 ── */
-.ib-diag-repair{border-top:1px solid var(--border-soft);padding-top:14px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
-.ib-diag-repair-msg{margin:0;font-size:0.84rem;color:var(--content-secondary)}
+.ib-diag-errors{scroll-margin-top:120px}
+.ib-diag-empty{margin:9px 0 0;color:var(--content-secondary);font-size:.8rem}
+.ib-diag-error-list{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ib-diag-error-row{display:flex;align-items:baseline;gap:9px;min-width:0;padding:8px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--surface-card)}
+.ib-diag-error-code{min-width:0;color:var(--content-primary);font-size:.76rem;overflow-wrap:anywhere}
+.ib-diag-error-category{flex:1 1 auto;color:var(--content-secondary);font-size:.73rem;overflow-wrap:anywhere}
+.ib-diag-error-time{flex:0 0 auto;color:var(--content-secondary);font-size:.72rem}
+.ib-diag-error-toggle{margin-top:10px}
+
+.ib-diag-repair,.ib-diag-ai{border-top:1px solid var(--border-soft);padding:14px 0;display:flex;flex-direction:column;gap:9px;align-items:flex-start}
+.ib-diag-repair-msg{margin:0;color:var(--content-secondary);font-size:.82rem}
 .ib-diag-repair-msg.is-ok{color:var(--status-success)}
 .ib-diag-repair-msg.is-fail{color:var(--status-danger)}
-
-/* ── AI 连接测试 ── */
-.ib-diag-ai{border-top:1px solid var(--border-soft);padding-top:14px;display:flex;flex-direction:column;gap:8px}
 .ib-diag-ai-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.ib-diag-ai-label{font-size:0.82rem;color:var(--content-secondary)}
-.ib-diag-ai-select{padding:5px 10px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-card);color:var(--content-primary);font-family:inherit;font-size:0.82rem;max-width:220px}
-.ib-diag-ai-note{margin:0;font-size:0.76rem;color:var(--content-muted)}
-.ib-diag-ai-result{margin:0;font-size:0.82rem;color:var(--content-secondary)}
+.ib-diag-ai-label{font-size:.8rem;color:var(--content-secondary)}
+.ib-diag-ai-select{max-width:260px;padding:6px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--surface-card);color:var(--content-primary);font:inherit;font-size:.82rem}
+.ib-diag-ai-note,.ib-diag-ai-result{margin:0;color:var(--content-secondary);font-size:.76rem;line-height:1.5}
 .ib-diag-ai-result.is-ok{color:var(--status-success)}
-.ib-diag-ai-result.is-fail{color:var(--content-secondary);display:flex;flex-direction:column;gap:2px}
-.ib-diag-ai-title{font-weight:500;color:var(--status-danger)}
-.ib-diag-ai-message,.ib-diag-ai-suggestion{margin:0;font-size:0.8rem}
+.ib-diag-ai-result.is-fail{display:flex;flex-direction:column;gap:3px}
+.ib-diag-ai-title{color:var(--status-danger);font-weight:600}
+.ib-diag-ai-message,.ib-diag-ai-suggestion{margin:0;font-size:.78rem}
 
-/* ── 操作栏 / 技术详情 ── */
 .ib-diag-actions{display:flex;gap:10px;flex-wrap:wrap;border-top:1px solid var(--border-soft);padding-top:14px}
-.ib-diag-tech{margin:0;padding:12px 14px;border-radius:var(--radius-control);background:var(--surface-card);border:1px solid var(--border-soft);font-size:var(--fs-meta);line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;color:var(--content-secondary)}
+.ib-diag-actions .btn{flex:1 1 180px}
+.ib-diag-tech{margin:12px 0 0;padding:12px 14px;border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--surface-card);color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto}
 
-/* ── API 设置页入口 ── */
 .ib-diag-entry{padding:16px 20px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .ib-diag-entry h3{margin:0}
-.ib-diag-entry-desc{margin:0;font-size:0.84rem;color:var(--content-secondary)}
+.ib-diag-entry-desc{margin:0;color:var(--content-secondary);font-size:.84rem;line-height:1.55}
 
-/* ── 小屏 ── */
-@media (max-width:560px){
-  .ib-diag{padding:16px 14px}
-  .ib-diag-label{flex-basis:100%}
-  .ib-diag-actions .btn{flex:1 1 auto}
-  .ib-diag-ai-select{max-width:100%}
+@media(max-width:680px){
+  .ib-diag{padding:17px 15px}
+  .ib-diag-overview-grid,.ib-diag-resource-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .ib-diag-metric{padding:10px}
+  .ib-diag-error-row{align-items:flex-start;flex-wrap:wrap}
+  .ib-diag-error-time{margin-left:auto}
+}
+@media(max-width:420px){
+  .ib-diag-head{gap:9px}
+  .ib-diag-title{font-size:1.08rem}
+  .ib-diag-check{min-width:76px;padding-inline:10px}
+  .ib-diag-overview-grid,.ib-diag-resource-grid{grid-template-columns:1fr}
+  .ib-diag-row-top{align-items:flex-start;gap:7px}
+  .ib-diag-label{font-size:.84rem}
+  .ib-diag-status{font-size:.7rem;padding:3px 7px}
+  .ib-diag-actions{gap:8px}
+  .ib-diag-actions .btn{flex-basis:100%}
+  .ib-diag-ai-select{max-width:100%;width:100%}
 }

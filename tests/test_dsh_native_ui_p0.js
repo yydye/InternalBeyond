@@ -9,16 +9,20 @@ const { test } = require('node:test');
 const p0 = require('../runtime/dsh-native-ui-p0.js');
 
 test('Synthetic child receives no inherited Provider, Vault, proxy or Node injection', () => {
-  const root = path.join(os.tmpdir(), 'synthetic-ui-fixture');
+  const projectRoot = path.join(os.tmpdir(), 'ib-dev-launcher-test-p0');
+  const sandboxRoot = path.join(projectRoot, '.dev-data', 'synthetic', 'dev-sandbox');
+  const root = path.join(sandboxRoot, 'dsh-native-ui-p0');
   const env = p0.childEnvironment('E:\\pinned-source', root, {
     PATH: 'fixture-path', SystemRoot: 'C:\\Windows', OPENAI_API_KEY: 'fixture-secret',
     DEEPSEEK_API_KEY: 'fixture-secret', HTTPS_PROXY: 'fixture-proxy',
     NODE_OPTIONS: '--require fixture', IB_HOME_NODE_TOKEN: 'fixture-token',
-    DSH_HOME: 'fixture-user-home',
+    DSH_HOME: 'fixture-user-home', IB_DEV_PROJECT_ROOT: projectRoot,
   });
   for (const key of ['OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'HTTPS_PROXY', 'NODE_OPTIONS', 'IB_HOME_NODE_TOKEN']) assert.equal(env[key], undefined);
   assert.equal(env.DSH_HOME, path.join(root, 'dsh-home'));
   assert.equal(env.IB_DEV_SYNTHETIC, '1');
+  assert.equal(env.IB_DEV_PROJECT_ROOT, projectRoot);
+  assert.equal(env.IB_DEV_SANDBOX_ROOT, sandboxRoot);
   assert.equal(env.PATH, 'fixture-path');
 });
 

@@ -48,11 +48,11 @@
   };
   var ST_TEXT = {
     ok: '正常',
-    attention: '需要注意',
+    attention: '异常',
     down: '不可用',
-    optional: '未安装（可选）',
+    optional: '未配置',
     checking: '检查中',
-    unknown: '状态未知'
+    unknown: '未检查'
   };
   var ST_RANK = { ok: 0, optional: 0, unknown: 1, attention: 2, down: 3, checking: 0 };
 
@@ -70,7 +70,7 @@
     ok: '系统运行正常',
     attention: '部分功能需要注意',
     down: '部分功能暂时不可用',
-    unknown: '暂时无法确认系统状态',
+    unknown: '还有部分状态未检查',
     checking: '正在检查…'
   };
 
@@ -80,6 +80,7 @@
     boot: null,
     probes: {},
     rows: [],
+    services: [],
     overall: 'unknown',
     headline: OVERALL_TEXT.unknown,
     sub: '',
@@ -93,7 +94,9 @@
     repairMsg: null,
     repairLog: [],
     errorLog: [],
-    lastCheckAt: 0
+    lastCheckAt: 0,
+    lastCheckDurationMs: 0,
+    errorsExpanded: false
   };
 
   /* ── 小工具 ────────────────────────────────────────────── */
@@ -290,7 +293,7 @@
     return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
       r.endpoint = url;
       r.identity = r.json ? String(r.json.server || '') : '';
-      r.healthy = !!(r.ok && r.json && r.json.ok === true);
+      r.healthy = !!(r.ok && r.json && r.json.ok === true && r.identity === 'InternalBeyond Web');
       return r;
     });
   }
@@ -349,6 +352,7 @@
     }).catch(function (e) {
       out.latencyMs = Date.now() - t0;
       out.httpStatus = Number(e && e.status) || 0;
+      out.responding = out.httpStatus > 0;
       out.error = out.httpStatus ? 'http-' + out.httpStatus : 'unreachable';
       return out;
     });
@@ -365,9 +369,138 @@
       out.responding = true;
       out.httpStatus = 200;
       out.json = json;
-      out.healthy = String(json.service || '') === 'InternalBeyond Restart';
+      out.healthy = String(json.service || '') === 'InternalBeyond Restart' && String(json.state || '') !== 'shutting-down';
       return out;
     }).catch(function () { out.latencyMs = Date.now() - t0; out.error = 'unreachable'; return out; });
+  }
+
+  /* Home Node `/health` is an existing loopback-only, read-only endpoint. Keep
+     only the role verdict and closed-store categories; never retain its revision,
+     counts, instance identifiers, messages, or failure prose in diagnostics. */
+  function probeHomeNode() {
+    var port = portOf('homeNode');
+    if (!port) return Promise.resolve(unavailable('port-unknown'));
+    var url = 'http://127.0.0.1:' + port + '/health';
+    return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
+      var j = r.json || {};
+      var hasStoreStatus = Array.isArray(j.stores);
+      var stores = Array.isArray(j.stores) ? j.stores.map(function (store) {
+        return {
+          store: String((store && store.store) || 'unknown').slice(0, 64),
+          open: !!(store && store.open),
+          category: String((store && store.category) || '').replace(/[^a-z0-9._-]/gi, '').slice(0, 80)
+        };
+      }) : [];
+      var identityOk = String(j.service || '') === 'internal-beyond-home-node';
+      var storesOpen = stores.every(function (store) { return store.open; });
+      r.identity = identityOk ? 'internal-beyond-home-node' : '';
+      r.healthy = !!(r.ok && identityOk && j.ok === true && j.serving === true && j.open === true && hasStoreStatus && storesOpen);
+      r.json = {
+        identityOk: identityOk,
+        serving: j.serving === true,
+        open: j.open === true,
+        storesAvailable: hasStoreStatus,
+        failureCategory: String((j.failure && j.failure.category) || '').replace(/[^a-z0-9._-]/gi, '').slice(0, 80),
+        stores: stores
+      };
+      return r;
+    });
+  }
+
+  function isLocalEndpoint(endpoint) {
+    try {
+      if (typeof window._ibApiCredentialEndpointClass === 'function') {
+        return window._ibApiCredentialEndpointClass({ endpoint: endpoint }) === 'loopback';
+      }
+    } catch (e) { /* fall back to a narrow loopback check */ }
+    return /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(String(endpoint || '').trim());
+  }
+
+  /* Use the existing has-only Credential Vault status authority. This never
+     resolves a secret and the returned binding identifiers are discarded. */
+  function probeCredentialVault() {
+    var roles = listRoles();
+    var remote = [];
+    var localCount = 0;
+    roles.forEach(function (cfg) {
+      if (isLocalEndpoint(cfg && cfg.endpoint)) { localCount++; return; }
+      var hasRef = !!(cfg && Object.prototype.hasOwnProperty.call(cfg, 'credentialRef'));
+      var bindingId = String(hasRef ? (cfg.credentialRef || '') : (cfg && cfg.id || '')).trim();
+      if (bindingId) remote.push({
+        bindingId: bindingId,
+        capability: 'chat',
+        credentialPolicy: 'required',
+        endpointClass: 'remote'
+      });
+    });
+    var noBinding = roles.filter(function (cfg) {
+      return !isLocalEndpoint(cfg && cfg.endpoint)
+        && Object.prototype.hasOwnProperty.call(cfg || {}, 'credentialRef')
+        && !String(cfg.credentialRef || '').trim();
+    }).length;
+    if (!roles.length || (!remote.length && !noBinding)) {
+      return Promise.resolve({
+        ok: true, healthy: false, responding: true, unconfigured: true,
+        counts: { ready: 0, missing: 0, unavailable: 0, remote: 0, local: localCount },
+        error: null, latencyMs: 0, endpoint: 'Credential Vault status'
+      });
+    }
+    var host = window.IB && window.IB.host;
+    var capability = host && typeof host.capabilities === 'function' ? host.capabilities() : null;
+    var statusHost = host && host.credentialStatus;
+    if (!statusHost || typeof statusHost.query !== 'function'
+      || (capability && capability.credentialStatus && capability.credentialStatus.available === false)) {
+      return Promise.resolve(unavailable('credential-status-unavailable'));
+    }
+    var started = Date.now();
+    return Promise.resolve(statusHost.query(remote)).then(function (response) {
+      if (!response || response.ok !== true || !Array.isArray(response.results)) {
+        return {
+          ok: false, healthy: false, responding: !!response, unavailable: true, unconfigured: false,
+          counts: { ready: 0, missing: noBinding, unavailable: remote.length, remote: remote.length + noBinding, local: localCount },
+          error: 'credential-status-unavailable', latencyMs: Date.now() - started, endpoint: 'Credential Vault status'
+        };
+      }
+      var rows = response.results;
+      var counts = { ready: 0, missing: noBinding, unavailable: 0, remote: remote.length + noBinding, local: localCount };
+      rows.forEach(function (row) {
+        var status = String((row && row.status) || 'unknown');
+        if (status === 'ready') counts.ready++;
+        else if (status === 'missing' || status === 'none') counts.missing++;
+        else counts.unavailable++;
+      });
+      if (rows.length < remote.length) counts.unavailable += remote.length - rows.length;
+      var complete = counts.unavailable === 0 && counts.missing === 0 && counts.ready === remote.length;
+      return {
+        ok: true, healthy: complete, responding: true,
+        unconfigured: false, counts: counts, error: response && response.ok === false ? 'credential-status-unavailable' : null,
+        latencyMs: Date.now() - started, endpoint: 'Credential Vault status'
+      };
+    }).catch(function () {
+      return { ok: false, healthy: false, responding: false, unconfigured: false,
+        counts: { ready: 0, missing: noBinding, unavailable: remote.length, remote: remote.length + noBinding, local: localCount },
+        error: 'credential-status-unavailable', latencyMs: Date.now() - started, endpoint: 'Credential Vault status' };
+    });
+  }
+
+  function probeMemory() {
+    try {
+      var memory = window.IB && window.IB.homeNode && window.IB.homeNode.memory;
+      if (!memory || typeof memory.status !== 'function') return Promise.resolve(unavailable('memory-status-unavailable'));
+      var status = memory.status() || {};
+      return Promise.resolve({
+        ok: true, healthy: false, responding: true,
+        json: {
+          mode: String(status.mode || ''),
+          authority: String(status.authority || ''),
+          authorityEffective: status.authorityEffective === true,
+          degraded: status.degraded === true,
+          degradedReason: String(status.degradedReason || '').replace(/[^a-z0-9._-]/gi, '').slice(0, 80),
+          remoteOnline: status.remoteOnline === true
+        },
+        error: null, latencyMs: 0, endpoint: 'Memory authority status'
+      });
+    } catch (e) { return Promise.resolve(unavailable('memory-status-unavailable')); }
   }
 
   function probeVision() {
@@ -399,6 +532,9 @@
     active: probeActive,
     restart: probeRestart,
     bridgeStatus: probeBridgeStatus,
+    homeNode: probeHomeNode,
+    credentialVault: probeCredentialVault,
+    memory: probeMemory,
     vision: probeVision,
     visionInstall: probeVisionInstall
   };
@@ -497,7 +633,9 @@
 
     /* 1. 基础运行（static：唯一致命依赖） */
     var ps = probes.static || null;
-    if (!ps || ps.state === 'checking') {
+    if (!ps) {
+      row({ id: 'base', label: '基础运行', status: ST.UNKNOWN, detail: '尚未检查页面服务。', note: bootNote });
+    } else if (ps.state === 'checking') {
       row({ id: 'base', label: '基础运行', status: ST.CHECKING, detail: '正在检查…', note: bootNote });
     } else if (ps.healthy) {
       row({ id: 'base', label: '基础运行', status: ST.OK, detail: '主界面和本地页面服务正常。', note: bootNote });
@@ -521,7 +659,7 @@
     var test = ctx.aiTest || null;
     if (!roles.length) {
       row({
-        id: 'chat', label: 'AI 聊天', status: ST.ATTENTION,
+        id: 'chat', label: 'AI 聊天', status: ST.OPTIONAL,
         detail: '还没有配置 AI 角色。',
         hint: '在「API 设置」里添加一个角色后就可以开始聊天。'
       });
@@ -538,10 +676,10 @@
         detail: cur.reason || '这个角色的配置还不完整。',
         hint: '此问题无法自动修复。请在「API 设置」里补全后再试。'
       });
-    } else if (test && test.state === 'ok') {
+    } else if (test && test.state === 'ok' && (!cur || test.roleId === cur.id)) {
       row({ id: 'chat', label: 'AI 聊天', status: ST.OK, detail: '上次测试连接正常。' });
     } else {
-      row({ id: 'chat', label: 'AI 聊天', status: ST.OK, detail: '已配置 ' + roles.length + ' 个角色，发送消息时会实时连接。' });
+      row({ id: 'chat', label: 'AI 聊天', status: ST.UNKNOWN, detail: '已配置 ' + roles.length + ' 个角色，尚未验证当前角色的 Provider 连接。', hint: '可在下方手动运行 AI 连接测试；诊断不会自动发送 Provider 请求。' });
     }
 
     /* 3 / 4. 本地增强功能（bridge）与后台主动功能（active） */
@@ -554,7 +692,10 @@
         if (probe.healthy && c && c.probed && c.healthy === false) note = '启动时这项功能曾经降级，现在已经恢复。';
         else if (!probe.healthy && c && c.healthy === true) note = '启动时正常，之后停止了。';
       }
-      if (!probe || probe.state === 'checking') {
+      if (!probe) {
+        return row({ id: id, label: label, status: ST.UNKNOWN, detail: '尚未检查这项功能。', note: note });
+      }
+      if (probe.state === 'checking') {
         return row({ id: id, label: label, status: ST.CHECKING, detail: '正在检查…', note: note });
       }
       if (probe.unavailable) {
@@ -591,10 +732,12 @@
         detail: '本地增强功能不可用，语音功能暂时无法使用。',
         hint: bridgeRow.fixable ? '' : bridgeRow.hint
       });
-    } else if (!bstat || bstat.state === 'checking') {
+    } else if (!bstat) {
+      row({ id: 'voice', label: '语音功能', status: ST.UNKNOWN, detail: '尚未检查语音服务状态。', optional: true });
+    } else if (bstat.state === 'checking') {
       row({ id: 'voice', label: '语音功能', status: ST.CHECKING, detail: '正在检查…', optional: true });
     } else if (bstat.json && (bstat.json.tts === true || bstat.json.mimoTts === true)) {
-      row({ id: 'voice', label: '语音功能', status: ST.OK, detail: '语音服务已配置。', optional: true });
+      row({ id: 'voice', label: '语音功能', status: ST.UNKNOWN, detail: '语音服务已配置；本次检查没有发起语音请求。', optional: true });
     } else if (bstat.ok) {
       row({ id: 'voice', label: '语音功能', status: ST.OPTIONAL, detail: '还没有配置语音服务，文字聊天不受影响。', optional: true });
     } else {
@@ -605,10 +748,12 @@
     var pv = probes.vision || null;
     var pi = probes.visionInstall || null;
     var installed = !!(pi && pi.installed);
-    if (!pv || pv.state === 'checking') {
+    if (!pv) {
+      row({ id: 'vision', label: '视觉功能', status: ST.UNKNOWN, detail: '尚未检查视觉服务状态。', optional: true });
+    } else if (pv.state === 'checking') {
       row({ id: 'vision', label: '视觉功能', status: ST.CHECKING, detail: '正在检查…', optional: true });
     } else if (pv.healthy) {
-      row({ id: 'vision', label: '视觉功能', status: ST.OK, detail: '视觉功能可用。', optional: true });
+      row({ id: 'vision', label: '视觉功能', status: ST.OK, detail: '视觉服务进程可访问；本次检查没有提交图片任务。', optional: true });
     } else if (installed) {
       row({ id: 'vision', label: '视觉功能', status: ST.DOWN, detail: '视觉功能暂不可用。', note: '不影响聊天和其它功能。', optional: true });
     } else {
@@ -629,12 +774,133 @@
 
     var chatRow = find('chat');
     var sub = '';
-    if (overall === 'ok') sub = '所有主要功能都正常。';
+    if (overall === 'ok') sub = '已检查的主要功能都正常。';
     else if (overall === 'down' || overall === 'attention') {
       if (chatRow && chatRow.status === ST.OK) sub = '你仍然可以正常聊天。';
-    } else if (overall === 'unknown') sub = '请点「重新检查」再试一次。';
+      else if (chatRow && chatRow.status === ST.UNKNOWN) sub = 'AI Provider 连接尚未验证。';
+      else if (chatRow && chatRow.status === ST.OPTIONAL) sub = 'AI 角色尚未配置。';
+    } else if (overall === 'unknown') sub = '尚未检查的项目会在你手动验证后更新。';
 
     return { rows: rows, overall: overall, headline: OVERALL_TEXT[overall], sub: sub };
+  }
+
+  /* Live core-service rows. The service probes establish process identity and
+     service-level readiness only; they never claim that every feature worked. */
+  function deriveServices(probes, capabilities) {
+    probes = probes || {};
+    capabilities = capabilities || [];
+    function capability(id) {
+      for (var i = 0; i < capabilities.length; i++) if (capabilities[i].id === id) return capabilities[i];
+      return null;
+    }
+    function fromProbe(id, label, probe, healthyText, unavailableText) {
+      var detail = '';
+      var status = ST.UNKNOWN;
+      if (!probe) {
+        status = ST.UNKNOWN;
+        detail = '尚未检查。';
+      } else if (probe.state === 'checking') {
+        status = ST.CHECKING;
+        detail = '正在检查…';
+      } else if (probe.unconfigured) {
+        status = ST.OPTIONAL;
+        detail = unavailableText || '当前没有需要检查的配置。';
+      } else if (probe.unavailable) {
+        status = ST.UNKNOWN;
+        detail = unavailableText || '现有状态接口暂不可用。';
+      } else if (probe.healthy) {
+        status = ST.OK;
+        detail = healthyText || '服务状态正常。';
+      } else if (probe.responding) {
+        status = ST.ATTENTION;
+        detail = '服务有响应，但报告了异常状态。';
+      } else {
+        status = ST.DOWN;
+        detail = '服务当前不可访问。';
+      }
+      return { id: id, label: label, status: status, detail: detail, latencyMs: Number(probe && probe.latencyMs) || 0 };
+    }
+    var rows = [];
+    var web = fromProbe('web', '页面服务', probes.static,
+      '页面服务身份与健康状态已确认。', '页面以 file:// 直接打开，本次运行没有使用页面服务。');
+    if (probes.static && probes.static.unavailable && probes.static.error === 'file-origin') web.status = ST.OPTIONAL;
+    rows.push(web);
+    rows.push(fromProbe('runner', 'Runner', probes.restart,
+      'Runner 控制面在线；这不代表每个受管服务都正常。', '当前无法读取 Runner 控制面状态。'));
+    var homeNodeRow = fromProbe('homeNode', 'Home Node', probes.homeNode,
+      'Home Node 已确认身份，聊天权威与声明的存储均报告可服务。', '当前无法读取 Home Node 的实时健康信息。');
+    if (probes.homeNode && probes.homeNode.responding && !probes.homeNode.healthy) {
+      var homeData = probes.homeNode.json || {};
+      if (homeData.identityOk === false) homeNodeRow.detail = '该端口有响应，但服务身份与 Home Node 不匹配。';
+      else if (homeData.serving !== true || homeData.open !== true) homeNodeRow.detail = 'Home Node 有响应，但聊天权威存储未报告可服务。';
+      else if (homeData.storesAvailable !== true) homeNodeRow.detail = 'Home Node 有响应，但未返回完整的存储状态。';
+      var failedStores = (homeData.stores || []).filter(function (store) { return store.open === false; });
+      homeNodeRow.categories = failedStores.map(function (store) { return store.category; }).filter(Boolean);
+      if (homeData.failureCategory) homeNodeRow.categories.unshift(homeData.failureCategory);
+    }
+    rows.push(homeNodeRow);
+    var active = fromProbe('active', 'Active', probes.active,
+      'Active 服务身份已确认；此检查不验证主动任务授权或 Provider 调用。', '当前无法读取 Active 的实时健康信息。');
+    if (capability('active')) {
+      active.fixable = capability('active').fixable === true;
+      active.hint = capability('active').hint || '';
+    }
+    rows.push(active);
+    var bridge = fromProbe('bridge', 'Bridge', probes.bridge,
+      'Bridge 服务身份已确认；此检查不验证各项增强功能或 Provider 调用。', '当前无法读取 Bridge 的实时健康信息。');
+    if (capability('bridge')) {
+      bridge.fixable = capability('bridge').fixable === true;
+      bridge.hint = capability('bridge').hint || '';
+    }
+    rows.push(bridge);
+
+    var vaultProbe = probes.credentialVault;
+    var vaultRow = fromProbe('credentialVault', 'Credential Vault', vaultProbe,
+      'Vault 绑定状态已检查；本次没有解析密钥或连接 Provider。',
+      '当前承载没有提供只读 Vault 状态接口。');
+    var counts = vaultProbe && vaultProbe.counts;
+    if (counts && counts.remote > 0 && vaultProbe.ok) {
+      if (counts.missing > 0) {
+        vaultRow.status = ST.ATTENTION;
+        vaultRow.detail = counts.missing + ' 个远程绑定没有可用的 Vault 凭据。';
+      } else if (counts.unavailable > 0) {
+        vaultRow.status = ST.UNKNOWN;
+        vaultRow.detail = '有 ' + counts.unavailable + ' 个 Vault 绑定状态无法读取。';
+      } else {
+        vaultRow.status = ST.OK;
+        vaultRow.detail = counts.ready + ' 个远程绑定在 Vault 中有凭据；这不代表 Provider 可连接。';
+      }
+    } else if (counts && counts.remote === 0 && counts.local > 0) {
+      vaultRow.status = ST.OPTIONAL;
+      vaultRow.detail = '已配置的接口使用本地地址，不需要 Vault 中的远程凭据。';
+    }
+    rows.push(vaultRow);
+
+    var memoryProbe = probes.memory;
+    var memoryStatus = memoryProbe && memoryProbe.json || {};
+    var memoryRow = { id: 'memory', label: 'Memory Runtime', status: ST.UNKNOWN, detail: '现有只读接口没有提供可验证的 Memory 存储状态。' };
+    if (!memoryProbe || memoryProbe.state === 'checking') {
+      memoryRow.status = ST.CHECKING;
+      memoryRow.detail = '正在检查…';
+    } else if (memoryProbe.unavailable) {
+      memoryRow.detail = 'Memory authority 状态接口暂不可用。';
+    } else if (memoryStatus.degraded) {
+      memoryRow.status = ST.ATTENTION;
+      memoryRow.detail = 'Memory authority 报告降级状态。';
+    } else if (memoryStatus.mode === 'canonical' && memoryStatus.authority === 'home-node'
+      && memoryStatus.authorityEffective && homeNodeRow && homeNodeRow.status === ST.OK) {
+      memoryRow.status = ST.OK;
+      memoryRow.detail = 'Memory 使用 Home Node 权威；节点存储报告可服务，本次没有读取记忆内容。';
+    } else if (memoryStatus.mode === 'local' || memoryStatus.mode === 'mirror') {
+      memoryRow.status = ST.UNKNOWN;
+      memoryRow.detail = '当前使用本地或镜像模式；现有接口不提供本地存储完整性指标。';
+    } else if (memoryStatus.mode === 'canonical' && homeNodeRow
+      && (homeNodeRow.status === ST.DOWN || homeNodeRow.status === ST.ATTENTION)) {
+      memoryRow.status = ST.DOWN;
+      memoryRow.detail = 'Home Node 当前异常，Memory 权威服务无法确认可用。';
+    }
+    rows.push(memoryRow);
+    return rows;
   }
 
   /* ── 计算 + 渲染 ── */
@@ -654,17 +920,34 @@
   function computeAndRender() {
     var d = deriveCaps(S.boot, S.probes, liveContext());
     S.rows = d.rows;
+    S.services = deriveServices(S.probes, d.rows);
     S.overall = d.overall;
     S.headline = d.headline;
     S.sub = d.sub;
+    var homeNode = S.services.filter(function (r) { return r.id === 'homeNode'; })[0];
+    var runner = S.services.filter(function (r) { return r.id === 'runner'; })[0];
+    if (homeNode && (homeNode.status === ST.DOWN || homeNode.status === ST.ATTENTION)) {
+      var chat = S.rows.filter(function (r) { return r.id === 'chat'; })[0];
+      S.overall = homeNode.status === ST.DOWN ? 'down' : 'attention';
+      S.headline = OVERALL_TEXT[S.overall];
+      S.sub = chat && chat.status === ST.OK
+        ? 'Home Node 异常；AI Provider 连接仍可单独使用。'
+        : 'Home Node 异常；AI Provider 连接尚未验证。';
+    } else if (runner && (runner.status === ST.DOWN || runner.status === ST.ATTENTION) && (S.overall === 'ok' || S.overall === 'unknown')) {
+      S.overall = 'attention';
+      S.headline = OVERALL_TEXT.attention;
+      S.sub = 'Runner 控制面异常，可能影响本地服务管理与恢复。';
+    }
     render();
   }
 
   /* ── 一键检查 ── */
   function runChecks() {
     if (S.inflight) return S.inflight;
+    var checkStarted = Date.now();
     S.checking = true;
     Object.keys(PROBES).forEach(function (k) { S.probes[k] = { state: 'checking', healthy: false }; });
+    S.services = deriveServices(S.probes, S.rows);
     render();
     /* 先读启动快照，再并行探测：视觉等组件的端口来自 boot-state（不在前端复制端口表） */
     S.inflight = readBootState().then(function () {
@@ -679,6 +962,7 @@
       S.checking = false;
       S.inflight = null;
       S.lastCheckAt = Date.now();
+      S.lastCheckDurationMs = Math.max(0, S.lastCheckAt - checkStarted);
       computeAndRender();
       return S.rows;
     });
@@ -869,10 +1153,11 @@
   }
   function probeLines() {
     var out = [];
-    var order = ['static', 'bridge', 'active', 'restart', 'bridgeStatus', 'vision', 'visionInstall'];
+    var order = ['static', 'bridge', 'active', 'restart', 'homeNode', 'credentialVault', 'memory', 'bridgeStatus', 'vision', 'visionInstall'];
     var names = {
       static: '基础页面服务', bridge: '本地增强服务', active: '后台主动服务',
-      restart: '重启控制面', bridgeStatus: '本地增强服务状态', vision: '视觉服务', visionInstall: '视觉安装标记'
+      restart: 'Runner 控制面', homeNode: 'Home Node 健康检查', credentialVault: 'Credential Vault 状态',
+      memory: 'Memory authority 状态', bridgeStatus: '本地增强服务状态', vision: '视觉服务', visionInstall: '视觉安装标记'
     };
     order.forEach(function (k) {
       var p = S.probes[k];
@@ -961,9 +1246,23 @@
     if (!S.errorLog.length) return [];
     var out = ['【最近错误码（P3 统一分类）】'];
     S.errorLog.slice(0, 10).forEach(function (e) {
-      out.push('  ' + safeVal(e.code) + ' @ ' + isoText(e.at));
+      out.push('  ' + safeVal(e.code) + (e.category ? ' · ' + safeVal(e.category) : '') + ' @ ' + isoText(e.at));
     });
     return out;
+  }
+  function serviceLines() {
+    return (S.services || []).map(function (r) {
+      return '  ' + safeVal(r.label) + '：' + statusName(r.status) + (r.detail ? '（' + safeVal(r.detail) + '）' : '')
+        + (r.categories && r.categories.length ? ' · category=' + r.categories.map(safeVal).join(',') : '');
+    });
+  }
+  function resourceLines() {
+    return [
+      '  页面 JS 堆内存：' + safeVal(jsHeapText()),
+      '  CPU 使用率：不可用（当前运行时未提供该指标）',
+      '  本次检查耗时：' + (S.lastCheckAt ? (S.lastCheckDurationMs + ' ms') : '未检查'),
+      '  Runner 运行时长：' + safeVal(runnerUptime())
+    ];
   }
   function repairLines() {
     if (!S.repairLog.length) return [];
@@ -992,10 +1291,16 @@
     L = L.concat(bootLines());
     L.push('');
     L.push('【组件（启动快照）】');
-    ['static', 'bridge', 'active', 'restart', 'vision'].forEach(function (n) { L = L.concat(componentLines(n)); });
+    ['static', 'bridge', 'active', 'restart', 'homeNode', 'vision'].forEach(function (n) { L = L.concat(componentLines(n)); });
     L.push('');
     L.push('【当前探测】');
     L = L.concat(probeLines());
+    L.push('');
+    L.push('【核心服务】');
+    L = L.concat(serviceLines());
+    L.push('');
+    L.push('【资源与性能】');
+    L = L.concat(resourceLines());
     var w = warningLines();
     if (w.length) { L.push(''); L = L.concat(w); }
     var h = healthLines();
@@ -1053,8 +1358,14 @@
     L.push(lines('  总体', S.headline));
     L = L.concat(capabilitySummary());
     L.push('');
+    L.push('【核心服务】');
+    L = L.concat(serviceLines());
+    L.push('');
+    L.push('【资源与性能】');
+    L = L.concat(resourceLines());
+    L.push('');
     L.push('【组件（启动快照）】');
-    ['static', 'bridge', 'active', 'restart', 'vision'].forEach(function (n) { L = L.concat(componentLines(n)); });
+    ['static', 'bridge', 'active', 'restart', 'homeNode', 'vision'].forEach(function (n) { L = L.concat(componentLines(n)); });
     L.push('');
     L.push('【当前探测】');
     L = L.concat(probeLines());
@@ -1147,27 +1458,85 @@
 
   function renderHead(host) {
     var head = el('div', 'ib-diag-head');
+    var titleBlock = el('div', 'ib-diag-title-block');
+    titleBlock.appendChild(el('h2', 'ib-diag-title', '系统诊断'));
+    titleBlock.appendChild(el('p', 'ib-diag-kicker', '运行状态 · 服务监控 · 故障定位'));
+    head.appendChild(titleBlock);
+    var re = el('button', 'btn btn-primary ib-diag-check', S.checking ? '正在检查…' : '检查');
+    re.type = 'button';
+    re.id = 'ib-diag-recheck';
+    re.disabled = S.checking;
+    re.setAttribute('aria-label', S.checking ? '正在检查系统状态' : '检查系统状态');
+    re.onclick = function () { runChecks(); };
+    head.appendChild(re);
+
     var line = el('div', 'ib-diag-headline ' + statusClass(S.overall), S.headline);
     line.id = 'ib-diag-headline';
-    head.appendChild(line);
+    titleBlock.appendChild(line);
     if (S.sub) {
       var sub = el('div', 'ib-diag-sub', S.sub);
       sub.id = 'ib-diag-sub';
-      head.appendChild(sub);
+      titleBlock.appendChild(sub);
     }
     var meta = el('div', 'ib-diag-meta');
     meta.id = 'ib-diag-updated';
     var stamp = S.lastCheckAt ? ('最近检查：' + clockText(S.lastCheckAt)) : (S.checking ? '正在检查…' : '还没有检查');
     var pv = productVersion();
     meta.textContent = stamp + (pv ? (' · 版本 ' + pv) : '');
-    head.appendChild(meta);
+    titleBlock.appendChild(meta);
     host.appendChild(head);
   }
 
-  function renderRows(host) {
-    var list = el('ul', 'ib-diag-list');
-    list.id = 'ib-diag-list';
-    S.rows.forEach(function (r) {
+  function formatDuration(ms) {
+    if (ms == null || !isFinite(ms) || ms < 0) return '不可用';
+    var seconds = Math.floor(ms / 1000);
+    var days = Math.floor(seconds / 86400);
+    var hours = Math.floor((seconds % 86400) / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    if (days) return days + ' 天 ' + hours + ' 小时';
+    if (hours) return hours + ' 小时 ' + minutes + ' 分';
+    if (minutes) return minutes + ' 分 ' + (seconds % 60) + ' 秒';
+    return seconds + ' 秒';
+  }
+  function runnerUptime() {
+    var p = S.probes.restart;
+    var startedAt = Number(p && p.json && p.json.startedAt);
+    if (!p || !p.healthy || !startedAt || !isFinite(startedAt) || startedAt > Date.now()) return '不可用';
+    return formatDuration(Date.now() - startedAt);
+  }
+  function statusName(status) { return ST_TEXT[status] || '未检查'; }
+  function countAbnormal() {
+    var rows = (S.services || []).concat((S.rows || []).filter(function (r) {
+      return r.id === 'chat' || r.id === 'voice' || r.id === 'vision';
+    }));
+    return rows.filter(function (r) { return r.status === ST.ATTENTION || r.status === ST.DOWN; }).length;
+  }
+  function appendMetric(host, label, value, note, cls) {
+    var metric = el('div', 'ib-diag-metric' + (cls ? ' ' + cls : ''));
+    metric.appendChild(el('div', 'ib-diag-metric-label', label));
+    metric.appendChild(el('div', 'ib-diag-metric-value', value));
+    if (note) metric.appendChild(el('div', 'ib-diag-metric-note', note));
+    host.appendChild(metric);
+  }
+  function renderOverview(host) {
+    var section = el('section', 'ib-diag-section ib-diag-overview');
+    section.setAttribute('aria-label', '系统概览');
+    section.appendChild(el('h3', 'ib-diag-section-title', '系统概览'));
+    var stats = el('div', 'ib-diag-overview-grid');
+    var serviceValue = S.checking ? '检查中' : (S.lastCheckAt ? statusName(S.overall) : '等待检查');
+    var errorCount = S.errorLog.length;
+    appendMetric(stats, '服务状态', serviceValue, S.lastCheckAt ? ('最近检查 ' + clockText(S.lastCheckAt)) : '点击右上角检查');
+    appendMetric(stats, '异常数量', S.lastCheckAt ? String(countAbnormal()) : '—', S.lastCheckAt ? '按已检查项目统计' : '尚无诊断结果');
+    appendMetric(stats, '运行时长', runnerUptime(), 'Runner 报告的进程运行时间');
+    section.appendChild(stats);
+    var errCount = el('span', 'ib-diag-error-count', errorCount ? ('本次页面会话捕获 ' + errorCount + ' 条错误') : '本次页面会话暂无结构化错误');
+    errCount.id = 'ib-diag-error-count';
+    section.appendChild(errCount);
+    host.appendChild(section);
+  }
+
+  function renderStatusRows(list, rows, prefix) {
+    rows.forEach(function (r) {
       var li = el('li', 'ib-diag-row');
       li.dataset.cap = r.id;
       li.dataset.status = r.status;
@@ -1176,12 +1545,88 @@
       var pill = el('span', 'ib-diag-status ' + statusClass(r.status), ST_TEXT[r.status] || r.status);
       top.appendChild(pill);
       li.appendChild(top);
-      if (r.detail) li.appendChild(el('p', 'ib-diag-detail', r.detail));
-      if (r.note) li.appendChild(el('p', 'ib-diag-note', r.note));
-      if (r.hint) li.appendChild(el('p', 'ib-diag-hint', r.hint));
+      if (r.status !== ST.OK && r.status !== ST.CHECKING) {
+        var details = el('details', 'ib-diag-row-details');
+        var summary = el('summary', '', '查看详情');
+        details.appendChild(summary);
+        if (r.detail) details.appendChild(el('p', 'ib-diag-detail', r.detail));
+        if (r.note) details.appendChild(el('p', 'ib-diag-note', r.note));
+        if (r.hint) details.appendChild(el('p', 'ib-diag-hint', r.hint));
+        if (r.latencyMs) details.appendChild(el('p', 'ib-diag-note', '响应时间 ' + r.latencyMs + ' ms'));
+        if (r.categories && r.categories.length) details.appendChild(el('p', 'ib-diag-note', '存储状态码：' + r.categories.join('、')));
+        li.appendChild(details);
+      }
       list.appendChild(li);
     });
-    host.appendChild(list);
+  }
+  function renderCoreServices(host) {
+    var section = el('section', 'ib-diag-section');
+    section.appendChild(el('h3', 'ib-diag-section-title', '核心服务'));
+    var list = el('ul', 'ib-diag-list');
+    list.id = 'ib-diag-service-list';
+    renderStatusRows(list, S.services || [], 'service');
+    section.appendChild(list);
+    section.appendChild(el('h4', 'ib-diag-subtitle', '应用功能'));
+    var features = (S.rows || []).filter(function (r) { return r.id === 'chat' || r.id === 'voice' || r.id === 'vision'; });
+    var featureList = el('ul', 'ib-diag-list ib-diag-feature-list');
+    featureList.id = 'ib-diag-feature-list';
+    renderStatusRows(featureList, features, 'feature');
+    section.appendChild(featureList);
+    host.appendChild(section);
+  }
+
+  function jsHeapText() {
+    try {
+      var perf = window.performance;
+      var mem = perf && perf.memory;
+      if (!mem || !(Number(mem.usedJSHeapSize) >= 0) || !(Number(mem.jsHeapSizeLimit) > 0)) return '不可用';
+      var used = (Number(mem.usedJSHeapSize) / (1024 * 1024)).toFixed(1);
+      var limit = (Number(mem.jsHeapSizeLimit) / (1024 * 1024)).toFixed(1);
+      return used + ' / ' + limit + ' MB';
+    } catch (e) { return '不可用'; }
+  }
+  function renderResources(host) {
+    var section = el('section', 'ib-diag-section ib-diag-resources');
+    section.appendChild(el('h3', 'ib-diag-section-title', '资源与性能'));
+    var grid = el('div', 'ib-diag-resource-grid');
+    appendMetric(grid, '页面 JS 堆内存', jsHeapText(), '浏览器不提供时显示不可用');
+    appendMetric(grid, 'CPU 使用率', '不可用', '当前运行时没有可复用的 CPU 指标');
+    appendMetric(grid, '本次检查耗时', S.lastCheckAt ? (S.lastCheckDurationMs + ' ms') : '未检查', '仅记录手动检查的耗时');
+    section.appendChild(grid);
+    host.appendChild(section);
+  }
+
+  function renderErrors(host) {
+    var section = el('section', 'ib-diag-section ib-diag-errors');
+    section.id = 'ib-diag-errors';
+    var titleRow = el('div', 'ib-diag-section-heading');
+    titleRow.appendChild(el('h3', 'ib-diag-section-title', '近期错误'));
+    titleRow.appendChild(el('span', 'ib-diag-error-total', String(S.errorLog.length)));
+    section.appendChild(titleRow);
+    if (!S.errorsExpanded) {
+      section.appendChild(el('p', 'ib-diag-empty', '错误内容默认收起；导出报告只包含错误代码、分类和时间。'));
+    } else if (!S.errorLog.length) {
+      section.appendChild(el('p', 'ib-diag-empty', '本次页面会话尚未捕获到结构化错误。'));
+    } else {
+      var list = el('ul', 'ib-diag-error-list');
+      var visible = S.errorLog.slice(0, 20);
+      visible.forEach(function (item) {
+        var li = el('li', 'ib-diag-error-row');
+        li.appendChild(el('code', 'ib-diag-error-code', safeVal(item.code)));
+        if (item.category) li.appendChild(el('span', 'ib-diag-error-category', safeVal(item.category)));
+        li.appendChild(el('time', 'ib-diag-error-time', clockText(item.at)));
+        list.appendChild(li);
+      });
+      section.appendChild(list);
+    }
+    var toggle = el('button', 'btn ib-diag-error-toggle', S.errorsExpanded ? '收起错误记录' : '查看错误记录');
+    toggle.type = 'button';
+    toggle.id = 'ib-diag-errors-toggle';
+    toggle.setAttribute('aria-expanded', S.errorsExpanded ? 'true' : 'false');
+    toggle.onclick = function () { S.errorsExpanded = !S.errorsExpanded; render(); };
+    section.appendChild(toggle);
+    section.appendChild(el('p', 'ib-diag-note', '错误记录仅保留代码、分类和时间，不收集请求正文或凭据。'));
+    host.appendChild(section);
   }
 
   function renderRepair(host) {
@@ -1253,13 +1698,6 @@
 
   function renderActions(host) {
     var bar = el('div', 'ib-diag-actions');
-    var re = el('button', 'btn btn-primary', S.checking ? '正在检查…' : '重新检查');
-    re.type = 'button';
-    re.id = 'ib-diag-recheck';
-    re.disabled = S.checking;
-    re.onclick = function () { runChecks(); };
-    bar.appendChild(re);
-
     var det = el('button', 'btn', S.detailsOpen ? '收起技术详情' : '查看技术详情');
     det.type = 'button';
     det.id = 'ib-diag-details';
@@ -1295,19 +1733,13 @@
     var host = S.host;
     if (!host || typeof document === 'undefined') return;
     clear(host);
-    var intro = el('div', 'module-intro');
-    var top = el('div', 'module-intro-top');
-    top.appendChild(el('h2', '', '系统诊断'));
-    top.appendChild(el('span', 'module-intro-sub', 'System check'));
-    intro.appendChild(top);
-    intro.appendChild(el('div', 'module-intro-rule'));
-    intro.appendChild(el('div', 'module-intro-desc', '看看有哪些功能正常、哪些需要注意，以及可以怎么处理。\n不需要懂技术，也不用打开开发者工具。'));
-    host.appendChild(intro);
-
     var card = el('div', 'glass-card ib-diag');
     card.id = 'ib-diag';
     renderHead(card);
-    renderRows(card);
+    renderOverview(card);
+    renderCoreServices(card);
+    renderResources(card);
+    renderErrors(card);
     renderRepair(card);
     renderAiTest(card);
     renderActions(card);
@@ -1332,7 +1764,7 @@
       app.appendChild(host);
     }
     S.host = host;
-    render();
+    computeAndRender();
     mountSettingsEntry();
   }
   function mountSettingsEntry() {
@@ -1433,14 +1865,16 @@
     readProductVersion: readProductVersion,
     status: function () {
       return {
-        overall: S.overall, headline: S.headline, rows: S.rows.slice(0),
+        overall: S.overall, headline: S.headline, rows: S.rows.slice(0), services: S.services.slice(0),
         checking: S.checking, repairing: S.repairing, aiBusy: S.aiBusy,
-        lastCheckAt: S.lastCheckAt, boot: S.boot, repairLog: S.repairLog.slice(0)
+        lastCheckAt: S.lastCheckAt, lastCheckDurationMs: S.lastCheckDurationMs,
+        boot: S.boot, repairLog: S.repairLog.slice(0)
       };
     },
     __test: {
       ST: ST, ST_TEXT: ST_TEXT, CAPS: CAPS, PROBES: PROBES,
       deriveCaps: deriveCaps,
+      deriveServices: deriveServices,
       runChecks: runChecks,
       reportText: reportText,
       technicalText: technicalText,

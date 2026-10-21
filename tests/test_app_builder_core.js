@@ -42,11 +42,25 @@ test('App Builder package IDs, diffs, CSP preview and capability boundary are st
   assert.match(srcdoc, /Content-Security-Policy/);
   assert.match(srcdoc, /connect-src \'none\'/);
   assert.match(srcdoc, /sandbox|AppStorage|ib-generated-app-storage-request/);
+  assert.match(srcdoc, /__TAURI_INTERNALS__/);
+  assert.match(srcdoc, /ib-generated-app-ready/);
   const standalone = core.buildStandaloneHtml(draft);
   assert.match(standalone, /standalone-app-storage-request/);
   assert.match(standalone, /localStorage\.setItem/);
   assert.match(standalone, /sandbox.*allow-scripts/);
-  assert.doesNotMatch(standalone, /ib-generated-app-storage-request|Home Node|__TAURI__|fetch\(/);
+  assert.doesNotMatch(standalone, /ib-generated-app-storage-request|Home Node|window\.__TAURI__(?:_INTERNALS__)?|fetch\(/);
+  assert.equal(typeof core.publishSandboxedPreview, 'function');
+  assert.equal(typeof core.revokeSandboxedPreview, 'function');
+  const previousLocation = global.location;
+  try {
+    global.location = { protocol: 'file:' };
+    assert.equal(core.canUseLocalSrcdocPreview(), true, 'file host keeps its sandboxed offline preview path');
+    global.location = { protocol: 'http:', origin: 'http://tauri.localhost' };
+    assert.equal(core.canUseLocalSrcdocPreview(), false, 'Tauri never falls back to inherited srcdoc CSP');
+  } finally {
+    if (previousLocation === undefined) delete global.location;
+    else global.location = previousLocation;
+  }
   const sourceZip = unzipStored(core.buildSourceZip(draft));
   assert.deepEqual(Object.keys(sourceZip).sort(), ['README.md', 'app.js', 'index.html', 'standalone.html', 'styles.css']);
   assert.equal(sourceZip['index.html'], draft.files['index.html']);

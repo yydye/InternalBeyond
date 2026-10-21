@@ -64,6 +64,16 @@
         panel.hidden = panel.getAttribute('data-settings-panel') !== category;
       });
       page.setAttribute('data-settings-active-category', category);
+      if (category === 'services') {
+        try {
+          var qq = win.IB && win.IB.qqOnebot;
+          if (qq && typeof qq.refreshRoleCatalog === 'function') qq.refreshRoleCatalog();
+        } catch (_) { }
+        try {
+          var officialQQ = win.IB && win.IB.qqOfficialUI;
+          if (officialQQ && typeof officialQQ.refreshRoleCatalog === 'function') officialQQ.refreshRoleCatalog();
+        } catch (_) { }
+      }
       updateThemeStatus();
       return category;
     }

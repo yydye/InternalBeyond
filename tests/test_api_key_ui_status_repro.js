@@ -1,7 +1,5 @@
 'use strict';
-/* API Key UI 状态审计 —— 区分「真实凭证缺失」与「UI 误报无密钥」。
-   用真实 Chrome 同时检查：IndexedDB 记录、内存 apiConfigs、DOM 标签。
-   绝不打印真实 key；只输出布尔 presence / length。 */
+/* API 角色库 UI 冒烟：角色行信息、异常状态、详情入口、更多菜单与窄屏布局。 */
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -16,7 +14,6 @@ const { pathToFileURL } = require('url');
 
 
 const PAGE_URL = pathToFileURL(path.join(ROOT, 'InternalBeyond.html')).href;
-const TEST_KEY = 'TEST_KEY_DO_NOT_USE_12345';
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
@@ -46,9 +43,6 @@ async function main() {
 
   let failures = 0;
   const check = (name, condition, detail = '') => { if (condition) console.log('  PASS  ' + name); else { failures++; console.error('  FAIL  ' + name + (detail ? '  -> ' + detail : '')); } };
-  /* 全面检查：IndexedDB 记录、内存 apiConfigs、DOM 标签；只输出 presence/length */
-  const inspect = (id) => "(function(){ var out={ id:'" + id + "' }; try{ out.idb = (function(){ var r=window.__lastGet; return r ? { found:!!r, hasKey: !!(r&&r.apiKey), keyLen: (r&&r.apiKey)?r.apiKey.length:0 } : null; })(); }catch(e){ out.idbErr=String(e&&e.message||e); } try{ out.mem = (function(){ var c=(window.apiConfigs||[]).find(function(x){return x.id==='"+id+"'}); return c ? { found:true, hasKey:!!c.apiKey, keyLen: c.apiKey?c.apiKey.length:0 } : {found:false}; })(); }catch(e){} try{ out.dom = (function(){ var el=[].slice.call(document.querySelectorAll('.api-item-name')).find(function(e){return e.textContent.indexOf('" + id + "')>-1 || true;}); return null; })(); }catch(e){} return out; })()";
-
   let cdp;
   try {
     let ready = false;
@@ -60,30 +54,57 @@ async function main() {
     await cdp.send('Page.enable');
     await waitFor(cdp, "typeof window.IB === 'object' && typeof window.dbPut === 'function' && typeof window.renderApiList === 'function'", 25000);
 
-    /* 场景1：常规保存（_persistApiConfig 写 IndexedDB + fallback）→ 渲染 → 检查 DOM 标签 */
-    const idA = 'ui_A_' + Date.now();
-    await evaluate(cdp, "(async function(){ var cfg={ id:'" + idA + "', provider:'openai', model:'m-u', endpoint:'https://e.example.com/v1', apiKey:'" + TEST_KEY + "', nickname:'UI状态甲-"+idA+"', systemPrompt:'x', created:Date.now() }; var res=await _persistApiConfig(cfg); window.__lastGet=await dbGet('apiConfigs','" + idA + "'); window.__saveRes=res; return true; })()");
-    await evaluate(cdp, "loadApiConfigs(); renderApiList();");
-    const domTextA = await evaluate(cdp, "(function(){ var el=[].slice.call(document.querySelectorAll('.api-item-name')).find(function(e){return e.textContent.indexOf('UI状态甲-"+idA+"')>-1;}); return el?el.textContent:''; })()");
-    const idbA = await evaluate(cdp, "(function(){ var r=window.__lastGet; return { found:!!r, hasKey:!!(r&&r.apiKey), keyLen:(r&&r.apiKey)?String(r.apiKey).length:0 }; })()");
-    const memA = await evaluate(cdp, "(function(){ var c=(window.apiConfigs||[]).find(function(x){return x.id==='"+idA+"'}); return c?{ found:true, hasKey:!!c.apiKey, keyLen:c.apiKey?String(c.apiKey).length:0 }:{found:false}; })()");
-    check('S1.persistedHasKey', idbA && idbA.found && idbA.hasKey);
-    check('S1.memHasKey', memA && memA.found && memA.hasKey);
-    check('S1.domShowsHasKey', domTextA.indexOf('（无密钥）') === -1, JSON.stringify({ dom: domTextA }));
-    check('S1.domShowsPositive', domTextA.indexOf('密钥') === -1 && domTextA.indexOf('免密钥') === -1, JSON.stringify({ dom: domTextA }));
+    await evaluate(cdp, "navTo('api');true");
+    await evaluate(cdp, "(function(){var host=IB.host;var caps=host.capabilities.bind(host);host.capabilities=function(){return Object.assign({},caps(),{credentialStatus:{available:true}})};host.credentialStatus.available=true;host.credentialStatus.query=function(bindings){return Promise.resolve({ok:true,results:(bindings||[]).map(function(b){return{bindingId:b.bindingId,status:b.bindingId==='ready-vault'?'ready':'missing',secretPresent:b.bindingId==='ready-vault'}})})};return true})()");
+    await evaluate(cdp, "(async function(){await dbPut('apiConfigs',{id:'role-ready',provider:'openai',model:'gpt-4o-mini',endpoint:'https://api.example.invalid/v1/chat/completions',credentialRef:'ready-vault',nickname:'月桥',bio:'耐心地陪你整理复杂问题。',created:1});await dbPut('apiConfigs',{id:'role-missing',provider:'deepseek',model:'deepseek-chat',endpoint:'https://api.example.invalid/v1/chat/completions',credentialRef:'missing-vault',nickname:'雾灯',bio:'喜欢把想法慢慢说清楚。',created:2});await dbPut('apiConfigs',{id:'role-broken',provider:'openai',model:'',endpoint:'',credentialRef:'ready-vault',nickname:'未完成角色',created:3});await dbPut('apiConfigs',{id:'role-no-endpoint',provider:'openai',model:'gpt-4o-mini',endpoint:'',credentialRef:'ready-vault',nickname:'缺少接口',created:4});await dbPut('apiConfigs',{id:'role-archived',provider:'openai',model:'gpt-4o-mini',endpoint:'https://api.example.invalid/v1/chat/completions',credentialRef:'',nickname:'归档角色',bio:'旧简介',archived:true,archivedAt:5,created:5});await loadApiConfigs();await renderApiList();return true})()");
 
-    /* 场景2：构造「IndexedDB 有 key，但 localStorage fallback 为无 key 旧拷贝」→ loadApiConfigs 用 fallback 覆盖 */
-    const idB = 'ui_B_' + Date.now();
-    await evaluate(cdp, "(async function(){ var cfg={ id:'" + idB + "', provider:'deepseek', model:'m-u', endpoint:'https://e.example.com/v1', apiKey:'" + TEST_KEY + "', nickname:'UI状态乙-"+idB+"', systemPrompt:'x', created:Date.now() }; await _persistApiConfig(cfg); window.__lastGetB=await dbGet('apiConfigs','" + idB + "'); return true; })()");
-    /* 现在把 localStorage fallback 里该角色覆盖为「无 key」版本（模拟旧/脱敏残留拷贝） */
-    await evaluate(cdp, "(function(){ try{ var raw=localStorage.getItem(API_CONFIG_FALLBACK_KEY); var arr=JSON.parse(raw||'[]'); var i=arr.findIndex(function(x){return x.id==='"+idB+"'}); if(i>-1){ arr[i]=Object.assign({},arr[i],{apiKey:''}); localStorage.setItem(API_CONFIG_FALLBACK_KEY,JSON.stringify(arr)); } return true; }catch(e){ return String(e&&e.message||e); } })()");
-    await evaluate(cdp, "loadApiConfigs(); renderApiList();");
-    const idbB = await evaluate(cdp, "(function(){ var c=window.__lastGetB; return { found:!!c, hasKey:!!(c&&c.apiKey), keyLen:c&&c.apiKey?String(c.apiKey).length:0 }; })()");
-    const memB = await evaluate(cdp, "(function(){ var c=(window.apiConfigs||[]).find(function(x){return x.id==='"+idB+"'}); return c?{ found:true, hasKey:!!c.apiKey, keyLen:c.apiKey?String(c.apiKey).length:0 }:{found:false}; })()");
-    const domTextB = await evaluate(cdp, "(function(){ var el=[].slice.call(document.querySelectorAll('.api-item-name')).find(function(e){return e.textContent.indexOf('UI状态乙-"+idB+"')>-1;}); return el?el.textContent:''; })()");
-    check('S2.persistedKeyIntact', idbB && idbB.found && idbB.hasKey, JSON.stringify(idbB));
-    check('S2.memKeepsKeyAfterFix(IndexedDB authoritative)', memB && memB.found && memB.hasKey, JSON.stringify(memB));
-    check('S2.domShowsHasKeyAfterFix', domTextB.indexOf('（无密钥）') === -1, JSON.stringify({ dom: domTextB }));
+    const listState = await evaluate(cdp, "(function(){var list=document.getElementById('api-list-container');var rows=[].slice.call(list.querySelectorAll('.api-role-row'));var ready=list.querySelector('[data-api-id=\"role-ready\"]');var missing=list.querySelector('[data-api-id=\"role-missing\"]');var broken=list.querySelector('[data-api-id=\"role-broken\"]');var noEndpoint=list.querySelector('[data-api-id=\"role-no-endpoint\"]');return{count:rows.length,title:document.getElementById('api-mgmt-title').textContent,readyText:ready&&ready.textContent,missingText:missing&&missing.textContent,brokenText:broken&&broken.textContent,noEndpointText:noEndpoint&&noEndpoint.textContent,readyKeyButtons:ready&&ready.querySelectorAll('.ib-api-key-btn').length,readyExpressionButtons:ready&&ready.querySelectorAll('.ib-expression-manage').length,readyDeleteButtons:ready&&ready.querySelectorAll('.del-btn').length,more:ready&&ready.querySelector('.api-more-menu button')&&ready.querySelector('.api-more-menu button').textContent}})()");
+    check('list.showsAvatarNameBioAndModel', listState && listState.count === 4 && listState.readyText.includes('月桥') && listState.readyText.includes('耐心地陪你整理复杂问题') && listState.readyText.includes('gpt-4o-mini'), JSON.stringify(listState));
+    check('list.usesActualRoleCount', listState && listState.title.indexOf('4 个角色') >= 0 && listState.title.indexOf('数量不限') < 0, JSON.stringify(listState && listState.title));
+    check('list.omitsReadyStateAndRepeatedActions', listState && listState.readyText.indexOf('API 已就绪') < 0 && listState.readyKeyButtons === 0 && listState.readyExpressionButtons === 0 && listState.readyDeleteButtons === 0 && listState.more.indexOf('归档') >= 0, JSON.stringify(listState));
+    check('list.showsOnlyAccurateConfigurationIssues', listState && listState.missingText.indexOf('缺少 Credential Vault 凭据') >= 0 && listState.brokenText.indexOf('未配置模型') >= 0 && listState.noEndpointText.indexOf('未配置 Endpoint') >= 0 && listState.readyText.indexOf('Credential Vault') < 0, JSON.stringify(listState));
+    await evaluate(cdp, "IBI18n.setLocale('en-US');true");
+    check('locale.statusAndCountRefresh', await waitFor(cdp, "IBI18n.locale==='en-US'&&document.getElementById('api-mgmt-title').textContent.indexOf('4 roles')>=0&&document.querySelector('[data-api-id=\"role-missing\"]').textContent.indexOf('Credential Vault credential missing')>=0"));
+    await evaluate(cdp, "IBI18n.setLocale('zh-CN');true");
+    await waitFor(cdp, "IBI18n.locale==='zh-CN'&&document.getElementById('api-mgmt-title').textContent.indexOf('4 个角色')>=0");
+    const desktop = await evaluate(cdp, "(function(){var list=document.getElementById('api-list-container');var row=list.querySelector('.api-role-row');var main=row.querySelector('.api-role-main').getBoundingClientRect();var menu=row.querySelector('.api-more-menu').getBoundingClientRect();return{width:innerWidth,documentWidth:document.documentElement.scrollWidth,listWidth:list.scrollWidth,listClient:list.clientWidth,mainRight:main.right,menuLeft:menu.left,rowRight:row.getBoundingClientRect().right}})()");
+    check('layout.desktopRowFits', desktop && desktop.width >= 1280 && desktop.documentWidth <= desktop.width + 1 && desktop.listWidth <= desktop.listClient + 1 && desktop.mainRight < desktop.menuLeft && desktop.rowRight <= desktop.width + 1, JSON.stringify(desktop));
+    await evaluate(cdp, "window.__apiTestHadInfernal=document.body.classList.contains('theme-infernal');document.body.classList.add('theme-infernal');true");
+    const infernalDesktop = await evaluate(cdp, "(function(){var name=document.querySelector('#api-list-container .api-item-name');return{width:innerWidth,documentWidth:document.documentElement.scrollWidth,rows:document.querySelectorAll('#api-list-container .api-role-row').length,nameColor:name&&getComputedStyle(name).color}})()");
+    check('layout.infernalDesktopReadable', infernalDesktop && infernalDesktop.rows === 4 && infernalDesktop.documentWidth <= infernalDesktop.width + 1 && !!infernalDesktop.nameColor, JSON.stringify(infernalDesktop));
+
+    await evaluate(cdp, "document.querySelector('[data-api-id=\"role-ready\"] .api-role-main').click();true");
+    const detail = await evaluate(cdp, "(function(){var editor=document.getElementById('api-editor');var key=document.getElementById('api-key-manage-btn');var packs=document.getElementById('api-expression-manage-btn');return{open:editor.style.display!=='none',keyLabel:key&&key.textContent,expressionVisible:packs&&!packs.hidden,expressionRole:packs&&packs.dataset.expressionRoleId}})()");
+    check('detail.movesKeyAndExpressionManagement', detail && detail.open && detail.keyLabel === '更换 API Key' && detail.expressionVisible && detail.expressionRole === 'role-ready', JSON.stringify(detail));
+    await evaluate(cdp, "document.querySelector('[data-api-id=\"role-missing\"] .api-role-main').click();true");
+    check('detail.missingCredentialShowsAddAction', await evaluate(cdp, "document.getElementById('api-key-manage-btn').textContent==='添加 API Key'"));
+    await evaluate(cdp, "document.getElementById('api-key-manage-btn').click();true");
+    check('detail.addActionOpensExistingVaultModal', await evaluate(cdp, "!document.getElementById('ib-cred-modal-backdrop').hidden&&document.getElementById('ib-cred-modal-title').textContent==='添加 API Key'"));
+    await evaluate(cdp, "_ibCloseApiKeyModal();document.querySelector('[data-api-id=\"role-ready\"] .api-role-main').click();true");
+    await evaluate(cdp, "document.getElementById('api-key-manage-btn').click();true");
+    check('detail.keyActionOpensExistingVaultModal', await evaluate(cdp, "!document.getElementById('ib-cred-modal-backdrop').hidden&&document.getElementById('ib-cred-modal-title').textContent==='更换 API Key'"));
+    await evaluate(cdp, "_ibCloseApiKeyModal();document.getElementById('api-expression-manage-btn').click();true");
+    check('detail.expressionActionOpensManager', await waitFor(cdp, "!!document.querySelector('.ib-expression-dialog.is-open')"));
+    await evaluate(cdp, "var close=document.querySelector('.ib-expression-dialog .ib-expression-close');if(close)close.click();true");
+
+    await evaluate(cdp, "var menu=document.querySelector('[data-api-id=\"role-ready\"] .api-more-menu');menu.querySelector('summary').click();menu.querySelector('button').click();true");
+    check('list.moreMenuKeepsDeleteConfirmationChoices', await waitFor(cdp, "document.getElementById('api-del-overlay').classList.contains('show')&&document.getElementById('adl-opt-archive')&&document.getElementById('adl-opt-delete')"));
+    await evaluate(cdp, "closeApiDelDialog(false);true");
+
+    await evaluate(cdp, "toggleApiArchiveView();true");
+    const archiveState = await evaluate(cdp, "(function(){var row=document.querySelector('.api-arch-item');return{count:document.getElementById('api-mgmt-title').textContent,hasMore:!!(row&&row.querySelector('.api-more-menu')),directDelete:!!(row&&row.querySelector('.del-btn'))}})()");
+    check('archive.usesActualCountAndMoreMenu', archiveState && archiveState.count.indexOf('1 个归档角色') >= 0 && archiveState.hasMore && !archiveState.directDelete, JSON.stringify(archiveState));
+    await evaluate(cdp, "var menu=document.querySelector('.api-arch-item .api-more-menu');menu.querySelector('summary').click();menu.querySelector('button').click();true");
+    check('archive.permanentDeleteStillRequiresInlineConfirm', await waitFor(cdp, "!!document.querySelector('.api-arch-item .api-arch-confirm')&&document.querySelectorAll('.api-arch-item .am-mini').length===2"));
+    await evaluate(cdp, "document.querySelector('.api-arch-item .am-mini:not(.am-mini-danger)').click();toggleApiArchiveView();true");
+
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:375,height:812,deviceScaleFactor:1,mobile:true});
+    const narrow = await evaluate(cdp, "(function(){var list=document.getElementById('api-list-container');var row=list.querySelector('.api-role-row');var main=row&&row.querySelector('.api-role-main');var menu=row&&row.querySelector('.api-more-menu');return{width:innerWidth,documentWidth:document.documentElement.scrollWidth,listWidth:list.scrollWidth,listClient:list.clientWidth,row:row&&row.getBoundingClientRect().right,main:main&&main.getBoundingClientRect().right,menu:menu&&menu.getBoundingClientRect().right}})()");
+    check('layout.narrowViewportFits', narrow && narrow.width === 375 && narrow.documentWidth <= 376 && narrow.listWidth <= narrow.listClient + 1 && narrow.row <= 376 && narrow.main < narrow.menu, JSON.stringify(narrow));
+    await evaluate(cdp, "document.body.classList.remove('theme-infernal');true");
+    const narrowInternal = await evaluate(cdp, "(function(){var list=document.getElementById('api-list-container');var row=list.querySelector('.api-role-row');var menu=row&&row.querySelector('.api-more-menu');return{width:innerWidth,documentWidth:document.documentElement.scrollWidth,listWidth:list.scrollWidth,listClient:list.clientWidth,menuRight:menu&&menu.getBoundingClientRect().right}})()");
+    check('layout.internalNarrowViewportFits', narrowInternal && narrowInternal.width === 375 && narrowInternal.documentWidth <= 376 && narrowInternal.listWidth <= narrowInternal.listClient + 1 && narrowInternal.menuRight <= 376, JSON.stringify(narrowInternal));
+    if(await evaluate(cdp,"window.__apiTestHadInfernal"))await evaluate(cdp,"document.body.classList.add('theme-infernal');true");
 
   } catch (e) {
     console.error('  ERROR  ' + (e && e.message || e));

@@ -349,6 +349,34 @@ async function withFetch(handler, fn) {
     check('G4 sync 回环：upserts.map(u => u.record) 得到真实记录', records.length === 1 && records[0].id === 'mem_1', records);
   });
 
+  /* ══════════════════════════════════════════════════════════════════
+     H. Runner 协商端口：Tauri IPC 只同步 URL，不覆盖显式令牌
+     ══════════════════════════════════════════════════════════════════ */
+  section('H. Runner endpoint negotiation');
+  const endpointToken = 'explicit-envelope-test-token';
+  const endpointIB = loadClient({ ib_home_node_token: endpointToken });
+  const endpointCalls = [];
+  global.window.__TAURI__ = { core: { invoke: name => {
+    endpointCalls.push(name);
+    if (name === 'home_node_endpoint') return Promise.resolve({ homeNodeUrl: 'http://127.0.0.1:49173' });
+    return Promise.reject(new Error('unexpected-credential-read'));
+  } } };
+  const endpointRequests = [];
+  const previousFetch = global.fetch;
+  global.fetch = (url, init) => {
+    endpointRequests.push({ url: String(url), headers: init && init.headers || {} });
+    return Promise.resolve(httpResponse(200, { ok: true, protocolVersion: 1, service: 'internal-beyond-home-node' }));
+  };
+  try {
+    const endpointResult = await endpointIB.createMemoryRemote({}).health();
+    check('H1 使用 Host/Runner 协商的实际 Home Node endpoint', endpointRequests.length === 1 && endpointRequests[0].url === 'http://127.0.0.1:49173/health', endpointRequests);
+    check('H2 保留用户显式配置的 token', endpointRequests[0] && endpointRequests[0].headers['X-IB-Home-Token'] === endpointToken, endpointRequests[0] && endpointRequests[0].headers);
+    check('H3 显式 token 只查询 endpoint IPC，不读取或替换凭据', endpointCalls.join(',') === 'home_node_endpoint' && endpointResult.ok === true, endpointCalls);
+  } finally {
+    global.fetch = previousFetch;
+    delete global.window.__TAURI__;
+  }
+
   console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
   if (failed > 0) process.exitCode = 1;
 

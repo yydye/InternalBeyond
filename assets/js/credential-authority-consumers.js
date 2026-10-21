@@ -75,6 +75,32 @@
     if (!String(route.apiConfigId || '').trim()) {
       return projection({ status: 'unknown', sourceClass: 'image-router-inherit', errorCode: 'IMAGE_ROUTE_INHERIT_BINDING' });
     }
+    if (typeof router.resolveRoute === 'function') {
+      var resolved;
+      try { resolved = await router.resolveRoute({ operation: name === 'editing' ? 'edit' : 'generate' }); }
+      catch (_) { return unavailable('image-router', 'IMAGE_ROUTE_RESOLUTION_FAILED'); }
+      if (!resolved || resolved.ok !== true) {
+        var missing = resolved && /NO_KEY|CONFIG_MISSING|NO_ENDPOINT/.test(String(resolved.code || ''));
+        return projection({
+          status: missing ? 'missing' : 'unavailable',
+          sourceClass: 'image-router',
+          errorCode: String(resolved && resolved.code || 'IMAGE_ROUTE_RESOLUTION_FAILED')
+        });
+      }
+      var cfg = resolved.cfg || {};
+      var hasChatRef = Object.prototype.hasOwnProperty.call(cfg, 'credentialRef');
+      var bindingId = String(cfg.imageGenCredentialRef || (hasChatRef ? cfg.credentialRef : cfg.id) || '').trim();
+      if (!bindingId) return projection({ status: 'missing', sourceClass: 'image-router', errorCode: 'IMAGE_CREDENTIAL_BINDING_MISSING' });
+      var endpoint = String(resolved.endpoint || cfg.imageGenEndpoint || cfg.endpoint || '');
+      var local = false;
+      try { var url = new URL(endpoint); local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(url.hostname); } catch (_) {}
+      return queryBinding({
+        bindingId: bindingId,
+        capability: name === 'editing' ? 'image.edit' : 'image.generate',
+        credentialPolicy: local ? 'none' : 'required',
+        endpointClass: local ? 'loopback' : 'remote'
+      });
+    }
     return queryBinding({
       bindingId: String(route.apiConfigId),
       capability: 'image.generate',

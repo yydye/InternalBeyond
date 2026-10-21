@@ -1166,7 +1166,7 @@ function playTrack(i){if(i<0||i>=playlist.length)return;currentTrackIdx=i;audioE
 function togglePlay(){if(currentTrackIdx===-1)return;if(audioEl.paused){audioEl.play();document.getElementById('play-btn').innerHTML=svgPause}else{audioEl.pause();document.getElementById('play-btn').innerHTML=svgPlay}}
 function prevTrack(){if(!playlist.length)return;playTrack(currentTrackIdx<=0?playlist.length-1:currentTrackIdx-1)}
 function nextTrack(){if(!playlist.length)return;if(playMode==='random'){playTrack(Math.floor(Math.random()*playlist.length));return}playTrack(currentTrackIdx>=playlist.length-1?0:currentTrackIdx+1)}
-audioEl.addEventListener('ended',()=>{if(playMode==='single'){audioEl.currentTime=0;audioEl.play()}else nextTrack()});
+audioEl.addEventListener('ended',()=>{if(playMode==='single'){audioEl.currentTime=0;audioEl.play()}else if(typeof window.nextTrack==='function')window.nextTrack()});/* Music workspace replaces the legacy handler so ended tracks advance through the persisted library. */
 audioEl.addEventListener('timeupdate',()=>{if(audioEl.duration){const progress=Math.max(0,Math.min(100,audioEl.currentTime/audioEl.duration*100));document.getElementById('progress-fill').style.width=progress+'%';document.getElementById('progress-bar').setAttribute('aria-valuenow',Math.round(progress))}});
 function seekMusic(e){if(!audioEl.duration)return;const r=e.currentTarget.getBoundingClientRect();audioEl.currentTime=((e.clientX-r.left)/r.width)*audioEl.duration}
 const svgPlay='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
