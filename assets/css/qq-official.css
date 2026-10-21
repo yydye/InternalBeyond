@@ -1,0 +1,152 @@
+.qq-official-panel{display:grid;width:100%;min-width:0;box-sizing:border-box;gap:var(--space-2);padding:var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-surface);color:var(--content-primary)}
+.qq-official-panel h3,.qq-official-panel h5,.qq-official-panel p{margin:0}
+.qq-official-kicker{display:block;color:var(--content-muted);font-size:var(--fs-meta);letter-spacing:.12em;text-transform:uppercase}
+.qq-official-hero{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:0 0 var(--space-2);border:0;border-bottom:1px solid var(--border-soft);border-radius:0;background:transparent}
+.qq-official-hero h3{margin:var(--space-1) 0;font-size:1.2rem;color:var(--content-primary)}
+.qq-official-hero p,.qq-official-add>form>p{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.6}
+.qq-official-panel button{min-height:42px}
+.qq-official-panel input:not([type="checkbox"]),.qq-official-panel textarea,.qq-official-panel select{box-sizing:border-box;width:100%;min-height:42px;padding:var(--space-2) var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--surface-input);color:var(--content-primary);font:inherit;outline:none}
+.qq-official-panel textarea{min-height:68px;resize:vertical;line-height:1.5}
+.qq-official-panel input::placeholder,.qq-official-panel textarea::placeholder{color:var(--content-muted);opacity:.8}
+.qq-official-panel input:focus-visible,.qq-official-panel textarea:focus-visible,.qq-official-panel select:focus-visible,.qq-official-panel button:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.qq-official-panel label{display:grid;gap:var(--space-1);min-width:0;color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-panel button:disabled{opacity:.55;cursor:not-allowed}
+.qq-official-summary,.qq-official-notice{margin:0;padding:var(--space-2) var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient);color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.55}
+.qq-official-summary{padding:var(--space-1) 0;border:0;border-radius:0;background:transparent;color:var(--content-muted)}
+.qq-official-notice[data-state="error"]{color:var(--status-danger)}
+.qq-official-notice[data-state="active"]{color:var(--status-success)}
+.qq-official-guide,.qq-official-add,.qq-official-account,.qq-official-object-details,.qq-official-pending-fold,.qq-official-personal-fold{border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-surface)}
+.qq-official-guide>summary,.qq-official-add>summary,.qq-official-advanced>summary,.qq-official-advanced-inline>summary,.qq-official-secret>summary,.qq-official-object-details>summary,.qq-official-pending-fold>summary,.qq-official-personal-fold>summary{display:flex;align-items:center;gap:var(--space-2);min-height:46px;padding:0 var(--space-3);color:var(--content-primary);cursor:pointer;list-style:none}
+.qq-official-guide>summary::-webkit-details-marker,.qq-official-add>summary::-webkit-details-marker,.qq-official-advanced>summary::-webkit-details-marker,.qq-official-advanced-inline>summary::-webkit-details-marker,.qq-official-secret>summary::-webkit-details-marker,.qq-official-object-details>summary::-webkit-details-marker,.qq-official-pending-fold>summary::-webkit-details-marker,.qq-official-personal-fold>summary::-webkit-details-marker{display:none}
+.qq-official-guide>summary::after,.qq-official-add>summary::after,.qq-official-advanced>summary::after,.qq-official-advanced-inline>summary::after,.qq-official-secret>summary::after,.qq-official-object-details>summary::after,.qq-official-pending-fold>summary::after,.qq-official-personal-fold>summary::after{content:"›";margin-left:auto;color:var(--content-muted);font-size:1.2rem;transform:rotate(90deg)}
+.qq-official-guide[open]>summary::after,.qq-official-add[open]>summary::after,.qq-official-advanced[open]>summary::after,.qq-official-advanced-inline[open]>summary::after,.qq-official-secret[open]>summary::after,.qq-official-object-details[open]>summary::after,.qq-official-pending-fold[open]>summary::after,.qq-official-personal-fold[open]>summary::after{transform:rotate(-90deg)}
+.qq-official-guide-icon{display:grid;place-items:center;flex:0 0 32px;height:32px;border:1px solid var(--border-soft);border-radius:50%;color:var(--accent);font-weight:700}
+.qq-official-guide>summary>span:last-child{display:grid;gap:2px}
+.qq-official-guide>summary small,.qq-official-advanced>summary span{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-guide-steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2);margin:0;padding:0 var(--space-3) var(--space-3);list-style:none}
+.qq-official-guide-steps li{display:grid;grid-template-columns:32px minmax(0,1fr);gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-guide-steps li>span{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--surface-input);color:var(--accent);font-size:var(--fs-meta);font-weight:700}
+.qq-official-guide-steps strong{color:var(--content-primary);font-size:var(--fs-meta)}
+.qq-official-guide-steps p{margin-top:4px;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-guide a{color:var(--accent)}
+.qq-official-guide-link{display:inline-flex;margin:0 var(--space-3) var(--space-3);font-size:var(--fs-meta)}
+.qq-official-add{padding-bottom:var(--space-3)}
+.qq-official-add>form{display:grid;gap:var(--space-3);padding:0 var(--space-3)}
+.qq-official-add-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2)}
+.qq-official-consent{display:flex!important;align-items:flex-start;gap:var(--space-2)!important;line-height:1.5}
+.qq-official-consent input{flex:0 0 18px;width:18px;height:18px;margin-top:2px;accent-color:var(--accent)}
+.qq-official-accounts{display:grid;gap:var(--space-3)}
+.qq-official-account{display:grid;gap:var(--space-2);padding:var(--space-2) 0;border:0;border-top:1px solid var(--border-soft);border-radius:0;background:transparent}
+.qq-official-account-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)}
+.qq-official-account-identity{display:grid;gap:var(--space-1);min-width:0}
+.qq-official-account-identity>strong{font-size:var(--fs-body);color:var(--content-primary)}
+.qq-official-account-identity>small{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-account-config{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:end;gap:var(--space-2)}
+.qq-official-state{display:inline-flex;align-items:center;gap:6px;width:max-content;color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--content-muted)}
+.qq-official-state[data-state="online"]::before{background:var(--status-success)}
+.qq-official-state[data-state="connecting"]::before,.qq-official-state[data-state="reconnecting"]::before{background:var(--accent)}
+.qq-official-state[data-state="failed"]::before{background:var(--status-danger)}
+.qq-official-account-actions,.qq-official-entity-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.qq-official-default-role{max-width:620px}
+.qq-official-account-status{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);padding:var(--space-2) var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient);font-size:var(--fs-meta)}
+.qq-official-account-status>span{color:var(--content-secondary)}
+.qq-official-capability-note{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.55}
+.qq-official-toggle{display:flex!important;align-items:center;gap:var(--space-2)!important;min-height:38px}
+.qq-official-toggle input{width:18px;height:18px;accent-color:var(--accent)}
+.qq-official-section{display:grid;gap:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--border-soft)}
+.qq-official-section-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.qq-official-section-head h5{margin-top:3px;color:var(--content-primary);font-size:var(--fs-body)}
+.qq-official-section-head p{margin-top:4px;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-count{display:grid;place-items:center;min-width:28px;height:28px;padding:0 8px;border:1px solid var(--border-soft);border-radius:999px;color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-object-details,.qq-official-pending-fold{overflow:hidden;background:var(--glass-bg-ambient)}
+.qq-official-object-details>summary,.qq-official-pending-fold>summary{justify-content:flex-start}
+.qq-official-object-details>summary strong,.qq-official-pending-fold>summary strong{font-size:var(--fs-meta);font-weight:600}
+.qq-official-object-details>summary span,.qq-official-pending-fold>summary span{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-pending-fold[data-has-pending="true"]{border-color:color-mix(in srgb,var(--accent) 48%,var(--border-soft))}
+.qq-official-pending-fold[data-has-pending="true"]>summary strong,.qq-official-pending-fold[data-has-pending="true"]>summary span{color:var(--ib-token-accent-action)}
+.qq-official-object-content{display:grid;gap:var(--space-2);padding:0 var(--space-2) var(--space-2)}
+.qq-official-personal-fold{width:100%;min-width:0;box-sizing:border-box;padding:0 var(--space-2);background:var(--glass-bg-ambient)}
+.qq-official-personal-fold>summary{min-height:48px}
+.qq-official-personal-fold>summary>span{display:grid;gap:2px}
+.qq-official-personal-fold>summary strong{font-size:var(--fs-meta);font-weight:600}
+.qq-official-personal-fold>summary small{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-personal-fold-content{padding-bottom:var(--space-2)}
+.qq-official-entity-list{display:grid;gap:var(--space-2)}
+.qq-official-entity-card,.qq-official-pending-card{display:grid;gap:var(--space-2);min-width:0;padding:var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-entity-title{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.qq-official-entity-title>div{display:grid;gap:4px;min-width:0}
+.qq-official-entity-title strong{overflow-wrap:anywhere;color:var(--content-primary);font-size:var(--fs-body)}
+.qq-official-entity-title span,.qq-official-entity-actions small{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-badge{display:inline-flex;align-items:center;min-height:26px;padding:0 var(--space-2);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-muted);font-size:var(--fs-meta);white-space:nowrap}
+.qq-official-badge.is-active{color:var(--status-success)}
+.qq-official-local-note{max-width:620px}
+.qq-official-entity-actions{justify-content:space-between}
+.qq-official-revoke,.qq-official-danger-action{color:var(--status-danger)}
+.qq-official-approval{display:grid;gap:var(--space-2);padding:var(--space-3);border:1px solid var(--accent);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-approval>.qq-official-section-head h5{margin-top:3px}
+.qq-official-safety-note,.qq-official-helper{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-provider-hint{display:grid;gap:var(--space-1);padding:var(--space-2) var(--space-3);border-left:2px solid var(--accent);background:var(--glass-bg-ambient)}
+.qq-official-provider-hint>span{color:var(--content-secondary);font-size:var(--fs-meta);font-weight:600}
+.qq-official-provider-hint p{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-provider-hint button{justify-self:start}
+.qq-official-entity-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:end;gap:var(--space-2)}
+.qq-official-advanced,.qq-official-advanced-inline{border-top:1px solid var(--border-soft)}
+.qq-official-advanced>summary,.qq-official-advanced-inline>summary{padding-right:0;padding-left:0;color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-advanced-content{display:grid;gap:var(--space-3);padding:0 0 var(--space-2)}
+.qq-official-advanced-content section{display:grid;gap:var(--space-1)}
+.qq-official-advanced-content h5{color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-advanced-inline{width:100%}
+.qq-official-id{display:block;max-width:100%;overflow-wrap:anywhere;padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-muted);font-family:var(--font-code,monospace);font-size:var(--fs-meta)}
+.qq-official-secret{border-top:1px solid var(--border-soft);color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-secret>summary{padding:0}
+.qq-official-secret>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:var(--space-2);padding-bottom:var(--space-2)}
+.qq-official-group-add{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:var(--space-2)}
+.qq-official-group-admin-pending{display:grid;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-surface)}
+.qq-official-group-admin-pending>strong{color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-group-admin-pending>p{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-admin-candidate{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.qq-official-admin-candidate>span{display:grid;gap:3px}
+.qq-official-admin-candidate small{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-official-danger-row{display:flex;justify-content:flex-end;padding-top:var(--space-2);border-top:1px solid var(--border-soft)}
+.qq-official-migration{display:grid;gap:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--border-soft)}
+.qq-official-migration>h5{color:var(--content-primary);font-size:var(--fs-meta)}
+.qq-official-migration>p,.qq-official-migration-status{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.55}
+.qq-official-migration-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.qq-official-migration-roles{display:grid;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-migration-roles>strong,.qq-official-migration-account>div>strong{color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-migration-roles>label{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:var(--space-2)}
+.qq-official-migration-roles code,.qq-official-migration-account code{overflow-wrap:anywhere;color:var(--content-muted);font:var(--ib-token-text-technical)}
+.qq-official-migration-diff{display:grid;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-migration-diff>strong{color:var(--content-primary);font-size:var(--fs-meta)}
+.qq-official-migration-diff dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-1)}
+.qq-official-migration-diff dl>div{display:flex;justify-content:space-between;gap:var(--space-1);padding:var(--space-1) var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control)}
+.qq-official-migration-diff dt,.qq-official-migration-diff dd{color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-official-migration-account{border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--glass-bg-ambient)}
+.qq-official-migration-account>summary{display:flex;align-items:center;gap:var(--space-2);min-height:44px;padding:0 var(--space-2);list-style:none;cursor:pointer}
+.qq-official-migration-account>summary::-webkit-details-marker{display:none}
+.qq-official-migration-account>summary::after{content:"›";margin-left:auto;color:var(--content-muted);transform:rotate(90deg)}
+.qq-official-migration-account[open]>summary::after{transform:rotate(-90deg)}
+.qq-official-migration-account>summary strong{color:var(--content-primary);font-size:var(--fs-meta)}
+.qq-official-migration-account>summary code{max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qq-official-migration-account>div{display:grid;gap:var(--space-1);padding:0 var(--space-2) var(--space-2)}
+.qq-official-migration-account>div p,.qq-official-migration-account li{color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.5}
+.qq-official-migration-account>div ul{display:grid;gap:2px;margin:0;padding-left:1.2em}
+.qq-official-migration-account .qq-official-badge{margin-left:auto}
+.qq-official-error{margin:0;color:var(--status-danger);font-size:var(--fs-meta);line-height:1.55}
+.qq-official-stage{margin:0;padding:var(--space-2) var(--space-3);border-left:2px solid var(--accent);background:var(--glass-bg-ambient);color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.55}
+.qq-official-empty{margin:0;padding:var(--space-2) 0;color:var(--content-muted);font-size:var(--fs-meta)}
+
+@media(max-width:700px){
+  .qq-official-hero,.qq-official-account-head{align-items:flex-start;flex-direction:column}
+  .qq-official-account-actions{width:100%;justify-content:flex-start}
+  .qq-official-account-status{align-items:flex-start;flex-direction:column}
+  .qq-official-account-config,.qq-official-guide-steps,.qq-official-add-grid,.qq-official-entity-settings{grid-template-columns:minmax(0,1fr)}
+  .qq-official-group-add,.qq-official-secret>div{grid-template-columns:minmax(0,1fr)}
+  .qq-official-entity-title{align-items:flex-start;flex-direction:column}
+  .qq-official-admin-candidate{align-items:flex-start;flex-direction:column}
+  .qq-official-migration-roles>label{grid-template-columns:minmax(0,1fr)}
+  .qq-official-migration-diff dl{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .qq-official-migration-account>summary{align-items:flex-start;flex-direction:column;padding:var(--space-2)}
+  .qq-official-migration-account>summary::after{align-self:flex-end;margin-left:0}
+}

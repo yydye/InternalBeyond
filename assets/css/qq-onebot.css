@@ -1,0 +1,89 @@
+.qq-onebot-shell{padding:var(--space-4);background:var(--surface-panel);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);box-shadow:var(--shadow-panel);color:var(--content-primary)}
+.qq-onebot-toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding-bottom:var(--space-3);border-bottom:1px solid var(--border-soft)}
+.qq-onebot-toolbar p{margin:5px 0 0;color:var(--content-secondary);font-size:var(--fs-body);line-height:1.6}
+.qq-onebot-label{display:block;color:var(--content-muted);font-size:var(--fs-meta);letter-spacing:.16em;text-transform:uppercase}
+.qq-onebot-add{padding:var(--space-4) 0}
+.qq-onebot-add h4,.qq-onebot-account h4{margin:0 0 var(--space-2);font-size:var(--fs-h3);font-weight:500;color:var(--content-primary)}
+.qq-onebot-add p,.qq-onebot-hint,.qq-onebot-guide p,.qq-onebot-guide li,.qq-onebot-empty{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.7}
+.qq-onebot-add form{display:grid;grid-template-columns:minmax(120px,.8fr) minmax(180px,1.2fr) auto;align-items:end;gap:var(--space-3)}
+.qq-onebot-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3) var(--space-4);align-items:end}
+.qq-onebot-add label,.qq-onebot-fields label,.qq-onebot-setup label{display:flex;flex-direction:column;gap:6px;color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.45}
+.qq-onebot-add input,.qq-onebot-add select,.qq-onebot-fields input,.qq-onebot-fields select,.qq-onebot-setup input{width:100%;min-width:0;box-sizing:border-box;min-height:42px;padding:var(--space-2) var(--space-3);border:1px solid var(--border-soft);border-radius:var(--radius-control);background:var(--surface-input);color:var(--content-primary);font:inherit;font-size:var(--fs-body);outline:none}
+.qq-onebot-add input:focus,.qq-onebot-add select:focus,.qq-onebot-fields input:focus,.qq-onebot-fields select:focus,.qq-onebot-setup input:focus{border-color:var(--border-strong);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus-ring) 28%,transparent)}
+.qq-onebot-account{padding:var(--space-4) 0;border-top:1px solid var(--border-soft)}
+.qq-onebot-account-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);margin-bottom:var(--space-3)}
+.qq-onebot-account-head h4{margin:3px 0}
+.qq-onebot-state{color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-onebot-account-detail{margin:var(--space-1) 0 0;color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.6}
+.qq-onebot-account-detail:not([hidden]){color:var(--status-danger)}
+.qq-onebot-takeover{flex-direction:row!important;align-items:center;min-height:42px;padding:0 var(--space-2);border-radius:var(--radius-control);color:var(--content-primary)!important}
+.qq-onebot-takeover input{width:18px;height:18px;min-height:0;accent-color:var(--accent)}
+.qq-onebot-hint{margin:var(--space-2) 0 var(--space-3)}
+.qq-onebot-setup{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-2);align-items:end}
+.qq-onebot-setup input{font-family:var(--font-mono,'Fira Code',monospace);font-size:var(--fs-meta)}
+.qq-onebot-guide{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.qq-onebot-guide summary{min-height:40px;display:flex;align-items:center;color:var(--content-secondary);font-size:var(--fs-body);cursor:pointer}
+.qq-onebot-guide ol{padding-left:1.4em}
+.qq-onebot-warning{padding-left:var(--space-3);border-left:2px solid var(--status-warning);color:var(--content-secondary)!important}
+.qq-onebot-empty{padding:var(--space-3) 0}
+.qq-onebot-shell .btn{min-height:40px}
+.qq-onebot-status[data-state="error"]{color:var(--status-danger)}
+.qq-onebot-status[data-state="active"]{color:var(--status-success)}
+.qq-onebot-status[data-state="paused"]{color:var(--status-warning)}
+.qq-onebot-remove{color:var(--status-danger)}
+.qq-onebot-connection{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding-top:var(--space-2);color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-napcat-wizard{padding:var(--space-4) 0;border-bottom:1px solid var(--border-soft)}
+.qq-napcat-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-4)}
+.qq-napcat-head h3{margin:4px 0;font-size:var(--fs-h2);font-weight:500;color:var(--content-primary)}
+.qq-napcat-head p,.qq-napcat-ready p,.qq-napcat-boundary,.qq-napcat-release p,.qq-napcat-error{margin:var(--space-2) 0;color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.7}
+.qq-napcat-steps{display:grid;gap:0;margin:var(--space-4) 0;padding:0;list-style:none}
+.qq-napcat-steps li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:var(--space-3);min-height:58px;padding:var(--space-2) 0;border-top:1px solid var(--border-soft)}
+.qq-napcat-steps li>b{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border-soft);border-radius:50%;color:var(--content-secondary);font-family:var(--font-mono,'Fira Code',monospace);font-size:var(--fs-meta);font-weight:400}
+.qq-napcat-steps li span{display:flex;min-width:0;flex-direction:column;gap:3px}
+.qq-napcat-steps strong{color:var(--content-primary);font-size:var(--fs-body);font-weight:500}
+.qq-napcat-steps small{color:var(--content-muted);font-size:var(--fs-meta);line-height:1.5}
+.qq-napcat-steps progress{width:min(100%,380px);height:7px;margin-top:8px;accent-color:var(--focus-ring)}
+.qq-napcat-release,.qq-napcat-ready{padding:var(--space-3) 0;border-top:1px solid var(--border-soft)}
+.qq-napcat-release a{color:var(--content-link,var(--content-secondary));text-decoration:underline;text-underline-offset:3px}
+.qq-napcat-release code,.qq-napcat-ready code{overflow-wrap:anywhere;color:var(--content-primary);font-family:var(--font-mono,'Fira Code',monospace);font-size:var(--fs-meta)}
+.qq-napcat-consent{display:flex;align-items:flex-start;gap:var(--space-2);margin:var(--space-3) 0;color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.65}
+.qq-napcat-consent input{flex:none;width:18px;height:18px;margin-top:2px;accent-color:var(--focus-ring)}
+.qq-napcat-actions{display:flex;gap:var(--space-2);margin:var(--space-2) 0}
+.qq-napcat-ready>code{display:block;margin:var(--space-2) 0;user-select:all}
+.qq-napcat-wizard details{margin-top:var(--space-3);padding-top:var(--space-2);border-top:1px solid var(--border-soft)}
+.qq-napcat-wizard summary{display:flex;align-items:center;min-height:40px;color:var(--content-secondary);font-size:var(--fs-body);cursor:pointer}
+.qq-napcat-wizard details ol{padding-left:1.4em}
+.qq-napcat-wizard details li{padding:3px 0;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.7}
+.qq-napcat-error{color:var(--status-danger)}
+.qq-napcat-diagnostic{max-width:100%;color:var(--content-muted);font-size:var(--fs-meta)}
+.qq-napcat-diagnostic summary{min-height:32px;cursor:pointer;color:var(--content-secondary)}
+.qq-napcat-diagnostic pre{max-height:12rem;overflow:auto;margin:var(--space-1) 0;padding:var(--space-2);border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-secondary);font-family:var(--font-mono,monospace);font-size:var(--fs-meta);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.qq-napcat-live{color:var(--content-secondary);font-size:var(--fs-meta)}
+.qq-napcat-boundary{padding-left:var(--space-3);border-left:2px solid var(--status-warning)}
+.qq-napcat-account-controls{display:grid;gap:var(--space-2);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.qq-napcat-account-controls>[data-napcat-account-state]{color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.6}
+.qq-napcat-account-controls progress{width:min(100%,420px);height:7px;accent-color:var(--focus-ring)}
+.qq-napcat-account-actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.qq-napcat-account-actions .btn{min-height:40px}
+.qq-napcat-manual-setup{margin-top:var(--space-2)}
+.qq-napcat-manual-setup summary{min-height:36px;color:var(--content-muted);font-size:var(--fs-meta);cursor:pointer}
+.qq-napcat-wizard .btn,.qq-onebot-connection .btn{min-height:40px}
+@media(max-width:720px){
+  .qq-onebot-shell{padding:var(--space-3)}
+  .qq-onebot-toolbar{align-items:flex-start;flex-direction:column}
+  .qq-onebot-add form,.qq-onebot-fields{grid-template-columns:minmax(0,1fr)}
+  .qq-onebot-setup{grid-template-columns:minmax(0,1fr)}
+  .qq-onebot-shell .btn{min-height:44px}
+  .qq-onebot-setup .btn,.qq-onebot-add form>.btn{width:100%}
+  .qq-onebot-add input,.qq-onebot-add select,.qq-onebot-fields input,.qq-onebot-fields select,.qq-onebot-setup input{min-height:44px}
+  .qq-napcat-wizard{padding:var(--space-3) 0}
+  .qq-napcat-head{flex-direction:column;align-items:stretch}
+  .qq-napcat-head>.btn,.qq-napcat-release>.btn{width:100%;min-height:44px}
+  .qq-napcat-steps li{grid-template-columns:28px minmax(0,1fr);gap:var(--space-2)}
+  .qq-napcat-steps li>.btn{grid-column:2;width:100%;min-height:44px}
+  .qq-napcat-actions{flex-direction:column}
+  .qq-napcat-actions .btn,.qq-napcat-wizard .btn,.qq-onebot-connection .btn{min-height:44px}
+  .qq-napcat-account-actions{flex-direction:column}
+  .qq-napcat-account-actions .btn{width:100%;min-height:44px}
+  .qq-onebot-connection{align-items:flex-start;flex-direction:column}
+}

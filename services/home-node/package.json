@@ -1,0 +1,11 @@
+{
+  "name": "internalbeyond-home-node",
+  "private": true,
+  "description": "Home Node runtime dependencies",
+  "scripts": {
+    "postinstall": "node patch-qqbot-sdk.js"
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "1.0.5"
+  }
+}
