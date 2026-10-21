@@ -1012,7 +1012,9 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
         }
       }
     }
-    result.ok = result.files >= 1 && result.outside === 0 && result.credentialHits === 0
+    /* An empty worktree diff means the frozen surface is unchanged from HEAD.
+       Do not require a candidate hunk to exist just to prove the no-change case. */
+    result.ok = result.outside === 0 && result.credentialHits === 0
       && result.removed === 0 && result.drift === 0;
     return result;
   }
@@ -1060,6 +1062,7 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
     const mk = (rel, line, sign, text) => ['diff --git a/' + rel + ' b/' + rel, '--- a/' + rel, '+++ b/' + rel,
       '@@ -0,0 +' + line + ' @@', sign + text].join('\n');
     const J = (t) => judgeFrozenDiff(t, { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) });
+    const empty = J('');
     const A_ok = J(mk('assets/js/social.js', inRegion, '+', 'var _ibVoiceSourceCache=null;')).ok;
     const B_outside = J(mk('assets/js/social.js', 1, '+', 'var _x=1;')).outside;
     const C_cred = J(mk('assets/js/social.js', inRegion, '+', "  source:'tts', apiKey:(p&&p.value)||''")).credentialHits;
@@ -1084,11 +1087,11 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
       '@@ -122 +122 @@', '-  if(!_ibVoiceSourceCache)return null;',
       '@@ -125,0 +126 @@', '+  if(!_ibVoiceSourceCache)return null;'
     ].join('\n'), { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) }).removed;
-    check('W5b2.regression：区段内新增放行；区段外新增 / 凭据键新增 / 其它文件新增 / 真删除 / ' +
+    check('W5b2.regression：空 diff 与区段内新增放行；区段外新增 / 凭据键新增 / 其它文件新增 / 真删除 / ' +
       '"复制到别处再删原处"全部拦下；而 P23 真实做过的那次行内改写必须放行',
-      A_ok === true && B_outside === 1 && C_cred === 1 && D_otherFile === 1 && F_removed === 1 && G_copy === 1
+      empty.ok === true && A_ok === true && B_outside === 1 && C_cred === 1 && D_otherFile === 1 && F_removed === 1 && G_copy === 1
       && !!E_rewrite && E_rewrite.ok === true && E_rewrite.additions === 1 && E_rewrite.rewritten === 1,
-      { A_ok: A_ok, B: B_outside, C: C_cred, D: D_otherFile, E: E_rewrite, F: F_removed, G: G_copy,
+      { empty: empty, A_ok: A_ok, B: B_outside, C: C_cred, D: D_otherFile, E: E_rewrite, F: F_removed, G: G_copy,
         inRegion: inRegion, regions: frozenRegions });
   }
 
