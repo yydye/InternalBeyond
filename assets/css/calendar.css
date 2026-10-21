@@ -708,21 +708,39 @@ body.theme-infernal .tp-time{text-shadow:0 0 14px color-mix(in srgb,var(--pale) 
 #cal-widget{position:fixed;z-index:99;right:26px;top:86px;width:316px;/* v47 — 95→99：悬浮小窗压在快捷聊天窗(98)之上；悬浮大窗仍为 97，层级不变 */
   border-radius:var(--radius-panel);overflow:hidden;user-select:none;-webkit-user-select:none;/* v41 — 小窗内文字不可选中复制 */
   border:1px solid var(--glass-border-floating);
-  background:var(--glass-bg-floating);
-  backdrop-filter:var(--glass-filter-lg);-webkit-backdrop-filter:var(--glass-filter-lg);
-  box-shadow:var(--glass-shadow-floating),inset 0 1px 0 color-mix(in srgb,var(--white) 82%,transparent);
+  background:transparent;
+  backdrop-filter:blur(28px) saturate(1.05);-webkit-backdrop-filter:blur(28px) saturate(1.05);
+  box-shadow:0 12px 36px rgba(52,92,142,0.15),0 3px 9px rgba(70,112,158,0.07),
+    inset 0 1px 0 rgba(255,255,255,0.82),inset 0 -1px 0 rgba(112,152,194,0.2);
   opacity:0;transform:translateY(14px) scale(0.94);pointer-events:none;
   transition:opacity 0.5s var(--transition),transform 0.55s cubic-bezier(0.22,1,0.36,1),box-shadow 0.4s,width 0.45s var(--transition),border-color 2.4s ease}
+body.theme-infernal #cal-widget{--eph-ink:var(--content-primary);--eph-ink-2:var(--content-secondary);--eph-ink-3:var(--content-secondary);--eph-faint:var(--content-secondary);
+  --clock-tick:var(--content-muted);--clock-tick-maj:var(--content-secondary);--ice-accent:var(--accent-light);
+  border-color:rgba(78,100,140,0.2);box-shadow:0 14px 40px rgba(0,0,0,0.3),inset 0 1px 0 rgba(221,235,251,0.06)}
+#cal-widget::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(118deg,rgba(255,255,255,0.21),transparent 26%,transparent 74%,rgba(196,222,246,0.098)),
+    radial-gradient(130% 100% at 12% -8%,rgba(255,255,255,0.24),transparent 50%),
+    linear-gradient(150deg,rgba(250,253,255,0.24),rgba(230,242,253,0.13) 55%,rgba(212,230,248,0.16));
+  opacity:1;transition:opacity 2.4s ease}
+body.theme-infernal #cal-widget::before{opacity:0}
+#cal-widget::after{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(152deg,rgba(36,50,80,0.42),rgba(24,34,58,0.38) 56%,rgba(17,25,44,0.46));
+  opacity:0;transition:opacity 2.4s ease}
+body.theme-infernal #cal-widget::after{opacity:1}
 #cal-widget.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
-#cal-widget.dragging{transition:none;box-shadow:var(--glass-shadow-floating),inset 0 1px 0 color-mix(in srgb,var(--white) 82%,transparent)}
-#cal-widget:hover{box-shadow:var(--glass-shadow-floating),0 0 0 1px color-mix(in srgb,var(--accent-light) 24%,transparent),inset 0 1px 0 color-mix(in srgb,var(--white) 85%,transparent)}
+#cal-widget.dragging{transition:none;box-shadow:0 26px 70px rgba(52,92,142,0.3),inset 0 1px 0 rgba(255,255,255,0.82)}
+body.theme-infernal #cal-widget.dragging{box-shadow:0 20px 56px rgba(0,0,0,0.34),inset 0 1px 0 rgba(221,235,251,0.06)}
+#cal-widget:hover{box-shadow:0 20px 56px rgba(52,92,142,0.26),0 0 0 1px rgba(160,200,240,0.24),inset 0 1px 0 rgba(255,255,255,0.85)}
+body.theme-infernal #cal-widget:hover{box-shadow:0 16px 44px rgba(0,0,0,0.34),0 0 0 1px rgba(150,185,224,0.1),inset 0 1px 0 rgba(221,235,251,0.12)}
 .wg-main{position:relative;z-index:2;display:flex;align-items:center;gap:13px;min-height:142px;padding:14px 17px 14px 14px;cursor:grab}
 #cal-widget.dragging .wg-main{cursor:grabbing}
 .wg-clockwrap{position:relative;flex:none;width:112px;height:112px}
 .wg-clockwrap::before{content:'';position:absolute;inset:1px;border-radius:50%;pointer-events:none;
-  background:color-mix(in srgb,var(--glass-bg-surface) 55%,transparent);
-  border:1px solid var(--glass-border-soft);
-  box-shadow:inset 0 1px 0 color-mix(in srgb,var(--white) 30%,transparent)}
+  background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);
+  border:1px solid rgba(182,213,242,0.2);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),0 6px 14px rgba(49,84,119,0.08);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+body.theme-infernal .wg-clockwrap::before{background:rgba(150,180,216,0.03);border-color:rgba(160,190,220,0.1);box-shadow:0 8px 18px rgba(0,0,0,0.22)}
 #wg-clock{position:relative;z-index:2;width:100%;height:100%;overflow:visible;display:block}
 #wg-hr,#wg-min,#wg-sec{transform-origin:48px 48px;transform-box:view-box}
 #wg-sec{animation:handRot 60s linear infinite}
@@ -732,7 +750,8 @@ body.theme-infernal .tp-time{text-shadow:0 0 14px color-mix(in srgb,var(--pale) 
 .wg-clockwrap{display:flex;align-items:center;justify-content:center}
 #wg-clock{width:108px;height:108px}
 #wg-clock .ck-halo{fill:color-mix(in srgb,var(--accent-light) 5%,transparent);filter:url(#ckBlur)}
-#wg-clock .ck-basin{fill:color-mix(in srgb,var(--glass-bg-surface) 60%,transparent);stroke:url(#ckEdge);stroke-width:1.1}
+#wg-clock .ck-basin{fill:rgba(226,240,252,0.09);stroke:url(#ckEdge);stroke-width:1.1}
+body.theme-infernal #wg-clock .ck-basin{fill:rgba(150,180,216,0.05)}
 #wg-clock .ck-face{fill:url(#ckFace);stroke:color-mix(in srgb,var(--border-strong) 60%,transparent);stroke-width:0.8}
 body.theme-infernal #wg-clock .ck-face{stroke:color-mix(in srgb,var(--border-strong) 40%,transparent)}
 #wg-clock .ck-conc-sh{fill:none;stroke:color-mix(in srgb,var(--bg-deep) 20%,transparent);stroke-width:9;stroke-linecap:round;filter:blur(4.5px)}
@@ -780,12 +799,14 @@ body.theme-infernal .wg-time{text-shadow:0 0 12px color-mix(in srgb,var(--pale) 
 .wg-btn{width:23px;height:23px;border-radius:var(--radius-control);border:1px solid transparent;cursor:pointer;
   display:flex;align-items:center;justify-content:center;color:var(--eph-faint);
   background:transparent;box-shadow:none;transition:color 0.3s,background 0.3s,border-color 0.3s}
-#cal-widget:hover .wg-btn{color:var(--eph-ink-3);border-color:var(--border-soft);
-  background:var(--surface-card);
-  box-shadow:none}
+#cal-widget:hover .wg-btn{color:var(--eph-ink-3);border-color:var(--eph-line);
+  background:linear-gradient(160deg,rgba(255,255,255,0.4),rgba(200,222,244,0.16));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.5)}
+body.theme-infernal #cal-widget:hover .wg-btn{background:linear-gradient(160deg,rgba(200,220,244,0.1),rgba(0,0,0,0.16));box-shadow:inset 0 1px 0 rgba(222,236,252,0.1)}
 .wg-btn svg{width:11px;height:11px}
-#cal-widget .wg-btn:hover{color:var(--content-primary);border-color:var(--border-strong);background:var(--surface-hover)}
-#cal-widget .wg-btn.close:hover{background:color-mix(in srgb,var(--status-danger) 16%,transparent);border-color:color-mix(in srgb,var(--status-danger) 44%,transparent);color:var(--status-danger)}
+#cal-widget .wg-btn:hover{color:var(--eph-ink);border-color:rgba(114,168,216,0.45);background:rgba(160,200,240,0.28)}
+#cal-widget .wg-btn.close:hover{background:rgba(150,60,70,0.16);border-color:rgba(180,90,100,0.44);color:#a04b58}
+body.theme-infernal #cal-widget .wg-btn.close:hover{background:rgba(92,118,158,0.22);border-color:rgba(150,182,222,0.42);color:#cfdcee}
 /* 盘面立体层改由 defs 里的 dTop/dBot 两枚中性渐变承担 */
 
 /* ═════════ 右下角组合坞（复刻原站 — 仅作重开入口） ═════════ */

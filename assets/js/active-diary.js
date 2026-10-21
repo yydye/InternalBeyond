@@ -432,9 +432,15 @@ function buildProactivePrompt(args){
     '', '【本次主动消息目的】',_activeModeGuide(args.messageMode)+(args.planIntent?('\n（本次联系的意图：'+String(args.planIntent).slice(0,200)+'；原由：'+String(args.planReason||'').slice(0,200)+'。不要机械复述意图原文，把它当作话题方向自然展开）'):''),
     '', '【用户附加要求】',args.customInstruction||'（无）'
   ];
+  if(args.presenceEvent){
+    const presenceCore=window.IBPresenceCore||null;
+    const away=presenceCore&&presenceCore.formatDuration?presenceCore.formatDuration(args.presenceEvent.durationMs):'一段时间';
+    prompt.push('','【对方刚刚回来】','对方刚回到这里，此前离开约 '+away+'。这是背景信息，不表示对方在等候，也不要求你主动发消息。请结合角色人设、最近对话和相关记忆判断是否有自然回应的理由；不要为了提及离开时长而问候或追问对方去了哪里。');
+    prompt.push('','如果现在联系会重复最近的话题、打断已经继续的聊天，或没有自然且具体的内容，请只输出 [[NO_PRESENCE_MESSAGE]]。如果确有自然的内容，再写一条简短、符合角色语气的私聊；可完全不提离开时间，不要使用固定问候模板。');
+  }
   if(args.randomCharacter)prompt.push('','【可选联想角色】',args.randomCharacter.name+'。只能把这当作话题灵感，不能替 TA 发言。');
   if(args.retryInstruction)prompt.push('','【重新生成要求】',args.retryInstruction);
-  prompt.push('','请主动向'+userName+'发送一条自然、具体、符合角色原作语气的消息。严格要求：','1. 长度为 1 至 4 个自然段。','2. 不要总以“早上好”“在吗”“今天过得怎么样”等统一问候开头。','3. 根据当前时段、最近聊天与记忆选择这一次独有的内容。','4. 避免与最近主动消息相同的开头、话题、句式、问候或近义复述。','5. 可以延续之前的话题，也可以自然开启新话题。','6. 不要复读最近回复，只输出最终可见正文。','7. 不要提定时器、任务、系统、调度或“系统让我来找你”；不要假装一直在后台观察对方；不要制造紧迫感或施压。');
+  if(!args.presenceEvent)prompt.push('','请主动向'+userName+'发送一条自然、具体、符合角色原作语气的消息。严格要求：','1. 长度为 1 至 4 个自然段。','2. 不要总以“早上好”“在吗”“今天过得怎么样”等统一问候开头。','3. 根据当前时段、最近聊天与记忆选择这一次独有的内容。','4. 避免与最近主动消息相同的开头、话题、句式、问候或近义复述。','5. 可以延续之前的话题，也可以自然开启新话题。','6. 不要复读最近回复，只输出最终可见正文。','7. 不要提定时器、任务、系统、调度或“系统让我来找你”；不要假装一直在后台观察对方；不要制造紧迫感或施压。');
   /* 全局短回合策略：主动消息 1-2 句；语音开场（voice_call）更短。 */
   try{if(window.IB&&IB.brevity)system=IB.brevity.apply(system,{mode:(args.interaction==='voice_call'?'voice':'proactive'),detailed:IB.brevity.isDetailedRequest(String(args.planIntent||args.userMessage||''))});}catch(e){}
   return{messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],system:system,prompt:prompt.join('\n')}
@@ -613,7 +619,12 @@ async function generateProactiveMessage(args){
          （字段白名单与 Moments 共用 IB.runtime.telemetry，避免两套结构漂移） */
       _activeProactiveLog('model executor',_activeRuntimeTelemetry('active.proactive',{taskId:args.taskId||'',characterId:character.id||'',attempt:attempt,executor:call.executor,provider:character.provider||'custom',format:call.format||'',model:character.model||'',usage:call.usage?'present':'absent',abortMode:call.abortMode||'none',abortReason:call.abortReason||'',fallbackReason:call.fallbackReason||''}));
       if(call.aborted){abortReason=call.abortReason||'abort';lastError=new Error('已中止');break}
-      const content=_activeVisibleProactiveReply(call.text,call.reasoning||''),check=_activeValidateProactiveReply(content,recent);
+      const content=_activeVisibleProactiveReply(call.text,call.reasoning||'');
+      const silenceMarker=String(content||'').trim().replace(/^```[a-z]*\s*/i,'').replace(/\s*```$/,'').replace(/^[\s"'`“”*]+|[\s"'`“”*]+$/g,'').trim();
+      if(args.presenceEvent&&silenceMarker.toUpperCase()==='[[NO_PRESENCE_MESSAGE]]'){
+        return{content:'',silenced:true,reasoning_content:'',generatedByFallback:false,generationAttempts:attempt,provider:character.provider||'custom',model:character.model||'',context:args}
+      }
+      const check=_activeValidateProactiveReply(content,recent);
       if(check.ok){_activeProactiveLog('generated successfully',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',attempt:attempt});return{content:content,reasoning_content:'',generatedByFallback:false,generationAttempts:attempt,provider:character.provider||'custom',model:character.model||'',context:args}}
       lastError=new Error(check.reason);retryInstruction=check.reason+'。请换一个开头、话题和句式，完整重写，不要解释原因。'
     }catch(e){
@@ -628,6 +639,10 @@ async function generateProactiveMessage(args){
     const aborted=new Error('主动消息生成已中止');aborted.name='AbortError';aborted.kind='abort';aborted.abortReason=abortReason;
     throw aborted;
   }
+  if(args.presenceEvent){
+    _activeProactiveLog('presence response unavailable; skipped',{taskId:args.taskId||'',characterId:character.id||'',attempts:ACTIVE_PROACTIVE_MAX_ATTEMPTS});
+    return{content:'',silenced:true,failed:true,reasoning_content:'',generatedByFallback:false,generationAttempts:ACTIVE_PROACTIVE_MAX_ATTEMPTS,generationError:String(lastError&&lastError.message||lastError||'').slice(0,500),provider:character.provider||'custom',model:character.model||'',context:args}
+  }
   const fallback=_activeFallbackMessage(character,recent,args.currentTime);
   console.warn('[ProactiveMessage] using fallback after model attempts failed',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',error:String(lastError&&lastError.message||lastError||'unknown').slice(0,300)});
   return{content:fallback,reasoning_content:'',generatedByFallback:true,generationAttempts:ACTIVE_PROACTIVE_MAX_ATTEMPTS,generationError:String(lastError&&lastError.message||lastError||'').slice(0,500),provider:character.provider||'custom',model:character.model||'',context:args}
@@ -637,24 +652,63 @@ async function _activeBuildPrompt(cfg,setting,currentTime){
   const built=buildProactivePrompt(Object.assign({},ctx,{randomCharacter:randomCharacter&&{id:randomCharacter.id,name:randomCharacter.nickname||randomCharacter.model||'另一位角色'}}));
   return Object.assign({},ctx,built,{recent:ctx.recentMessages})
 }
-async function _activeGenerate(cfg,setting){
+async function _activeGenerate(cfg,setting,presenceEvent){
   if(_recoveryActiveHeld())throw new Error('recovery-active-hold');
   _activeProactiveLog('character loaded',{taskId:setting.id||'',characterId:cfg.id,name:cfg.nickname||cfg.model||'AI'});
   _activeProactiveLog('provider/model selected',{taskId:setting.id||'',characterId:cfg.id,apiConfigId:cfg.id,provider:cfg.provider||'custom',model:cfg.model||''});
   const ctx=await loadProactiveMessageContext(cfg,setting),pool=apiConfigs.filter(a=>a.id!==cfg.id),randomCharacter=setting.message_type==='random'&&pool.length?pool[Math.floor(Math.random()*pool.length)]:null;
-  return generateProactiveMessage(Object.assign({},ctx,{taskId:setting.id||'',randomCharacter:randomCharacter&&{id:randomCharacter.id,name:randomCharacter.nickname||randomCharacter.model||'另一位角色'}}))
+  return generateProactiveMessage(Object.assign({},ctx,{taskId:setting.id||'',randomCharacter:randomCharacter&&{id:randomCharacter.id,name:randomCharacter.nickname||randomCharacter.model||'另一位角色'},presenceEvent:presenceEvent||null}))
 }
 async function _activeStoreMessage(cfg,setting,run,out){
   const msgId=_activeMessageId(setting.id,run.scheduled_for);
   const existing=await dbGet('chatMessages',msgId);if(existing)return existing;
+  const quietHours=(await _bgAiGate())==='hibernate';
+  if(run.presenceEvent&&!(await _presenceChatReady(cfg,run.presenceEvent)))return null;
   /* Active messages intentionally persist only the final visible reply. Normal chat keeps its
      existing model-level thinking policy; proactive generation never exposes private reasoning. */
   const msg={id:msgId,role:'assistant',content:out.content,reasoning_content:'',friendId:cfg.id,senderName:cfg.nickname||cfg.model||'AI',timestamp:Date.now(),source:'active_message',activeSettingId:setting.id,scheduledFor:run.scheduled_for,generatedByFallback:!!out.generatedByFallback,metadata:{config_id:cfg.id,apiConfigId:cfg.id,provider:cfg.provider||'custom',model:cfg.provider||'',model_id:cfg.model||'',showThinking:false,source:'active_message',generatedByFallback:!!out.generatedByFallback,generationAttempts:Number(out.generationAttempts||1)}};
   /* P25-3C · 写权限不在 scheduler / model / executor 手里：先经 Active Message Authority，只有 ALLOW 才 canonical 写。 */
-  const send=await _activeSendAuthorized({cfg:cfg,msg:msg,targetId:String(setting.user_id||''),source:(run.manual?'user':'schedule'),trigger:(run.manual?'manual':'schedule'),triggerRef:String(run.run_id||''),manual:run.manual===true,enabled:setting.enabled===true,quietHours:(await _bgAiGate())==='hibernate',cooldown:!!(await _activeAdaptiveReason(setting)),recentProactive:(out.context&&out.context.recentProactiveMessages)||[],cancelled:run.cancelled===true});
+  const send=await _activeSendAuthorized({cfg:cfg,msg:msg,targetId:String(setting.user_id||''),source:String(run.source||(run.manual?'user':'schedule')),trigger:String(run.trigger||(run.manual?'manual':'schedule')),triggerRef:String(run.run_id||''),manual:run.manual===true,enabled:setting.enabled===true,quietHours:quietHours,cooldown:run.presenceEvent?false:!!(await _activeAdaptiveReason(setting)),recentProactive:(out.context&&out.context.recentProactiveMessages)||[],cancelled:run.cancelled===true});
   if(!send.ok)return null;/* DENY（disabled / quiet-hours / cooldown / duplicate / cancelled / unknown-*）⇒ 零写入、零副作用 */
   _activeProactiveLog('message saved',{taskId:setting.id||'',characterId:cfg.id,messageId:msg.id,provider:cfg.provider||'custom',model:cfg.model||'',generatedByFallback:!!out.generatedByFallback});
   return msg
+}
+async function _presenceChatReady(cfg,event){
+  if(!cfg||!event||currentPage!=='chat'||activeFriendId!==cfg.id||String(cfg.id||'').indexOf('group_')===0||activeThreadId)return false;
+  const presenceRuntime=window.IBPresenceRuntime;
+  if(presenceRuntime&&typeof presenceRuntime.isChatBusy==='function'&&presenceRuntime.isChatBusy(cfg.id))return false;
+  if(presenceRuntime&&typeof presenceRuntime.hasChatActivitySince==='function'&&presenceRuntime.hasChatActivitySince(event.returnedAt))return false;
+  if((window._pendingImages&&window._pendingImages.length)||(window._pendingFiles&&window._pendingFiles.length))return false;
+  const mini=document.getElementById('chat-input'),full=document.getElementById('chat-full-input');
+  if((mini&&String(mini.value||'').trim())||(full&&String(full.value||'').trim()))return false;
+  const incoming=document.getElementById('incoming-call-overlay');if(incoming&&!incoming.hidden)return false;
+  return true;
+}
+async function _presenceTryWelcome(event){
+  const runtime=window.IBPresenceRuntime,core=window.IBPresenceCore;
+  if(!runtime||!core||!event||!event.id)return false;
+  const settings=await getSummarySettings();if(!core.normalizeSettings(settings).greetingEnabled)return false;
+  const roleId=String(activeFriendId||'');
+  if(!roleId||roleId.indexOf('group_')===0||currentPage!=='chat'||activeThreadId)return false;
+  const cfg=apiConfigs.find(a=>a.id===roleId);if(!_ibApiReady(cfg)||cfg.archived===true)return false;
+  const gate=await _bgAiGate();if(gate==='hibernate')return false;
+  const ready=await _presenceChatReady(cfg,event);if(!ready)return false;
+  const recent=await _activeRecentProactiveMessages(cfg.id);
+  const latestProactive=recent.reduce((n,m)=>Math.max(n,Number(m.timestamp)||0),0);
+  if(!core.mayAttemptGreeting({enabled:true,event:event,isGroup:false,chatBusy:false,hasDraft:false,hasAttachments:false,now:Date.now(),lastGreetingAt:latestProactive}))return false;
+  const setting={id:'presence_'+String(event.id),user_id:_activeUserId(),character_id:cfg.id,message_type:'greeting',enabled:true,custom_instruction:''};
+  const scheduledFor=Number(event.returnedAt)||Date.now(),messageId=_activeMessageId(setting.id,scheduledFor);
+  try{if(await dbGet('chatMessages',messageId)){runtime.finishGreeting(event.id,'sent');return true}}catch(e){return false}
+  if(!runtime.claimGreeting(event.id,cfg.id))return false;
+  try{
+    const out=await _activeGenerate(cfg,setting,event);
+    if(!out||out.silenced||!String(out.content||'').trim()){runtime.finishGreeting(event.id,'silent');return false}
+    if(!(await _presenceChatReady(cfg,event))){runtime.finishGreeting(event.id,'skipped');return false}
+    const run={run_id:String(event.id),scheduled_for:scheduledFor,manual:false,source:'presence',trigger:'presence_return',presenceEvent:event,cancelled:false};
+    const sent=await _activeStoreMessage(cfg,setting,run,out);
+    if(!sent){runtime.finishGreeting(event.id,'skipped');return false}
+    runtime.finishGreeting(event.id,'sent');return true;
+  }catch(e){runtime.finishGreeting(event.id,'failed');console.warn('[Presence] greeting attempt failed',String(e&&e.message||e).slice(0,200));return false}
 }
 async function _activeFinishRun(run,out,error){
   const now=Date.now(),s=await dbGet(ACTIVE_SETTINGS_STORE,run.setting.id)||run.setting;
@@ -1470,7 +1524,7 @@ function initActiveMessages(){
     if(status){status.classList.remove('online');status.textContent='恢复安全保护：Active 已隔离'}
     return false;
   }
-  _activeTimer=setInterval(_activeTick,30000);
+  _activeTimer=setInterval(function(){try{if(window.IBPresenceRuntime&&typeof window.IBPresenceRuntime.heartbeat==='function')window.IBPresenceRuntime.heartbeat()}catch(e){};_activeTick()},30000);
   const ls=document.getElementById('active-local-status');if(ls){ls.classList.add('online');ls.textContent='页面调度运行中'}
   window.addEventListener('online',_activeTick);
   document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')_activeTick();else if(_activeCompanionOnline)_activeSyncAllBackground()});
@@ -1479,7 +1533,7 @@ function initActiveMessages(){
   return true
 }
 
-async function init(){await openDB();await _ibGuardCheck();await _acknowledgeRecoveryFirstBoot();loadOutputSettings();await migrateLockedPosts();await loadApiConfigs();_refreshCachedUserName();loadPosts();loadCategories();updateBlogStats();loadAboutDisplay();_updateLastActive();_fabSyncHeight();_ibGuardInit();_vmInit();initActiveMessages();setTimeout(function(){_checkWelcomeBack(_presenceStartupLastActive)},2000)}
+async function init(){await openDB();await _ibGuardCheck();await _acknowledgeRecoveryFirstBoot();loadOutputSettings();await migrateLockedPosts();await loadApiConfigs();try{if(window.IBPresenceRuntime&&typeof window.IBPresenceRuntime.configure==='function')window.IBPresenceRuntime.configure(await getSummarySettings())}catch(e){}_refreshCachedUserName();loadPosts();loadCategories();updateBlogStats();loadAboutDisplay();_updateLastActive(true);_fabSyncHeight();_ibGuardInit();_vmInit();initActiveMessages();setTimeout(function(){_checkWelcomeBack(_presenceStartupLastActive,{source:'startup'})},2000)}
 init();
 initChatHeader();
 setTimeout(function(){var m=document.getElementById('music-mini');if(m)m.classList.add('visible')},1800);
@@ -1579,6 +1633,7 @@ window.buildProactivePrompt=buildProactivePrompt;
 window.generateProactiveMessage=generateProactiveMessage;
 window._activeBuildPrompt=_activeBuildPrompt;
 window._activeGenerate=_activeGenerate;
+window._presenceTryWelcome=_presenceTryWelcome;
 window._activeStoreMessage=_activeStoreMessage;
 window._activeFinishRun=_activeFinishRun;
 window._activeAdaptiveReason=_activeAdaptiveReason;
@@ -1681,6 +1736,7 @@ NS.expose('active', {
   generateProactiveMessage: generateProactiveMessage,
   _activeBuildPrompt: _activeBuildPrompt,
   _activeGenerate: _activeGenerate,
+  _presenceTryWelcome: _presenceTryWelcome,
   _activeStoreMessage: _activeStoreMessage,
   _activeFinishRun: _activeFinishRun,
   _activeAdaptiveReason: _activeAdaptiveReason,

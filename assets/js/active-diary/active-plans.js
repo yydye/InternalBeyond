@@ -1055,6 +1055,8 @@ async function _activeResolveVoiceCallPlan(planId,outcome){
     const nowIso=new Date().toISOString();
     if(outcome==='accepted'){
       p.status='waiting_for_user';p.updatedAt=nowIso;
+    }else if(outcome==='failed'){
+      p.status='failed';p.failedAt=nowIso;p.lastError='语音服务未能建立通话';p.updatedAt=nowIso;
     }else{
       p.status='cancelled';p.cancelledAt=nowIso;p.cancelReason='用户未接听/已忽略本次语音呼入';p.updatedAt=nowIso;
     }

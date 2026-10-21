@@ -151,6 +151,11 @@ async function main() {
     const filmId = await evaluate(cdp, "IB.activity.createActivity({type:'cinema',roleId:'act_a',resourceId:'film_ctx',resourceKey:'film_ctx',title:'测试片A',kind:'cinema',progress:{sec:90,dur:600,subs:[[80,0,'我们出发吧']],recap:''}}).then(function(a){return a.id})");
     await evaluate(cdp, "IB.activity.setCurrent(" + J(filmId) + ")");
     check('T3.pointerResolves', (await evaluate(cdp, "IB.activity.resolveActivity('act_a').then(function(r){return r&&r.id})")) === filmId);
+    const cinemaGuide = await evaluate(cdp, "IB.activity.buildActivityContext({type:'cinema',title:'字幕边界测试',progress:{sec:12,dur:30,subs:[[8,10,'角色推开门']],recap:'她正在寻找答案。',upTo:10,subtitlesAvailable:true}})");
+    check('Cinema.context自然讨论字幕而非复述', /不逐句复述字幕/.test(cinemaGuide) && /人物动机/.test(cinemaGuide), String(cinemaGuide).slice(-300));
+    const cinemaNoSubs = await evaluate(cdp, "IB.activity.buildActivityContext({type:'cinema',title:'无字幕测试',progress:{sec:12,dur:30,subs:[],recap:'',subtitlesAvailable:false}})");
+    check('Cinema.noSubtitleHonestFallback', /没有加载可用字幕/.test(cinemaNoSubs) && /不要编造对白/.test(cinemaNoSubs), String(cinemaNoSubs).slice(-300));
+    check('Cinema.visualOnlyWhenFrameAttached', /本轮消息实际附带留影图像/.test(cinemaGuide), String(cinemaGuide).slice(-300));
     mock.captured.lastBody = '';
     const sendRes = await evaluate(cdp, "(async function(){return await IB.activity.send(" + J(filmId) + ",'这一幕怎么样？')})()");
     check('T3.sendOk', sendRes && sendRes.ok === true, JSON.stringify(sendRes));

@@ -141,21 +141,24 @@ async function main() {
   const dels = callSites('dbDelete(MOMENT_STORE');
   const putFns = [...new Set(puts.map(s => s.fn))].sort();
   const delFns = [...new Set(dels.map(s => s.fn))].sort();
-  /* 期望集合：创建通道 + 四个 mutation 入口 + companion 事件的两个 mutation executor
-     （后两者的 dbPut 现在只在 executor 闭包内，且只有 ALLOW 才执行）。 */
-  const EXPECTED_PUT_FNS = ['_momentsWriteCanonical', 'likeMoment', 'addMomentComment', 'deleteMomentComment', '_momentsIngestEvent'].sort().join(',');
+  /* Home Node canonical 下，所有 Moments 写入都经唯一 put/remove 帮助函数；
+     mutation executor 先经 Mutation Authority ALLOW，再调用对应的 canonical helper。 */
+  const EXPECTED_PUT_FNS = ['_momentsWriteCanonical'].join(',');
+  const EXPECTED_DEL_FNS = ['_momentsRemoveCanonical'].join(',');
   check('MA1.mutationPathsEnumerated',
     putFns.join(',') === EXPECTED_PUT_FNS
-    && delFns.join(',') === ['deleteMoment'].sort().join(','), { putFns: putFns, delFns: delFns });
+    && delFns.join(',') === EXPECTED_DEL_FNS, { putFns: putFns, delFns: delFns });
   check('MA2.allWritersClassified',
     puts.every(s => s.fn) && dels.every(s => s.fn)
-    && putFns.indexOf('_momentsWriteCanonical') >= 0 /* 创建通道（Autonomy 管辖） */
-    && ['likeMoment', 'addMomentComment', 'deleteMomentComment'].every(f => putFns.indexOf(f) >= 0));
+    && putFns.indexOf('_momentsWriteCanonical') >= 0
+    && delFns.indexOf('_momentsRemoveCanonical') >= 0
+    && ['likeMoment', 'addMomentComment', 'deleteMomentComment', '_momentsIngestEvent']
+      .every(f => /_momentsRunMutation\(/.test(fnBodyOf(MOMENTS_SRC, f))));
   check('MA3.noUnclassifiedDbPut',
     puts.filter(s => EXPECTED_PUT_FNS.indexOf(s.fn) < 0
       && s.file !== 'assets/js/core.js').length === 0, puts);
   check('MA4.noUnclassifiedDbDelete',
-    dels.filter(s => s.fn !== 'deleteMoment' && s.file !== 'assets/js/core.js').length === 0, dels);
+    dels.filter(s => s.fn !== '_momentsRemoveCanonical' && s.file !== 'assets/js/core.js').length === 0, dels);
   check('MA15.noDirectUiWriter',
     !/dbPut\(MOMENT_STORE|dbDelete\(MOMENT_STORE/.test(fnBodyOf(MOMENTS_SRC, '_momentsDeleteMoment'))
     && !/dbPut\(MOMENT_STORE|dbDelete\(MOMENT_STORE/.test(fnBodyOf(MOMENTS_SRC, '_momentsRenderFeed'))
@@ -170,8 +173,13 @@ async function main() {
     && /likeMoment\(/.test(fnBodyOf(MOMENTS_SRC, '_momentsApplyLikes')));
   check('MA18.canonicalWriterUnique',
     countOf(stripComments(MOMENTS_SRC), 'function createMoment(') === 1
-    && countOf(stripComments(MOMENTS_SRC), 'await _momentsWriteCanonical(') === 1
+    && countOf(stripComments(MOMENTS_SRC), 'async function _momentsWriteCanonical(') === 1
+    && countOf(stripComments(MOMENTS_SRC), 'async function _momentsRemoveCanonical(') === 1
     && countOf(stripComments(MOMENTS_SRC), 'hn.put(m,') === 1
+    && countOf(stripComments(MOMENTS_SRC), 'hn.remove(') === 1
+    && ['likeMoment', 'addMomentComment', 'deleteMomentComment', '_momentsIngestEvent']
+      .every(f => /_momentsWriteCanonical\(/.test(fnBodyOf(MOMENTS_SRC, f)))
+    && /_momentsRemoveCanonical\(/.test(fnBodyOf(MOMENTS_SRC, 'deleteMoment'))
     && /_momentsRunMutation\(/.test(MOMENTS_SRC));
 
   /* ══════════ B · 契约与身份（MA5–MA11） ══════════ */

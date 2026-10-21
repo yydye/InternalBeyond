@@ -170,6 +170,12 @@ async function _netCardFor(m){
   head.appendChild(ident);
   head.appendChild(_netEl('div','net-card-time',_netRelTime(m.createdAt)));
   if(m.source==='proactive'&&!(_momentIsUserAuthor(m)))head.appendChild(_netEl('span','net-card-tag','自主'));
+  const visibility=_momentsCore().readVisibility(m.visibility);
+  if(visibility==='user'||(visibility==='private'&&_momentIsUserAuthor(m))){
+    const scopeTag=_netEl('span','net-card-tag net-scope-tag',visibility==='user'?'仅对你':'仅自己');
+    scopeTag.title=visibility==='user'?'这条动态仅对你可见':'这条动态仅自己可见';
+    head.appendChild(scopeTag);
+  }
   card.appendChild(head);
 
   if(m.content){
@@ -185,7 +191,7 @@ async function _netCardFor(m){
   const actions=_netEl('div','net-actions');
   const liked=!!(m.likes||[]).includes(_activeUserId());
   const likeBtn=_netEl('button','net-action'+(liked?' is-liked':''),(liked?'♥ ':'♡ ')+(m.likes?m.likes.length:0));
-  likeBtn.type='button';likeBtn.title='点赞';
+  likeBtn.type='button';likeBtn.title=liked?'取消点赞':'点赞';likeBtn.setAttribute('aria-label',likeBtn.title+'（'+(m.likes?m.likes.length:0)+'）');
   likeBtn.addEventListener('click',async function(){
     const r=await likeMoment(m.id);
     /* 成功路径由服务层 _momentsPatchLikeUI 局部更新本卡片；此处不再全量重渲染 Feed/Profile，
@@ -193,14 +199,14 @@ async function _netCardFor(m){
     if(!r.ok&&r.error)toast(r.error);
   });
   const cmtBtn=_netEl('button','net-action','💬 '+(m.comments?m.comments.length:0));
-  cmtBtn.type='button';cmtBtn.title='评论';
+  cmtBtn.type='button';cmtBtn.title='查看评论与回复';cmtBtn.setAttribute('aria-label',cmtBtn.title+'（'+(m.comments?m.comments.length:0)+'）');
   cmtBtn.addEventListener('click',function(){_netOpenThread(m.id)});
   const repostBtn=_netEl('button','net-action','↻ 转发');
   repostBtn.type='button';repostBtn.title='引用 / 转发';
   repostBtn.addEventListener('click',function(){_netOpenRepost(m)});
   actions.append(likeBtn,cmtBtn,repostBtn);
   const delBtn=_netEl('button','net-action net-del','删除');
-  delBtn.type='button';
+  delBtn.type='button';delBtn.title='删除动态';delBtn.setAttribute('aria-label','删除动态');
   delBtn.addEventListener('click',async function(){
     if(!confirm('删除这条动态？'))return;
     const r=await deleteMoment(m.id);
@@ -432,8 +438,8 @@ async function _netRenderProfile(){
     const row=_netEl('div','net-compose-row');
     const sel=document.createElement('select');
     sel.id='net-pf-vis';sel.className='net-compose-select';
-    const o1=document.createElement('option');o1.value='all';o1.textContent='所有人可见';
-    const o2=document.createElement('option');o2.value='private';o2.textContent='仅自己可见';
+    const o1=document.createElement('option');o1.value='all';o1.textContent='公开 · 社交圈可见';
+    const o2=document.createElement('option');o2.value='private';o2.textContent='仅自己 · 私人动态';
     sel.append(o1,o2);
     const btn=_netEl('button','btn btn-primary','＋ 发布');
     btn.type='button';
@@ -681,6 +687,7 @@ async function _netThreadSubmit(){
     if(_netView==='feed')_netRenderFeed();
     if(_netView==='profile')_netRenderProfile();
   }else toast(r.error||'回复失败');
+  return r;
 }
 
 /* ══════════ 转发 / 引用 ══════════ */
@@ -727,6 +734,10 @@ async function _netSubmitRepost(){
 /* ══════════ 视图切换与入口 ══════════ */
 async function _netShow(view){
   _netView=view;
+  if(view!=='profile'){
+    const label=document.getElementById('net-profile-tab-label');
+    if(label)label.textContent='我的动态';
+  }
   const tabs=document.querySelectorAll('.net-tab');
   tabs.forEach(function(b){b.classList.toggle('is-active',b.getAttribute('data-netview')===view)});
   const feed=document.getElementById('net-view-feed');
@@ -735,6 +746,9 @@ async function _netShow(view){
   if(feed)feed.hidden=view!=='feed';
   if(friends)friends.hidden=view!=='friends';
   if(profile)profile.hidden=view!=='profile';
+  /* The page header and view tabs are part of the navigation shell. Keep them
+     visible when switching between the feed, directory and profile views. */
+  try{window.scrollTo(0,0)}catch(e){}
   if(view==='feed'){_netRenderFeed();_netRenderRail()}
   else if(view==='friends'){_netRenderFriendsGrid()}
   else if(view==='profile'){_netRenderProfile()}
@@ -749,15 +763,11 @@ async function _netOpenProfile(id){
   const label=document.getElementById('net-profile-tab-label');
   if(label){
     if(_netRoleId){const c=_netCfg(_netRoleId);label.textContent=c?(c.nickname||c.model||'主页'):'主页'}
-    else label.textContent='主页';
+    else label.textContent='我的动态';
   }
   _netPtab='posts';
   document.querySelectorAll('.net-ptab').forEach(function(b){b.classList.toggle('is-active',b.getAttribute('data-ptab')==='posts')});
   _netShow('profile');
-  try{
-    const outer=document.getElementById('net-view-profile');
-    if(outer)outer.scrollIntoView({behavior:'smooth',block:'start'});
-  }catch(e){}
 }
 async function _netRefresh(){
   try{

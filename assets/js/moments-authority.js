@@ -970,8 +970,14 @@
            否则并发情境下镜像会与权威漂移。
            走同一条镜像锁：一次写入与一次 hydrate 提交不允许交错。
            版本水位一并推进 —— 否则"先写一行、再提交一份更旧的快照"会让这行回退。 */
-        var authoritative = res.moment || record;
         var wroteRev = Number(res.revision);
+        /* The remote row's payload rev can lag the separately indexed CAS rev:
+           the store owns record_rev and returns it as res.rev. Stamp both revision
+           coordinates into the mirror so the next like/comment/reply/delete uses
+           the current expectedRev instead of conflict-looping on a stale row. */
+        var authoritative = Object.assign({}, res.moment || record || {});
+        if (res.rev != null && isFinite(Number(res.rev))) authoritative.rev = Number(res.rev);
+        if (isFinite(wroteRev) && wroteRev > 0) authoritative.storeRevision = wroteRev;
         return withMirrorLock(function () {
           return local.put(authoritative).then(function () {
             if (isFinite(wroteRev) && wroteRev > ctx.mirrorRevision) ctx.mirrorRevision = wroteRev;

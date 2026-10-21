@@ -283,7 +283,10 @@
       else{lines.push('【观影室】你们正在一起看《'+(rec.title||'')+'》· 进度 '+_fmt(sec)+(prog2.dur?(' / '+_fmt(prog2.dur)):''))}
       if(prog2.subs&&prog2.subs.length){lines.push('［播放点之前最近的字幕］\n'+prog2.subs.slice(0,6).map(function(c){return'['+_fmt(c[0])+'] '+String(c[2]).replace(/\n/g,' ')}).join('\n'))}
       if(prog2.recap){lines.push('［前情梗概（到 '+_fmt(prog2.upTo||0)+'）］\n'+String(prog2.recap).slice(0,recapCap))}
+      if(prog2.subtitlesAvailable===false){lines.push('［字幕状态］用户没有加载可用字幕。不要编造对白；可以根据用户本轮描述与本轮实际附带的留影讨论。')}
       lines.push('［说明］以上是这一轮你知道的全部：只到播放点为止，后面的剧情你不知道，不预告、不猜。');
+      lines.push('［陪伴方式］先回应用户本轮真正想聊的内容；把字幕当作剧情证据，联系人物动机、关系与因果，自然表达观点或提出问题，不逐句复述字幕。证据不足时说明不确定。');
+      lines.push('［视觉权限］只有本轮消息实际附带留影图像时才能描述画面；没有图像附件时，不要声称看到了当前场景。');
     }
     lines.push('［系统留白］若你觉得现在不适合继续，可以自然停顿，不必硬聊。');
     return '\n'+lines.join('\n');

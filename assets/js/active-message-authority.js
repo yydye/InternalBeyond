@@ -36,8 +36,9 @@
        plan      ← AI 主动计划（含 companion 同步计划的本地执行）
        character ← 角色自主（预留：当前与 schedule/plan 同源）
        user      ← 用户显式请求（“立即发送”）
+       presence  ← 用户可选的 Presence 归来迎接
        companion ← 后台 companion 运行时的投递（**投递镜像**，不是新的发送决策） */
-  var ACTIVE_MESSAGE_SOURCES = Object.freeze(['schedule', 'plan', 'character', 'user', 'companion']);
+  var ACTIVE_MESSAGE_SOURCES = Object.freeze(['schedule', 'plan', 'character', 'user', 'presence', 'companion']);
   var ACTIVE_MESSAGE_DECISIONS = Object.freeze({ ALLOW: 'allow', DENY: 'deny' });
   /* 无 DEFER：“稍后”语义已经由既有调度器承担（next_run_at / scheduledAt / 水位线），
      发送动作本身没有延迟语义 —— 不因为 Orchestrator 支持 deferred 就机械加入。 */

@@ -169,11 +169,14 @@ check('AM8c.noDeferInDecisionSet',
   const scheduled = A.buildActiveMessageCandidate({ actorId: 'role_a', targetId: 'user_1', source: 'schedule', trigger: 'schedule', triggerRef: 'active_run_9' });
   const planTriggered = A.buildActiveMessageCandidate({ actorId: 'role_a', targetId: 'user_1', source: 'plan', trigger: 'ai_plan', triggerRef: 'proactive_9' });
   const manualTriggered = A.buildActiveMessageCandidate({ actorId: 'role_a', targetId: 'user_1', source: 'user', trigger: 'manual', triggerRef: '' });
+  const presenceTriggered = A.buildActiveMessageCandidate({ actorId: 'role_a', targetId: 'user_1', source: 'presence', trigger: 'presence_return', triggerRef: 'presence_123' });
   const companionMirror = A.buildActiveMessageCandidate({ actorId: 'role_a', targetId: 'user_1', source: 'companion', trigger: 'companion', triggerRef: 'active_run_9' });
   check('AM13.schedulerTriggerIsNotPermission',
-    scheduled.ok === true && planTriggered.ok === true && manualTriggered.ok === true && companionMirror.ok === true
+    scheduled.ok === true && planTriggered.ok === true && manualTriggered.ok === true && presenceTriggered.ok === true && companionMirror.ok === true
     && A.decideActiveMessageSend(scheduled.candidate, {}).decision === 'deny'
     && A.decideActiveMessageSend(planTriggered.candidate, { actorKnown: true }).decision === 'deny'
+    && A.decideActiveMessageSend(presenceTriggered.candidate, {}).decision === 'deny'
+    && A.decideActiveMessageSend(presenceTriggered.candidate, GOOD_FACTS).decision === 'allow'
     && ASRC.indexOf('next_run_at') < 0 && ASRC.indexOf('scheduledFor') < 0 && ASRC.indexOf('scheduledAt') < 0);
 
   /* ── AM14–AM16 纯度（源码守卫；注释先剥离）──────────────────────────── */

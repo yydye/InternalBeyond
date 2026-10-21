@@ -38,11 +38,15 @@ const PARTITIONS = Object.freeze({
 /* P27 新增的领域适配器 —— **不**属于任何冻结分区 */
 const P27_ADAPTERS = Object.freeze(['getObservation', 'getSession', '_emitActivityCreated']);
 
-/* P27-C 冻结的既有分区摘要（由本工具 --print 生成；只覆盖既有函数） */
+/*
+ * P27-C 冻结的既有分区摘要（由本工具 --print 生成；只覆盖既有函数）。
+ * Cinema v1.2 有意更新 context_read：加入自然剧情讨论、无字幕与逐帧授权边界；
+ * 其余 Activity 既有分区维持原摘要。这是经用户要求的语义更新，不是自动重签。
+ */
 const LEGACY_DIGESTS = Object.freeze({
   canonical_writer: '8E49A04F831D9758F9B4D2F56C407B6C18F69C7846D80D8377AB20418FEC8587',
   pointer: '7BA09F0BD1D4F16E6AA60529A2954507D5AB3C9C9E2D6267A11A10631E7CB313',
-  context_read: '40FA96C2D3980869E66F9DB572048486F1B28FB71DDF1B2C39D47EAE675CBC6B',
+  context_read: '201DDE45C66039FDF5FB4867052CDEC24A6A6CD2D76128E161F0312F96222070',
   chat_bridge: '4CD70D5DE49B4D3C5F4F72DB250D0A5B24CBEA2C12A0B9AF2CD1E2A21782E8B5',
   memory_nudge: 'FC8012E4374584EC5107427F2BEFBEBDC9B6694B6237FDB75E59154AAD1AB92A',
   event_mechanism: '8AD77E07C95EFDABD487AAE02F6B3BA6D9E477C2B55E845287866D7572A77C91',

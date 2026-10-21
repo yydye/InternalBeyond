@@ -484,6 +484,9 @@ function startLoop(){
 /* ── INITIALIZATION ──────────────────────────────────── */
 async function initGame(container){
   G.container=container;
+  if(window.IBDIYWorkshop&&window.IBDIYWorkshop.ready){
+    try{await window.IBDIYWorkshop.ready}catch(e){}
+  }
   await loadAssets();
   await loadState();
   createViewport(container);

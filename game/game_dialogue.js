@@ -63,9 +63,11 @@ function showDialogue(speaker, textArray, onComplete){
     portraitImg.src=G.assets.portrait.src;
     portraitEl.classList.add('sui');
     portraitEl.classList.add('show');
+    if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyPortrait(portraitEl,null);
   }else if(G._aiPortraitImg && G._aiCfg && speaker===(G._aiCfg.nickname||G._aiCfg.model||'AI')){
     portraitImg.src=G._aiPortraitImg.src;
     portraitEl.classList.add('show');
+    if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyPortrait(portraitEl,G._aiCfg);
   }else{
     /* BUG-FIX: clear src & skip transition to prevent stale portrait flash */
     portraitEl.style.transition='none';
@@ -73,6 +75,7 @@ function showDialogue(speaker, textArray, onComplete){
     portraitImg.src='';
     void portraitEl.offsetHeight;          /* force reflow */
     portraitEl.style.transition='';        /* restore CSS transition */
+    if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyPortrait(portraitEl,null);
   }
 
   /* Story视窗：Sui弹“……”=AI思考中 → 头顶气泡打字机循环播放；其他任何对话出现即停 */

@@ -123,3 +123,192 @@
 .rl-boxbar .rl-viewas{margin-left:0}
 .rl-badge{color:var(--content-muted)}
 .rl-preview{margin-top:var(--space-2);padding:var(--space-3);border:1px dashed var(--border-soft);border-radius:var(--radius-card);background:var(--surface-input);font-size:13.5px;line-height:1.75;color:var(--content-primary);white-space:pre-wrap;word-break:break-word}
+
+/* ── Moments desktop refresh: wider canvas, calmer feed, clear social identity ──
+   This stylesheet loads before social.css. Page-scoped selectors intentionally
+   override the older shell without changing shared .page sizing or data/runtime. */
+#page-moments.page{
+  width:100%;max-width:1540px;margin:0 auto;
+  padding:clamp(78px,8vh,92px) clamp(18px,2vw,30px) max(112px,env(safe-area-inset-bottom));
+  box-sizing:border-box;min-width:0
+}
+#page-moments.page .net-sitebar{gap:clamp(16px,2vw,28px);padding:8px 0 16px;align-items:center}
+#page-moments.page .net-brand{display:flex;align-items:baseline;gap:12px;font-size:1.42rem;letter-spacing:.01em}
+#page-moments.page .net-brand-suffix{font-size:var(--fs-meta);font-weight:600;letter-spacing:.16em;color:var(--content-secondary)}
+#page-moments.page .net-site-actions{gap:8px}
+#page-moments.page .net-search{flex-basis:min(28vw,340px);height:38px}
+#page-moments.page .net-tool{min-height:36px}
+#page-moments.page .net-tabs{gap:8px;padding:12px 0 14px;margin-bottom:clamp(16px,2vw,24px)}
+#page-moments.page .net-tab{min-height:40px;min-width:126px;padding:9px 18px;font-size:var(--fs-body);border-radius:var(--radius-control)}
+#page-moments.page .net-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(285px,320px);gap:clamp(20px,2.2vw,34px);align-items:start}
+#page-moments.page .net-main,#page-moments.page .net-side{min-width:0}
+#page-moments.page .net-side{position:sticky;top:16px;gap:14px}
+#page-moments.page .net-compose{padding:15px 18px;margin-bottom:15px;border:1px solid var(--border-soft);border-radius:var(--radius-panel);background:var(--surface-card);box-shadow:none}
+#page-moments.page .net-compose-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:8px}
+#page-moments.page .net-compose-heading-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
+#page-moments.page .net-compose-heading-copy strong{font-size:var(--fs-h3);font-weight:600;color:var(--content-primary)}
+#page-moments.page .net-compose-heading-copy>span{font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .mom-compose-me{flex:none}
+#page-moments.page .net-compose-row{gap:10px;margin-bottom:8px}
+#page-moments.page .net-compose-text{min-height:58px;max-height:190px;padding:10px 13px;line-height:1.65;field-sizing:content}
+#page-moments.page .net-compose-text::placeholder,#page-moments.page .net-thread-reply-row input::placeholder{color:var(--content-secondary);opacity:.92}
+#page-moments.page .net-compose-controls{align-items:center;margin:0}
+#page-moments.page .net-compose-visibility{font-size:var(--fs-meta);font-weight:600;color:var(--content-secondary)}
+#page-moments.page .net-compose-select{min-width:190px;min-height:36px}
+#page-moments.page .net-compose-visibility-hint{font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .net-compose-spacer{flex:1 1 auto}
+#page-moments.page #mom-compose-imgs{display:grid;width:min(100%,520px);max-width:520px;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 0}
+#page-moments.page #mom-compose-imgs:empty{display:none}
+#page-moments.page #mom-compose-imgs:has(.mom-image:only-child){grid-template-columns:minmax(0,460px)}
+#page-moments.page #mom-compose-imgs .mom-image{width:100%;min-width:0}
+#page-moments.page .net-feed-head{gap:12px;margin:4px 0 14px;min-height:38px}
+#page-moments.page .net-feed-title{font-size:19px;font-weight:600}
+#page-moments.page .net-feed-sub,#page-moments.page .net-feed-meta{font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .net-feed-tools{gap:8px}
+#page-moments.page .mom-card,#page-moments.page .net-card{
+  min-width:0;margin:0;padding:16px 6px 18px;border:0;border-bottom:1px solid var(--border-soft);
+  border-radius:0;background:transparent;box-shadow:none
+}
+#page-moments.page .mom-card:last-child,#page-moments.page .net-card:last-child{border-bottom:0}
+#page-moments.page .mom-card-head{align-items:center;gap:13px}
+#page-moments.page .mom-card-time,#page-moments.page .mom-tag{color:var(--content-secondary)}
+#page-moments.page .net-feed{gap:14px}
+#page-moments.page .net-card-head{align-items:center;gap:11px}
+#page-moments.page .net-card-head .net-avatar{width:44px;height:44px}
+#page-moments.page .net-card-ident{gap:2px}
+#page-moments.page .net-card-name{font-size:var(--fs-body);font-weight:650;line-height:1.35}
+#page-moments.page .net-card-handle,#page-moments.page .net-card-time{font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .net-card-handle{overflow-wrap:anywhere}
+#page-moments.page .net-card-time{margin-left:auto;white-space:nowrap}
+#page-moments.page .net-card-tag{border-radius:999px;padding:3px 9px;line-height:1.35;color:var(--content-secondary)}
+#page-moments.page .net-card-tag.net-scope-tag{color:var(--content-primary);background:var(--surface-inset,var(--surface-card))}
+#page-moments.page .net-card-body{padding:8px 0 3px;font-size:15px;line-height:1.75;overflow-wrap:anywhere;word-break:normal}
+#page-moments.page .net-images{width:min(100%,540px);max-width:540px;gap:8px;margin-top:12px}
+#page-moments.page .net-images.n1{max-width:460px;grid-template-columns:minmax(0,460px)}
+#page-moments.page .net-images.n23:has(.net-image:nth-child(2):last-child){max-width:440px;grid-template-columns:repeat(2,minmax(0,1fr))}
+#page-moments.page .net-images.n23:has(.net-image:nth-child(3):last-child),
+#page-moments.page .net-images.n23:has(.net-image:nth-child(4):last-child),
+#page-moments.page .net-images.n5plus{grid-template-columns:repeat(3,minmax(0,1fr))}
+#page-moments.page .net-image{border-radius:10px}
+#page-moments.page .net-actions{gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border-soft)}
+#page-moments.page .net-action{min-width:72px;min-height:34px;justify-content:center;padding:5px 9px;border:1px solid transparent;border-radius:var(--radius-control);font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .net-action:hover{border-color:var(--border-soft)}
+#page-moments.page .net-action.net-del{margin-left:auto}
+#page-moments.page .net-comments{margin-top:8px;padding:7px 0 0;background:transparent;border:0;border-radius:0;gap:5px}
+#page-moments.page .net-comment-row{font-size:var(--fs-meta);line-height:1.65;gap:4px 6px}
+#page-moments.page .net-comment-meta{color:var(--content-secondary)}
+#page-moments.page .net-thread-link{font-size:var(--fs-meta);padding:5px 0;color:var(--content-secondary)}
+#page-moments.page .net-cmt-main{background:var(--surface-inset,var(--surface-card));box-shadow:none}
+#page-moments.page .net-cmt-time,#page-moments.page .net-cmt-del,#page-moments.page .net-thread-reply-target{color:var(--content-secondary)}
+#page-moments.page .net-pf-compose textarea::placeholder,#page-moments.page .mom-comment-input input::placeholder{color:var(--content-secondary);opacity:.92}
+#page-moments.page .net-repost{padding:14px 16px;border-left:3px solid var(--accent-soft);border-radius:var(--radius-control)}
+#page-moments.page .net-repost-body{font-size:var(--fs-body);line-height:1.75}
+#page-moments.page .net-repost-imgs{max-width:390px;gap:8px}
+#page-moments.page .net-repost-imgs .net-image{border-radius:8px}
+#page-moments.page .mom-avatar{width:46px;height:46px}
+#page-moments.page .mom-card-name{font-size:var(--fs-body);font-weight:650}
+#page-moments.page .mom-card-time{margin-top:3px}
+#page-moments.page .mom-card-body{padding:8px 0 3px;font-size:15px;line-height:1.75;overflow-wrap:anywhere;word-break:normal}
+#page-moments.page .mom-images{width:min(100%,540px);max-width:540px;gap:8px;margin-top:12px}
+#page-moments.page .mom-images.n1{max-width:460px;grid-template-columns:minmax(0,460px)}
+#page-moments.page .mom-images.n23:has(.mom-image:nth-child(2):last-child){max-width:440px;grid-template-columns:repeat(2,minmax(0,1fr))}
+#page-moments.page .mom-images.n23:has(.mom-image:nth-child(3):last-child),
+#page-moments.page .mom-images.n23:has(.mom-image:nth-child(4):last-child),
+#page-moments.page .mom-images.n5plus{grid-template-columns:repeat(3,minmax(0,1fr))}
+#page-moments.page .mom-image{border-radius:10px}
+#page-moments.page .mom-actions{gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border-soft)}
+#page-moments.page .mom-action-btn{min-width:72px;min-height:34px;justify-content:center;padding:5px 9px;border:1px solid transparent;border-radius:var(--radius-control);font-size:var(--fs-meta);color:var(--content-secondary)}
+#page-moments.page .mom-action-btn:hover{border-color:var(--border-soft)}
+#page-moments.page .mom-action-btn.mom-del{margin-left:auto}
+#page-moments.page .mom-comments{margin-top:8px;padding:7px 0 0;background:transparent;border:0;border-radius:0}
+#page-moments.page .mom-comments-list{gap:6px}
+#page-moments.page .mom-comment-row{font-size:var(--fs-meta);gap:5px 7px}
+#page-moments.page .mom-comment-time,#page-moments.page .mom-comment-del{color:var(--content-secondary)}
+#page-moments.page .mom-comment-input{margin-top:10px}
+#page-moments.page .mom-comment-input input{min-height:36px}
+#page-moments.page .mom-private-note{border-radius:var(--radius-control);color:var(--content-secondary)}
+#page-moments.page .net-side-card{padding:18px;border-radius:var(--radius-card)}
+#page-moments.page .net-side-head{margin-bottom:9px}
+#page-moments.page .net-friend-row{padding:9px 6px}
+#page-moments.page .net-side-tip{padding:18px}
+#page-moments.page .net-side-tip .net-side-p{line-height:1.75;color:var(--content-secondary)}
+#page-moments.page .mom-state{color:var(--content-secondary)}
+#page-moments.page .net-friends-card{max-width:1180px;margin:0 auto;padding:clamp(18px,2vw,28px);border-radius:var(--radius-panel)}
+#page-moments.page .net-friends-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:14px}
+#page-moments.page .net-friend-card{min-height:178px;padding:18px;border-radius:var(--radius-card)}
+#page-moments.page .net-profile-outer{max-width:1040px;margin:0 auto}
+#page-moments.page .net-profile{border-radius:var(--radius-panel);box-shadow:var(--shadow-card)}
+#page-moments.page .net-profile-banner{height:clamp(220px,22vw,310px);background-color:var(--surface-pressed)}
+#page-moments.page .net-profile-banner::after{content:'';position:absolute;inset:35% 0 0;background:linear-gradient(180deg,transparent,var(--surface-dialog-scrim));pointer-events:none}
+#page-moments.page .net-profile-banner-letter{position:relative;z-index:1}
+#page-moments.page .net-profile-head{align-items:flex-start;gap:20px;padding:0 24px 20px}
+#page-moments.page .net-profile-avatar{width:112px;height:112px;margin-top:-56px}
+#page-moments.page .net-profile-ident{min-width:260px;padding-top:14px;gap:5px}
+#page-moments.page .net-profile-name{font-size:24px;font-weight:650}
+#page-moments.page .net-profile-follow{margin-top:16px}
+#page-moments.page .net-profile-note{margin:0;padding:16px 24px 20px;border-top:1px solid var(--border-soft)}
+#page-moments.page .net-profile-note-text{margin-bottom:10px;font-size:var(--fs-body);color:var(--content-secondary)}
+#page-moments.page .net-pf-compose textarea{width:100%;min-height:74px;padding:11px 13px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font:inherit;line-height:1.65;resize:vertical}
+#page-moments.page .net-pf-compose .net-compose-row{display:flex;gap:10px;justify-content:flex-end;margin-top:9px}
+#page-moments.page .net-pf-compose .net-compose-select{max-width:250px}
+#page-moments.page .net-profile-tabs{margin:10px 0 0;padding:0 16px}
+#page-moments.page .net-profile-body{min-height:240px;max-width:880px;margin:0 auto;padding:14px 16px 22px}
+#page-moments.page .net-pf-empty{padding:40px 20px;color:var(--content-secondary)}
+#page-moments.page .rl-inbox{max-width:calc(100vw - 24px)}
+#page-moments.page .net-tab:focus-visible,#page-moments.page .net-chip:focus-visible,
+#page-moments.page .mom-action-btn:focus-visible,#page-moments.page .net-action:focus-visible,
+#page-moments.page .net-follow-btn:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+
+@media(max-width:1100px){
+  #page-moments.page .net-columns{grid-template-columns:minmax(0,1fr) 280px;gap:18px}
+  #page-moments.page .net-compose{padding:14px 16px}
+  #page-moments.page .net-compose-visibility-hint{flex-basis:100%;margin-left:88px}
+}
+@media(max-width:920px){
+  #page-moments.page{width:100%;padding:clamp(78px,9vh,88px) 16px max(112px,env(safe-area-inset-bottom))}
+  #page-moments.page .net-columns{grid-template-columns:minmax(0,1fr)}
+  #page-moments.page .net-side{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));order:2}
+  #page-moments.page .net-friends-card{padding:18px}
+}
+@media(max-width:640px){
+  #page-moments.page{padding:clamp(78px,9vh,88px) 12px max(112px,env(safe-area-inset-bottom))}
+  #page-moments.page .net-sitebar{align-items:flex-start}
+  #page-moments.page .net-brand{font-size:1.18rem}
+  #page-moments.page .net-brand-suffix{display:none}
+  #page-moments.page .net-site-actions{width:100%;margin-left:0;justify-content:flex-start;flex-wrap:wrap}
+  #page-moments.page .net-search{flex:1 1 100%;max-width:none}
+  #page-moments.page .net-tabs{overflow-x:auto;scrollbar-width:none}
+  #page-moments.page .net-tab{flex:1 0 auto;min-width:0;padding:8px 12px}
+  #page-moments.page .net-compose{padding:12px 14px}
+  #page-moments.page .net-compose-heading{align-items:flex-start;flex-direction:column;gap:9px}
+  #page-moments.page .net-compose-controls{gap:8px}
+  #page-moments.page .net-compose-visibility-hint{flex-basis:auto;margin-left:0}
+  #page-moments.page .net-compose-spacer{display:none}
+  #page-moments.page .net-compose-controls .btn{flex:1}
+  #page-moments.page .net-compose-text{min-height:56px}
+  #page-moments.page .net-side{grid-template-columns:minmax(0,1fr)}
+  #page-moments.page .mom-card,#page-moments.page .net-card{padding:14px 4px 16px}
+  #page-moments.page .mom-images{max-width:100%}
+  #page-moments.page .mom-images.n1{grid-template-columns:minmax(0,1fr)}
+  #page-moments.page .net-images{max-width:100%}
+  #page-moments.page .net-images.n1{grid-template-columns:minmax(0,1fr)}
+  #page-moments.page .mom-comment-time{margin-left:0}
+  #page-moments.page .net-profile-head{padding:0 15px 16px;gap:12px}
+  #page-moments.page .net-profile-avatar{width:84px;height:84px;margin-top:-42px;border-width:4px}
+  #page-moments.page .net-profile-ident{min-width:0;flex:1 1 160px;padding-top:10px}
+  #page-moments.page .net-profile-follow{width:100%;margin:0}
+  #page-moments.page .net-profile-follow .net-follow-btn{width:100%}
+  #page-moments.page .net-profile-body{padding:12px 10px 18px}
+}
+@media(max-height:760px) and (min-width:921px){
+  #page-moments.page{padding-top:clamp(70px,9vh,78px);padding-bottom:max(112px,env(safe-area-inset-bottom))}
+  #page-moments.page .net-sitebar{padding:4px 0 8px}
+  #page-moments.page .net-tabs{padding:8px 0 10px;margin-bottom:12px}
+  #page-moments.page .net-compose{padding:11px 16px;margin-bottom:10px}
+  #page-moments.page .net-compose-heading{margin-bottom:6px}
+  #page-moments.page .net-compose-row{margin-bottom:6px}
+  #page-moments.page .net-compose-text{min-height:52px;padding:8px 12px}
+}
+@media(prefers-reduced-motion:reduce){
+  #page-moments.page .mom-action-btn,#page-moments.page .net-friend-card{transition:none}
+}

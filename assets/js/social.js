@@ -23,7 +23,13 @@ function _ibApiAvatarSource(value){
   var helper=window.IBSafeImage;
   return helper&&typeof helper.normalizeSource==='function'?helper.normalizeSource(value):'';
 }
-function _apiUiText(key,fallback){return window.IBI18n&&typeof window.IBI18n.t==='function'?window.IBI18n.t(key):fallback}
+function _apiUiText(key,fallback,vars){
+  if(window.IBI18n&&typeof window.IBI18n.t==='function'){
+    var translated=window.IBI18n.t(key,vars);
+    if(translated!==key)return translated;
+  }
+  return String(fallback||key).replace(/\{([a-zA-Z0-9_]+)\}/g,function(match,name){return vars&&Object.prototype.hasOwnProperty.call(vars,name)?String(vars[name]):match});
+}
 function _apiSetEditorTitle(key,fallback){var title=document.getElementById('api-editor-title');if(title)title.textContent=_apiUiText(key,fallback)}
 /* Local OpenAI-compatible runtimes such as Ollama and LM Studio normally do
    not use a credential.  Treat that narrow, loopback-only case as ready while
@@ -63,9 +69,7 @@ function _ibApiReady(cfg){
 function _ibSetVaultManagedKeyInput(id){
   var input=document.getElementById(id);if(!input)return;
   input.value='';input.readOnly=true;
-  input.placeholder=id==='api-imagegen-apikey'
-    ?'图片请求复用角色的 Credential Vault API Key；不单独保存图片 Key'
-    :'Credential Vault 管理；此处不显示或保存密钥';
+  input.placeholder='Credential Vault 管理；此处不显示或保存密钥';
 }
 function _modelThinkingDefault(provider,model){
   provider=String(provider||'').toLowerCase();model=String(model||'').toLowerCase();
@@ -731,6 +735,17 @@ function _ibSetProviderSelection(id){
   sel.value=want;
   return sel.value;
 }
+function _ibUsesGlmStreaming(provider,model){
+  provider=String(provider||'').trim().toLowerCase();model=String(model||'').trim().toLowerCase();
+  return provider==='glm'||/^glm(?:[-_.]|$)/.test(model);
+}
+function _ibSyncStreamingControl(provider,model,enabled){
+  var el=document.getElementById('api-streaming-toggle');if(!el)return;
+  var glm=_ibUsesGlmStreaming(provider,model);
+  el.checked=glm?true:!!enabled;
+  el.disabled=glm;
+  el.title=glm?'GLM 使用流式输出以逐步显示回答。':'';
+}
 
 function onProviderChange(){
   const p=document.getElementById('api-provider').value;
@@ -742,8 +757,7 @@ function onProviderChange(){
     _ibMarkAutoFilled('api-model',!!cfg.model);
     var ve=document.getElementById('api-vision-toggle');
     if(ve)ve.checked=!!cfg.vision;
-    var se=document.getElementById('api-streaming-toggle');
-    if(se)se.checked=!!cfg.streaming;
+    _ibSyncStreamingControl(p,cfg.model,cfg.streaming);
     _showThinkingTouched=false;
     _syncShowThinkingDefault();
     _syncVisionUI();
@@ -757,6 +771,11 @@ function onProviderChange(){
 let apiConfigs=[];
 let archivedConfigs=[];/* 归档区：不进入好友列表、群聊、选择器、AM 展区与迷你面板；仅归档视图读取 */
 let editingApiId=null;
+let _apiCredentialStatusById={};
+let _ibVaultCredentialCatalog={loaded:false,ok:false,credentials:[],error:'',loadedAt:0};
+let _ibVaultManagerSource='image';
+let _ibVaultManagerEditingRef='';
+const API_PROFILE_PRESET_STORAGE_ID='api_profile_presets_v1';
 let activeFriendId=null;
 let activeThreadId=null;/* null=主对话, 有值=话题频道 */
 /* 角色库数量与群聊成员数量是两个独立的维度。10 是当前群聊的既有有效成员上限，
@@ -862,7 +881,10 @@ function _apiFallbackPut(cfg){
 async function _persistApiConfig(cfg){
   const input=cfg&&typeof cfg==='object'?cfg:{};
   const inputId=String(input.id==null?'':input.id).trim();
-  if(!_ibApiIdAllowed(inputId)||((input.credentialRef!=null&&String(input.credentialRef).trim())&&!_ibApiIdAllowed(input.credentialRef)))
+  if(!_ibApiIdAllowed(inputId)
+    ||((input.credentialRef!=null&&String(input.credentialRef).trim())&&!_ibApiIdAllowed(input.credentialRef))
+    ||((input.imageGenCredentialRef!=null&&String(input.imageGenCredentialRef).trim())&&!_ibApiIdAllowed(input.imageGenCredentialRef))
+    ||(input.imageGenCredentialProvider!=null&&String(input.imageGenCredentialProvider||'')&&!_ibImageCredentialProviderAllowed(input.imageGenCredentialProvider)))
     throw Object.assign(new Error('API_CONFIG_ID_INVALID'),{code:'API_CONFIG_ID_INVALID'});
   const legacyKey=String(input.apiKey||'').trim();
   if(String(input.imageGenApiKey||'').trim())throw Object.assign(new Error('IMAGE_CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
@@ -944,24 +966,378 @@ async function loadApiConfigs(){
 }
 
 function _ibApiCredentialStatusLabel(status){
-  const labels={
-    checking:'正在检查',
-    ready:'API 已就绪',
-    missing:'未连接',
-    unavailable:'暂时不可用',
-    unknown:'待确认',
-    none:'无需凭据'
-  };
-  return labels[String(status||'unknown')]||labels.unknown;
+  return String(status||'')==='missing'?_apiUiText('api.issueMissingCredential','缺少 Credential Vault 凭据'):'';
 }
 function _ibApiCredentialStatusClass(status){
   const known=['checking','ready','missing','unavailable','unknown','none'];
   return known.indexOf(String(status||''))>=0?String(status):'unknown';
 }
+function _ibApiListIssue(cfg,entry){
+  if(!cfg)return null;
+  if(!String(cfg.model||'').trim())return{code:'missing-model',label:_apiUiText('api.issueMissingModel','未配置模型')};
+  if(!String(cfg.endpoint||'').trim())return{code:'missing-endpoint',label:_apiUiText('api.issueMissingEndpoint','未配置 Endpoint')};
+  if(_ibApiCredentialEndpointClass(cfg)==='remote'&&_ibApiCredentialStatusClass(entry&&entry.credentialStatus)==='missing')
+    return{code:'missing-credential',label:_ibApiCredentialStatusLabel('missing')};
+  if(_ibVaultCredentialCatalog.ok){
+    var ref=_ibApiConfigCredentialRef(cfg),vault=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===ref});
+    if(vault&&vault.provider&&String(vault.provider)!==String(cfg.provider||''))return{code:'credential-provider-mismatch',label:'聊天 Vault Provider 不匹配'};
+    var imageRef=String(cfg.imageGenCredentialRef||''),imageVault=imageRef&&(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===imageRef});
+    if(cfg.imageGen&&imageVault&&cfg.imageGenCredentialProvider&&String(imageVault.provider)!==String(cfg.imageGenCredentialProvider))return{code:'image-credential-provider-mismatch',label:'图片凭据 Provider 不匹配'};
+  }
+  return null;
+}
 function _ibApiConfigCredentialRef(cfg){
   if(cfg&&Object.prototype.hasOwnProperty.call(cfg,'credentialRef'))return String(cfg.credentialRef||'').trim();
   return String(cfg&&cfg.id||'').trim();
 }
+function _ibUpdateApiEditorActions(cfg){
+  var keyBtn=document.getElementById('api-key-manage-btn');
+  var expressionBtn=document.getElementById('api-expression-manage-btn');
+  var exists=!!(cfg&&apiConfigs.some(function(item){return item&&item.id===cfg.id}));
+  if(expressionBtn){
+    expressionBtn.hidden=!exists;
+    if(exists)expressionBtn.dataset.expressionRoleId=String(cfg.id);
+    else delete expressionBtn.dataset.expressionRoleId;
+  }
+  if(!keyBtn)return;
+  if(!exists){
+    keyBtn.hidden=false;keyBtn.disabled=true;
+    keyBtn.textContent=_apiUiText('api.saveBeforeApiKey','请先保存角色，再设置 API Key');
+    return;
+  }
+  if(_ibApiCredentialLocalStatus(cfg)==='none'){
+    keyBtn.hidden=true;keyBtn.disabled=true;return;
+  }
+  keyBtn.hidden=false;keyBtn.disabled=false;
+  var projection=_apiCredentialStatusById[String(cfg.id)]||{};
+  var status=_ibApiCredentialStatusClass(projection.credentialStatus);
+  var key=status==='ready'?'api.changeApiKey':(status==='missing'?'api.addApiKey':'api.manageApiKey');
+  var fallback=status==='ready'?'更换 API Key':(status==='missing'?'添加 API Key':'管理 API Key');
+  keyBtn.textContent=_apiUiText(key,fallback);
+}
+function _ibOpenCurrentApiKeyModal(){
+  var id=String(editingApiId||'');
+  var cfg=apiConfigs.find(function(item){return item&&item.id===id});
+  if(!cfg){toast(_apiUiText('api.saveBeforeApiKey','请先保存角色，再设置 API Key'));return}
+  var projection=_apiCredentialStatusById[id]||{};
+  var mode=_ibApiCredentialStatusClass(projection.credentialStatus)==='ready'?'replace':'add';
+  _ibOpenApiKeyModal(id,mode);
+}
+window._ibOpenCurrentApiKeyModal=_ibOpenCurrentApiKeyModal;
+function _ibImageCredentialText(key,fallback){
+  try{return window.IBI18n&&typeof window.IBI18n.t==='function'?window.IBI18n.t(key):fallback}catch(e){return fallback}
+}
+function _ibVaultProviderName(provider){var item=PROVIDERS&&PROVIDERS[String(provider||'')];return String(item&&item.name||provider||'未知 Provider')}
+function _ibImageCredentialProviderAllowed(provider){var id=String(provider||'').trim().toLowerCase();return id==='gemini'||!!(PROVIDERS&&PROVIDERS[id]&&PROVIDERS[id].format==='openai')}
+function _ibSafeVaultEndpoint(endpoint){
+  var value=String(endpoint||'').trim();if(!value)return false;
+  if(window._ibEndpointHasInlineCredential&&window._ibEndpointHasInlineCredential(value))return false;
+  if(/(?:[?&])(?:api[_-]?key|key|token|secret|authorization|bearer|password|credential|signature|sig)=[^&#]+/i.test(value))return false;
+  if(/(?:sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/i.test(value))return false;
+  try{var parsed=new URL(value);return (parsed.protocol==='http:'||parsed.protocol==='https:')&&!parsed.username&&!parsed.password&&!parsed.hash}catch(e){return false}
+}
+function _ibImageWireProvider(){
+  var wire=String((document.getElementById('api-imagegen-provider')||{}).value||'').trim().toLowerCase();
+  if(wire==='gemini'||wire==='openai')return wire;
+  return /gemini/i.test(String((document.getElementById('api-imagegen-model')||{}).value||''))?'gemini':'openai';
+}
+function _ibLooksLikeImageEndpoint(endpoint){
+  try{var path=new URL(String(endpoint||'')).pathname;return /\/images\/(?:generations|edits|variations)(?:\/|$)/i.test(path)||/:generateContent$/i.test(path)}catch(e){return false}
+}
+function _ibImageCredentialSourceHost(entry){
+  if(!entry)return'';
+  var host=String(entry.endpointHost||'').trim().toLowerCase();if(host)return host;
+  host=_ibEndpointHost(entry.endpoint);if(host)return host.toLowerCase();
+  var ref=String(entry.credentialRef||'').trim();
+  var chatConfig=(apiConfigs||[]).find(function(cfg){return cfg&&_ibApiConfigCredentialRef(cfg)===ref&&String(cfg.endpoint||'').trim()});
+  if(chatConfig){host=_ibEndpointHost(chatConfig.endpoint);if(host)return host.toLowerCase()}
+  var provider=PROVIDERS&&PROVIDERS[String(entry.provider||'').toLowerCase()];
+  host=provider&&_ibEndpointHost(provider.endpoint);return String(host||'').toLowerCase();
+}
+function _ibImageCredentialCompatibility(entry){
+  var endpoint=String((document.getElementById('api-imagegen-endpoint')||{}).value||'').trim();
+  var wire=_ibImageWireProvider(),targetHost=_ibEndpointHost(endpoint);
+  if(entry&&entry.provider&&!_ibImageCredentialProviderAllowed(entry.provider))return{ok:false,verified:true,targetHost:'',sourceHost:'',reason:'provider-unsupported'};
+  var provider=PROVIDERS&&PROVIDERS[String(entry&&entry.provider||'').toLowerCase()],credentialWire=provider&&provider.format==='gemini'?'gemini':'openai';
+  if(entry&&entry.provider&&credentialWire!==wire)return{ok:false,verified:true,targetHost:'',sourceHost:'',reason:'provider-mismatch'};
+  if(!targetHost&&_ibLooksLikeImageEndpoint(entry&&entry.endpoint))targetHost=_ibEndpointHost(entry.endpoint);
+  if(!targetHost)targetHost=wire==='gemini'?'generativelanguage.googleapis.com':'api.openai.com';
+  var sourceHost=_ibImageCredentialSourceHost(entry);
+  if(targetHost&&sourceHost&&targetHost.toLowerCase()!==sourceHost.toLowerCase())return{ok:false,verified:true,targetHost:targetHost,sourceHost:sourceHost,reason:'endpoint-mismatch'};
+  return{ok:true,verified:!!(targetHost&&sourceHost),targetHost:targetHost,sourceHost:sourceHost,reason:sourceHost?'':'endpoint-unknown'};
+}
+async function _ibRefreshVaultCredentialCatalog(force){
+  if(!force&&_ibVaultCredentialCatalog.loaded&&Date.now()-_ibVaultCredentialCatalog.loadedAt<30000)return _ibVaultCredentialCatalog;
+  if(typeof window._activeCompanionRequest!=='function'){
+    _ibVaultCredentialCatalog={loaded:true,ok:false,credentials:[],error:'CREDENTIAL_SERVICE_UNAVAILABLE',loadedAt:Date.now()};return _ibVaultCredentialCatalog;
+  }
+  try{
+    var response=await window._activeCompanionRequest('/credentials',{timeout:5000});
+    if(!response||response.ok!==true||!Array.isArray(response.credentials))throw new Error(response&&response.error||'CREDENTIAL_METADATA_UNAVAILABLE');
+    var seen=Object.create(null),rows=[];
+    response.credentials.forEach(function(row){
+      var ref=String(row&&row.credentialRef||'').trim();
+      if(!ref||!_ibApiIdAllowed(ref)||seen[ref]||row.secretPresent!==true)return;
+      seen[ref]=true;
+      rows.push({credentialRef:ref,displayName:String(row.displayName||'').trim().slice(0,80),provider:String(row.provider||'').trim().toLowerCase().slice(0,48),endpointHost:String(row.endpointHost||'').trim().slice(0,180),endpoint:String(row.endpoint||'').trim().slice(0,1000),model:String(row.model||'').trim().slice(0,120),updatedAt:Number(row.updatedAt)||0,userManaged:row.userManaged===true,authorized:row.authorized!==false});
+    });
+    _ibVaultCredentialCatalog={loaded:true,ok:true,credentials:rows,error:'',loadedAt:Date.now()};
+  }catch(error){_ibVaultCredentialCatalog={loaded:true,ok:false,credentials:[],error:String(error&&error.message||error||'CREDENTIAL_METADATA_UNAVAILABLE').slice(0,160),loadedAt:Date.now()}}
+  return _ibVaultCredentialCatalog;
+}
+async function _ibCredentialAssociationIndex(){
+  var index=Object.create(null);
+  function add(ref,label){ref=String(ref||'').trim();if(!ref||!label)return;if(!index[ref])index[ref]=[];if(index[ref].indexOf(label)<0)index[ref].push(label)}
+  try{if(typeof loadApiConfigs==='function')await loadApiConfigs()}catch(e){}
+  (Array.isArray(apiConfigs)?apiConfigs:[]).forEach(function(cfg){if(!cfg)return;var name=String(cfg.nickname||cfg.model||cfg.id||'API 配置');add(_ibApiConfigCredentialRef(cfg),'聊天 · '+name);add(cfg.imageGenCredentialRef,'图像 · '+name)});
+  try{var voice=await dbGet('apiSettings','voiceTrans');if(voice)add(voice.credentialRef,'语音转写')}catch(e){}
+  try{var xin=await dbGet('apiSettings','xinModelConfig');if(xin)add(xin.credentialRef,'Xin 模型')}catch(e){}
+  try{var presets=await dbGet('apiSettings',API_PROFILE_PRESET_STORAGE_ID),groups=presets&&presets.configs||{};Object.keys(groups).forEach(function(configId){var cfg=(apiConfigs||[]).find(function(item){return item&&String(item.id)===String(configId)}),roleName=cfg&&String(cfg.nickname||cfg.model||configId)||String(configId);(Array.isArray(groups[configId])?groups[configId]:[]).forEach(function(preset){add(preset&&preset.credentialRef,'预设 · '+roleName+' / '+String(preset&&preset.name||'未命名'))})})}catch(e){}
+  return index;
+}
+async function _ibCountCredentialReferences(ref,excludeChatConfigId,excludeConfigId,excludePresetConfigId){
+  var count=0,id=String(ref||'').trim(),exclude=String(excludeChatConfigId||''),excludeAll=String(excludeConfigId||''),excludePresets=String(excludePresetConfigId||'');if(!id)return 0;
+  try{if(typeof loadApiConfigs==='function')await loadApiConfigs()}catch(e){}
+  (Array.isArray(apiConfigs)?apiConfigs:[]).forEach(function(cfg){if(!cfg)return;var cfgId=String(cfg.id||'');if(cfgId!==exclude&&cfgId!==excludeAll&&_ibApiConfigCredentialRef(cfg)===id)count++;if(cfgId!==excludeAll&&String(cfg.imageGenCredentialRef||'').trim()===id)count++});
+  try{var voice=await dbGet('apiSettings','voiceTrans');if(String(voice&&voice.credentialRef||'').trim()===id)count++}catch(e){}
+  try{var xin=await dbGet('apiSettings','xinModelConfig');if(String(xin&&xin.credentialRef||'').trim()===id)count++}catch(e){}
+  try{var presets=await dbGet('apiSettings',API_PROFILE_PRESET_STORAGE_ID),groups=presets&&presets.configs||{};Object.keys(groups).forEach(function(configId){if(configId===excludePresets)return;(Array.isArray(groups[configId])?groups[configId]:[]).forEach(function(preset){if(String(preset&&preset.credentialRef||'').trim()===id)count++})})}catch(e){}
+  return count;
+}
+function _ibCredentialDisplayName(entry,associations){
+  if(entry&&entry.displayName)return entry.displayName;
+  var used=associations&&associations[entry&&entry.credentialRef]||[];
+  return used.length?String(used[0]).replace(/^(聊天|图像)\s*[·]\s*/,''):String(entry&&entry.credentialRef||'Credential');
+}
+function _ibQuickCredentialAssociationIndex(){
+  var index=Object.create(null);
+  function add(ref,label){ref=String(ref||'').trim();if(!ref||!label)return;if(!index[ref])index[ref]=[];if(index[ref].indexOf(label)<0)index[ref].push(label)}
+  (Array.isArray(apiConfigs)?apiConfigs:[]).forEach(function(cfg){if(!cfg)return;var name=String(cfg.nickname||cfg.model||cfg.id||'API 配置');add(_ibApiConfigCredentialRef(cfg),'聊天 · '+name);add(cfg.imageGenCredentialRef,'图像 · '+name)});
+  return index;
+}
+function _ibRenderChatCredentialOptions(configId,preferred){
+  var select=document.getElementById('api-credential-ref');if(!select)return;
+  var id=String(configId||editingApiId||''),cfg=(apiConfigs||[]).find(function(item){return item&&String(item.id)===id})||null;
+  var currentRef=cfg?_ibApiConfigCredentialRef(cfg):'',selected=preferred==null?String(select.value||'__current__'):String(preferred||'__current__');
+  var currentProvider=String((document.getElementById('api-provider')||{}).value||cfg&&cfg.provider||'').toLowerCase();
+  var records=_ibVaultCredentialCatalog.ok?_ibVaultCredentialCatalog.credentials:[];
+  if(!records.length){
+    var byRef=Object.create(null);
+    (apiConfigs||[]).forEach(function(item){var ref=_ibApiConfigCredentialRef(item),status=(_apiCredentialStatusById[String(item.id)]||{}).credentialStatus;if(ref&&!byRef[ref])byRef[ref]={credentialRef:ref,displayName:String(item.nickname||item.model||item.id),provider:String(item.provider||'').toLowerCase(),endpointHost:_ibEndpointHost(item.endpoint),model:String(item.model||''),secretPresent:status==='ready',authorized:status==='ready'}});
+    records=Object.keys(byRef).map(function(ref){return byRef[ref]});
+  }
+  var associations=_ibQuickCredentialAssociationIndex();select.textContent='';
+  var currentMetadata=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===currentRef});
+  var current=document.createElement('option');current.value='__current__';current.textContent=currentRef?'保留当前绑定 · '+_ibCredentialDisplayName(currentMetadata||{credentialRef:currentRef},associations)+(currentMetadata?' · '+_ibVaultProviderName(currentMetadata.provider)+(currentMetadata.authorized===false?' · 未授权':''):''):'保留当前绑定（未选择 Vault 凭据）';select.appendChild(current);
+  var seen=Object.create(null);
+  records.forEach(function(entry){
+    var ref=String(entry.credentialRef||'');if(!ref||seen[ref]||ref===currentRef)return;seen[ref]=true;
+    var option=document.createElement('option');option.value=ref;option.dataset.provider=entry.provider||'';
+    var used=associations[ref]||[],label=_ibCredentialDisplayName(entry,associations)+' · '+_ibVaultProviderName(entry.provider);
+    if(entry.endpointHost)label+=' · '+entry.endpointHost;if(used.length)label+=' · 关联 '+used.length+' 项';if(entry.authorized===false)label+=' · 未授权';if(!entry.secretPresent)label+=' · Vault 未确认';
+    if(entry.authorized===false||currentProvider&&entry.provider&&entry.provider!==currentProvider){option.disabled=true;label+=entry.authorized===false?'':' · Provider 不匹配'}
+    option.textContent=label;option.title=used.join('；')||entry.credentialRef;select.appendChild(option);
+  });
+  if(selected!=='__current__'&&!Array.prototype.some.call(select.options,function(option){return option.value===selected})){var retained=document.createElement('option');retained.value=selected;retained.textContent='已保存的 Credential Vault 引用（当前不可用）';select.appendChild(retained)}
+  select.value=selected;if(select.value!==selected)select.value='__current__';
+}
+function _ibRenderImageCredentialOptions(selectedRef,currentConfigId){
+  var select=document.getElementById('api-imagegen-credential');if(!select)return;
+  var selected=String(selectedRef||'').trim(),currentId=String(currentConfigId||'').trim();
+  var currentConfig=(Array.isArray(apiConfigs)?apiConfigs:[]).find(function(cfg){return String(cfg&&cfg.id||'')===currentId});
+  var currentChatRef=currentConfig?_ibApiConfigCredentialRef(currentConfig):'';
+  var catalog=_ibVaultCredentialCatalog,records=catalog&&catalog.ok?catalog.credentials:[];
+  if(!records.length){
+    var byRef=Object.create(null);
+    (Array.isArray(apiConfigs)?apiConfigs:[]).forEach(function(cfg){
+      var ref=_ibApiConfigCredentialRef(cfg),status=_apiCredentialStatusById[String(cfg&&cfg.id||'')]||{};
+      if(ref&&!byRef[ref])byRef[ref]={credentialRef:ref,displayName:String(cfg.nickname||cfg.model||cfg.id),provider:String(cfg.provider||'').toLowerCase(),endpointHost:'',model:String(cfg.model||''),secretPresent:status.credentialStatus==='ready',authorized:status.credentialStatus==='ready',credentialStatus:String(status.credentialStatus||'unknown')};
+    });
+    records=Object.keys(byRef).map(function(ref){return byRef[ref]});
+  }
+  var associations=_ibQuickCredentialAssociationIndex();
+  select.textContent='';
+  var currentChatEntry=(catalog&&catalog.ok?catalog.credentials:[]).find(function(entry){return entry.credentialRef===currentChatRef});
+  if(!currentChatEntry&&currentConfig&&currentChatRef)currentChatEntry={credentialRef:currentChatRef,provider:currentConfig.provider,endpoint:currentConfig.endpoint,endpointHost:_ibEndpointHost(currentConfig.endpoint),secretPresent:true,authorized:true};
+  var follow=document.createElement('option');follow.value='';follow.textContent=_ibImageCredentialText('api.imageCredentialFollowChat','跟随角色聊天凭据');
+  if(currentChatEntry){var followCompatibility=_ibImageCredentialCompatibility(currentChatEntry);if(followCompatibility.ok===false){follow.disabled=true;follow.textContent+=' · '+_ibImageCredentialText(followCompatibility.reason==='provider-mismatch'||followCompatibility.reason==='provider-unsupported'?'api.imageCredentialProviderMismatch':'api.imageCredentialEndpointMismatch',followCompatibility.reason==='provider-mismatch'||followCompatibility.reason==='provider-unsupported'?'图片 Provider 与凭据格式不匹配。':'Endpoint 主机与凭据来源不匹配。')}else if(!followCompatibility.verified)follow.textContent+=' · '+_ibImageCredentialText('api.imageCredentialEndpointUnknown','Vault 未记录凭据来源 Endpoint，请确认它适用于当前地址。')}
+  select.appendChild(follow);
+  records.forEach(function(entry){
+    var ref=entry.credentialRef;if(ref===currentChatRef&&ref!==selected)return;
+    if(!_ibImageCredentialProviderAllowed(entry.provider))return;
+    var option=document.createElement('option');option.value=ref;option.dataset.provider=entry.provider;
+    var used=associations[ref]||[],label=_ibCredentialDisplayName(entry,associations)+' · '+_ibVaultProviderName(entry.provider);
+    if(entry.endpointHost)label+=' · '+entry.endpointHost;
+    var compatibility=_ibImageCredentialCompatibility(entry);
+    if(compatibility.ok===false)label+=' · '+_ibImageCredentialText(compatibility.reason==='provider-mismatch'||compatibility.reason==='provider-unsupported'?'api.imageCredentialProviderMismatch':'api.imageCredentialEndpointMismatch',compatibility.reason==='provider-mismatch'||compatibility.reason==='provider-unsupported'?'图片 Provider 与凭据格式不匹配。':'Endpoint 主机与凭据来源不匹配。');
+    else if(!compatibility.verified)label+=' · '+_ibImageCredentialText('api.imageCredentialEndpointUnknown','Vault 未记录凭据来源 Endpoint，请确认它适用于当前地址。');
+    if(entry.authorized===false)label+=' · 未授权';
+    if(entry.secretPresent===false)label+=' · Vault 未确认';
+    if(used.length)label+=' · 关联 '+used.length+' 项';
+    if(ref===currentChatRef)label+=' · '+_ibImageCredentialText('api.imageCredentialSameAsChat','与聊天凭据相同');
+    option.disabled=entry.authorized===false||compatibility.ok===false;option.dataset.endpointCompatible=compatibility.ok===false?'0':'1';option.textContent=label;option.title=compatibility.ok===false?compatibility.sourceHost+' ≠ '+compatibility.targetHost:(used.join('；')||'独立 Vault 凭据');select.appendChild(option);
+  });
+  if(selected&&!Array.prototype.some.call(select.options,function(option){return option.value===selected})){
+    var retained=document.createElement('option');retained.value=selected;
+    retained.textContent=_ibImageCredentialText('api.imageCredentialUnavailable','已保存的图片 credentialRef（Vault 或来源配置不可用）');select.appendChild(retained);
+  }
+  select.value=selected;
+  if(select.value!==selected)select.value='';
+}
+function _ibRenderVoiceTransCredentialOptions(selectedRef,selectedProvider){
+  var select=document.getElementById('api-vt-credential');if(!select)return;
+  var selected=String(selectedRef||'').trim(),catalog=_ibVaultCredentialCatalog,records=catalog&&catalog.ok?catalog.credentials:[];
+  var associations=_ibQuickCredentialAssociationIndex();
+  select.textContent='';
+  var empty=document.createElement('option');empty.value='';empty.textContent='选择独立 Vault 凭据';select.appendChild(empty);
+  records.forEach(function(entry){
+    if(!entry.provider||entry.authorized===false||!(PROVIDERS[entry.provider]&&PROVIDERS[entry.provider].format==='openai'))return;
+    var option=document.createElement('option');option.value=entry.credentialRef;option.dataset.provider=entry.provider;
+    option.textContent=_ibCredentialDisplayName(entry,associations)+' · '+_ibVaultProviderName(entry.provider)+(entry.endpointHost?' · '+entry.endpointHost:'');
+    select.appendChild(option);
+  });
+  if(selected&&!Array.prototype.some.call(select.options,function(option){return option.value===selected})){
+    var retained=document.createElement('option');retained.value=selected;retained.textContent='已保存的语音转写凭据（Vault 元数据不可用）';select.appendChild(retained);
+  }
+  select.value=selected;if(select.value!==selected)select.value='';
+  if(selectedProvider)select.dataset.provider=String(selectedProvider);
+}
+window._ibRenderVoiceTransCredentialOptions=_ibRenderVoiceTransCredentialOptions;
+function _ibVaultManagerStatus(message,bad){var el=document.getElementById('ib-vault-manager-status');if(el){el.textContent=String(message||'');el.classList.toggle('is-error',!!bad)}}
+function _ibVaultManagerProviderOptions(selected){
+  var select=document.getElementById('ib-vault-provider');if(!select)return;
+  var wanted=String(selected||select.value||'openai');select.textContent='';
+  Object.keys(PROVIDERS||{}).forEach(function(id){if(_ibVaultManagerSource==='voice'&&PROVIDERS[id].format!=='openai')return;if(_ibVaultManagerSource==='image'&&!_ibImageCredentialProviderAllowed(id))return;var option=document.createElement('option');option.value=id;option.textContent=_ibVaultProviderName(id);select.appendChild(option)});
+  if(PROVIDERS&&PROVIDERS[wanted])select.value=wanted;else if(PROVIDERS&&PROVIDERS.openai)select.value='openai';
+}
+async function _ibVaultManagerRows(){
+  var box=document.getElementById('ib-vault-credential-list');if(!box)return;
+  box.textContent='';
+  var catalog=await _ibRefreshVaultCredentialCatalog(true);
+  if(!catalog.ok){_ibVaultManagerStatus('Credential Vault 元数据暂不可用；没有读取或修改任何凭据。',true);var error=document.createElement('div');error.className='ib-vault-empty';error.textContent=catalog.error||'Vault 不可用';box.appendChild(error);return}
+  _ibVaultManagerStatus(catalog.credentials.length?'共 '+catalog.credentials.length+' 项；列表只显示非敏感元数据。':'Vault 中还没有凭据。',false);
+  var associations=await _ibCredentialAssociationIndex();
+  if(!catalog.credentials.length){var empty=document.createElement('div');empty.className='ib-vault-empty';empty.textContent='新增独立凭据，或先在角色 API 配置中绑定 API Key。';box.appendChild(empty);return}
+  catalog.credentials.forEach(function(entry){
+    var row=document.createElement('div');row.className='ib-vault-record';
+    var main=document.createElement('div');main.className='ib-vault-record-main';
+    var title=document.createElement('strong');title.className='ib-vault-record-title';title.textContent=_ibCredentialDisplayName(entry,associations);main.appendChild(title);
+    var meta=document.createElement('div');meta.className='ib-vault-record-meta';meta.textContent=[_ibVaultProviderName(entry.provider),entry.endpointHost,entry.model,entry.authorized===false?'尚未授权到当前 Active Resolver':''].filter(Boolean).join(' · ');main.appendChild(meta);
+    var used=associations[entry.credentialRef]||[];var refs=document.createElement('div');refs.className='ib-vault-record-refs';refs.textContent=used.length?used.join('；'):'独立凭据 · 未关联';main.appendChild(refs);
+    var actions=document.createElement('div');actions.className='ib-vault-record-actions';
+    if(entry.userManaged){
+      var replace=document.createElement('button');replace.type='button';replace.className='btn';replace.textContent=entry.authorized===false?'重新绑定':'更换 Key';
+      replace.addEventListener('click',function(){_ibVaultManagerEditingRef=entry.credentialRef;document.getElementById('ib-vault-name').value=entry.displayName||'';_ibVaultManagerProviderOptions(entry.provider);document.getElementById('ib-vault-endpoint').value=entry.endpoint||'';document.getElementById('ib-vault-model').value=entry.model||'';document.getElementById('ib-vault-key').value='';var details=document.getElementById('ib-vault-create-details');if(details)details.open=true;_ibVaultManagerStatus('更换会覆盖此凭据的 Vault Key；引用它的配置会继续使用新值。',false);document.getElementById('ib-vault-key').focus()});actions.appendChild(replace);
+      var remove=document.createElement('button');remove.type='button';remove.className='btn api-compact-danger';remove.textContent='删除';remove.disabled=used.length>0;remove.title=used.length?'凭据仍被 API、图像、语音或预设引用，暂不能删除':'删除独立 Vault 凭据';remove.addEventListener('click',function(){_ibDeleteIndependentVaultCredential(entry.credentialRef)});actions.appendChild(remove);
+    }
+    row.appendChild(main);row.appendChild(actions);box.appendChild(row);
+  });
+}
+function _ibOpenVaultCredentialManager(source){
+  var backdrop=document.getElementById('ib-vault-manager-backdrop');if(!backdrop)return;
+  if(!backdrop.dataset.ibBound){backdrop.dataset.ibBound='1';backdrop.addEventListener('click',function(event){if(event.target===backdrop)_ibCloseVaultCredentialManager()});document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!backdrop.hidden)_ibCloseVaultCredentialManager()})}
+  _ibVaultManagerSource=source==='voice'?'voice':(source==='image'?'image':'vault');_ibVaultManagerEditingRef='';
+  var details=document.getElementById('ib-vault-create-details');if(details)details.open=_ibVaultManagerSource==='image';
+  ['ib-vault-name','ib-vault-endpoint','ib-vault-model','ib-vault-key'].forEach(function(id){var input=document.getElementById(id);if(input)input.value=''});
+  var title=document.getElementById('ib-vault-manager-title');if(title)title.textContent=_ibVaultManagerSource==='image'?_ibImageCredentialText('api.imageCredentialAddTitle','新增图片独立凭据'):_ibImageCredentialText('api.vaultManagerTitle','Credential Vault');
+  var wantedProvider='openai';
+  if(_ibVaultManagerSource==='image'){
+    var imageWire=_ibImageWireProvider(),imageEndpoint=String((document.getElementById('api-imagegen-endpoint')||{}).value||'').trim(),host=_ibEndpointHost(imageEndpoint).toLowerCase();
+    wantedProvider=imageWire==='gemini'?'gemini':(host&&host!=='api.openai.com'?'custom':'openai');
+    var name=document.getElementById('ib-vault-name'),endpoint=document.getElementById('ib-vault-endpoint'),model=document.getElementById('ib-vault-model');
+    if(name)name.value=host?'图片 · '+host:'';
+    if(endpoint)endpoint.value=imageEndpoint;
+    if(model)model.value=String((document.getElementById('api-imagegen-model')||{}).value||'').trim();
+  }
+  _ibVaultManagerProviderOptions(wantedProvider);backdrop.hidden=false;
+  _ibVaultManagerRows().then(function(){if(_ibVaultManagerSource==='image')_ibVaultManagerStatus('保存后将写入现有 Credential Vault 并选中到当前图片配置；Key 不会写进角色配置。',false)});
+}
+function _ibCloseVaultCredentialManager(){
+  var backdrop=document.getElementById('ib-vault-manager-backdrop');if(backdrop)backdrop.hidden=true;
+  ['ib-vault-name','ib-vault-endpoint','ib-vault-model','ib-vault-key'].forEach(function(id){var input=document.getElementById(id);if(input)input.value=''});
+  _ibVaultManagerEditingRef='';
+}
+function _ibNewCredentialRef(){var token='';try{token=crypto.randomUUID().replace(/-/g,'')}catch(e){token=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2)}return 'ib_vault_'+Date.now().toString(36)+'_'+token.slice(0,20)}
+async function _ibSaveIndependentVaultCredential(button){
+  var name=String((document.getElementById('ib-vault-name')||{}).value||'').trim().slice(0,80),provider=String((document.getElementById('ib-vault-provider')||{}).value||'').trim();
+  var endpoint=String((document.getElementById('ib-vault-endpoint')||{}).value||'').trim(),model=String((document.getElementById('ib-vault-model')||{}).value||'').trim().slice(0,120),secret=String((document.getElementById('ib-vault-key')||{}).value||'');
+  if(!name){_ibVaultManagerStatus('请给凭据起一个容易识别的名称。',true);return}
+  if(!PROVIDERS||!PROVIDERS[provider]){_ibVaultManagerStatus('请选择当前 Provider 目录中的服务商。',true);return}
+  if(_ibVaultManagerSource==='image'&&!_ibImageCredentialProviderAllowed(provider)){_ibVaultManagerStatus('图片凭据需要 OpenAI Compatible 或 Gemini Provider。',true);return}
+  if(_ibVaultManagerSource==='voice'&&PROVIDERS[provider].format!=='openai'){_ibVaultManagerStatus('语音转写需要 OpenAI Compatible 格式的 Provider。',true);return}
+  if(endpoint&&!_ibSafeVaultEndpoint(endpoint)){_ibVaultManagerStatus('Endpoint 必须是 HTTP(S) 地址，不能携带 Key 或 token。',true);return}
+  if(provider==='custom'&&!endpoint){_ibVaultManagerStatus('自定义 Provider 需要填写 Endpoint。',true);return}
+  if(!secret.trim()){_ibVaultManagerStatus('请输入 API Key；密钥只写入 Credential Vault。',true);return}
+  if(button)button.disabled=true;
+  try{
+    var ref=_ibVaultManagerEditingRef||_ibNewCredentialRef();
+    await _ibWriteVaultCredential(ref,{provider:provider,endpoint:endpoint,model:model,displayName:name,userManaged:true},secret);
+    var key=document.getElementById('ib-vault-key');if(key)key.value='';_ibVaultManagerEditingRef='';
+    await _ibRefreshVaultCredentialCatalog(true);await _ibVaultManagerRows();
+    var savedMeta=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===ref});
+    _ibRenderChatCredentialOptions(editingApiId,(document.getElementById('api-credential-ref')||{}).value||'__current__');
+    if(_ibVaultManagerSource==='image'){
+      var imageSelect=document.getElementById('api-imagegen-credential'),imageProvider=document.getElementById('api-imagegen-provider');
+      if(imageSelect&&_ibImageCredentialProviderAllowed(provider)&&imageProvider)imageProvider.value=provider==='gemini'?'gemini':'openai';
+      var imageEndpoint=document.getElementById('api-imagegen-endpoint');if(savedMeta&&savedMeta.endpoint&&imageEndpoint){imageEndpoint.value=savedMeta.endpoint;if(imageSelect)imageSelect.dataset.imageEndpointAuto='1'}
+      _ibRenderImageCredentialOptions(ref,editingApiId);
+      if(imageSelect){imageSelect.value=ref;imageSelect.dataset.lastCredentialRef=ref;}
+    }else if(_ibVaultManagerSource==='voice'){
+      var voiceSelect=document.getElementById('api-vt-credential');if(voiceSelect)voiceSelect.value=ref;
+      await _ibRenderVoiceTransCredentialOptions(ref,provider);
+      if(voiceSelect)voiceSelect.value=ref;
+      var voiceEndpoint=document.getElementById('api-vt-endpoint'),voiceModel=document.getElementById('api-vt-model');
+      if(savedMeta&&savedMeta.endpoint&&voiceEndpoint&&!String(voiceEndpoint.value||'').trim()){voiceEndpoint.value=savedMeta.endpoint.replace(/\/(?:chat\/completions|responses|messages)\/?$/i,'');if(voiceSelect)voiceSelect.dataset.endpointAuto='1'}
+      if(savedMeta&&savedMeta.model&&voiceModel&&!String(voiceModel.value||'').trim())voiceModel.value=savedMeta.model;
+      if(typeof saveVoiceTransSettings==='function')await saveVoiceTransSettings();
+    }
+    if(_ibVaultManagerSource!=='image')await _ibRenderImageCredentialOptions((document.getElementById('api-imagegen-credential')||{}).value||'',editingApiId);
+    if(_ibVaultManagerSource==='image'){
+      _ibCloseVaultCredentialManager();
+      if(typeof toast==='function')toast(_ibImageCredentialText('api.imageCredentialSaved','图片凭据已保存并选中；请保存角色 API 配置以保留此绑定。'));
+    }else _ibVaultManagerStatus('凭据已保存；配置只保存 Credential Vault 引用。',false);
+  }catch(error){_ibVaultManagerStatus('保存失败：'+String(error&&error.message||error||'Vault 不可用').slice(0,140),true)}
+  finally{if(button)button.disabled=false}
+}
+async function _ibDeleteIndependentVaultCredential(ref){
+  var catalog=await _ibRefreshVaultCredentialCatalog(true),entry=(catalog.credentials||[]).find(function(item){return item.credentialRef===ref});
+  if(!entry||!entry.userManaged){_ibVaultManagerStatus('只能从这里删除由 Vault 管理器新增的独立凭据。',true);return}
+  var associations=await _ibCredentialAssociationIndex();
+  if((associations[ref]||[]).length){_ibVaultManagerStatus('凭据仍被配置引用；先解除所有引用，再删除。',true);await _ibVaultManagerRows();return}
+  if(!window.confirm('删除「'+_ibCredentialDisplayName(entry,associations)+'」？此操作会从加密 Credential Vault 移除对应 Key。'))return;
+  try{await _ibDeleteVaultCredential(ref);await _ibRefreshVaultCredentialCatalog(true);await _ibVaultManagerRows();await _ibRenderImageCredentialOptions((document.getElementById('api-imagegen-credential')||{}).value||'',editingApiId);_ibVaultManagerStatus('独立凭据已从 Vault 删除。',false)}
+  catch(error){_ibVaultManagerStatus('删除失败：'+String(error&&error.message||error||'Vault 不可用').slice(0,140),true)}
+}
+window._ibOpenVaultCredentialManager=_ibOpenVaultCredentialManager;
+window._ibCloseVaultCredentialManager=_ibCloseVaultCredentialManager;
+window._ibSaveIndependentVaultCredential=_ibSaveIndependentVaultCredential;
+window._ibRefreshVaultCredentialCatalog=_ibRefreshVaultCredentialCatalog;
+document.addEventListener('change',function(event){
+  var target=event.target;if(!target)return;
+  if(target.id==='api-imagegen-credential'&&target.value){
+    var choice=target.options[target.selectedIndex],provider=String(choice&&choice.dataset.provider||'');
+    var imageProvider=document.getElementById('api-imagegen-provider'),previousWire=String(imageProvider&&imageProvider.value||''),nextWire=provider==='gemini'?'gemini':'openai';
+    if(imageProvider&&_ibImageCredentialProviderAllowed(provider))imageProvider.value=nextWire;
+    var imageMeta=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===target.value}),imageEndpoint=document.getElementById('api-imagegen-endpoint');
+    if(imageEndpoint&&_ibImageCredentialProviderAllowed(provider)){
+      var autoEndpoint=target.dataset.imageEndpointAuto==='1';
+      var savedImageEndpoint=imageMeta&&_ibLooksLikeImageEndpoint(imageMeta.endpoint)?imageMeta.endpoint:'';
+      if(savedImageEndpoint&&(!String(imageEndpoint.value||'').trim()||autoEndpoint)){imageEndpoint.value=savedImageEndpoint;target.dataset.imageEndpointAuto='1'}
+      else if(previousWire!==nextWire&&autoEndpoint){imageEndpoint.value='';target.dataset.imageEndpointAuto='0'}
+      target.dataset.lastCredentialRef=target.value;
+    }
+    _ibRenderImageCredentialOptions(target.value,editingApiId);
+  }
+  if(target.id==='api-imagegen-provider')_ibRenderImageCredentialOptions((document.getElementById('api-imagegen-credential')||{}).value||'',editingApiId);
+  if(target.id==='api-vt-credential'){
+    var option=target.options[target.selectedIndex];target.dataset.provider=String(option&&option.dataset.provider||'openai');
+    var voiceMeta=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===target.value});
+    var voiceEndpoint=document.getElementById('api-vt-endpoint'),voiceModel=document.getElementById('api-vt-model');
+    if(voiceMeta&&voiceMeta.endpoint&&voiceEndpoint&&(!String(voiceEndpoint.value||'').trim()||target.dataset.endpointAuto==='1')){voiceEndpoint.value=voiceMeta.endpoint.replace(/\/(?:chat\/completions|responses|messages)\/?$/i,'');target.dataset.endpointAuto='1'}
+    if(voiceMeta&&voiceMeta.model&&voiceModel&&!String(voiceModel.value||'').trim())voiceModel.value=voiceMeta.model;
+    if(typeof saveVoiceTransSettings==='function')saveVoiceTransSettings();
+  }
+});
 function _ibApiCredentialEndpointClass(cfg){
   return _ibIsLoopbackEndpoint(cfg&&cfg.endpoint)?'loopback':'remote';
 }
@@ -1045,24 +1421,44 @@ function _ibRenderApiList(c,configs,statusMap,pending){
     const entry=map[id]||_ibApiCredentialProjection({
       status:pending?_ibApiCredentialLocalStatus(a)||'checking':'unknown'
     });
-    const status=_ibApiCredentialStatusClass(entry.credentialStatus);
-    const statusTag='<span class="ib-api-credential-status ib-api-credential-status-'+status+'" data-credential-status="'+status+'">（'+esc(_ibApiCredentialStatusLabel(status))+'）</span>';
-    const needsKey=_ibApiCredentialEndpointClass(a)==='remote';
-    const keyBtn=needsKey?'<button type="button" class="ib-api-key-btn" onclick="event.stopPropagation();_ibOpenApiKeyModal('+idArg+',\''+(status==='ready'?'replace':'add')+'\')">'+(status==='ready'?'更换 API Key':'添加 API Key')+'</button>':'';
+    const issue=_ibApiListIssue(a,entry);
+    const statusTag=issue?'<span class="api-role-status'+(issue.code==='missing-credential'?' ib-api-credential-status-missing':'')+'" data-config-issue="'+issue.code+'">'+esc(issue.label)+'</span>':'';
     const avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
     const avatar=_ibApiAvatarSource(a.avatar);
     const avHtml=avatar?'<div class="api-item-avatar"><img src="'+_ibApiHtmlAttribute(avatar)+'" alt=""></div>':'<div class="api-item-avatar">'+esc(avInit)+'</div>';
-    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+idAttr+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi('+idArg+')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><button type="button" class="btn ib-expression-manage" data-expression-role-id="'+idAttr+'" aria-label="管理 '+esc(a.nickname||a.model||'角色')+' 的表情包">表情包</button>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig('+idArg+')" title="删除">✕</span></div>';
+    const name=String(a.nickname||a.model||'未命名');
+    const intro=String(a.bio||a.signature||'').trim();
+    const modelInfo=[String(a.provider||'').trim(),String(a.model||'').trim()].filter(Boolean).join(' · ');
+    const moreLabel=_apiUiText('api.moreActions','更多操作');
+    const deleteLabel=_apiUiText('api.archiveOrDelete','归档 / 删除…');
+    const deleteAction='event.stopPropagation();var menu=this.closest(&quot;details&quot;);if(menu)menu.open=false;deleteApiConfig('+idArg+')';
+    return '<div class="api-role-row chat-history-item" draggable="true" data-api-idx="'+idx+'" data-api-id="'+idAttr+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)">'
+      +'<button type="button" class="api-role-main" onclick="editApi('+idArg+')" aria-label="'+_ibApiHtmlAttribute(name)+'">'+avHtml
+      +'<span class="api-role-copy"><span class="api-role-title-row"><strong class="api-item-name">'+esc(name)+'</strong>'+statusTag+'</span>'
+      +(intro?'<span class="api-role-intro">'+esc(intro)+'</span>':'')
+      +(modelInfo?'<span class="api-item-detail api-role-model">'+esc(modelInfo)+'</span>':'')
+      +'</span></button>'
+      +'<details class="api-more-menu" onclick="event.stopPropagation()"><summary aria-label="'+_ibApiHtmlAttribute(moreLabel)+'" title="'+_ibApiHtmlAttribute(moreLabel)+'"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg></summary>'
+      +'<div class="api-more-popover"><button type="button" class="api-more-delete" onclick="'+deleteAction+'">'+esc(deleteLabel)+'</button></div></details></div>';
   }).join('');
 }
 async function renderApiList(){
+  _apiCredentialStatusById={};
   await loadApiConfigs();
+  await _ibRefreshVaultCredentialCatalog(false);
+  _apiArchToggleUI();
   if(_apiArchView){renderApiArchiveList();return}
   const c=document.getElementById('api-list-container');
   if(!apiConfigs.length){c.innerHTML='<div class="empty-state u-pad-20">还没有添加API</div>';return}
   _ibRenderApiList(c,apiConfigs,null,true);
   const projection=await _ibLoadApiCredentialProjection(apiConfigs);
+  _apiCredentialStatusById=projection.byId||{};
   _ibRenderApiList(c,apiConfigs,projection.byId,false);
+  _ibRenderChatCredentialOptions(editingApiId,(document.getElementById('api-credential-ref')||{}).value||'__current__');
+  await _ibRenderImageCredentialOptions((document.getElementById('api-imagegen-credential')||{}).value||'',editingApiId);
+  await _ibRenderVoiceTransCredentialOptions((document.getElementById('api-vt-credential')||{}).value||'',(document.getElementById('api-vt-credential')||{}).dataset.provider||'');
+  const editor=document.getElementById('api-editor');
+  if(editor&&editor.style.display!=='none')_ibUpdateApiEditorActions(apiConfigs.find(function(cfg){return cfg&&cfg.id===editingApiId})||null);
 }
 
 /* ── API credential management UX ─────────────────────────────────────────
@@ -1090,10 +1486,11 @@ async function _ibWriteVaultCredential(bindingId,cfg,secret){
   ))throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
   if(typeof _activeCompanionRequest!=='function')throw new Error('credentials-service-unavailable');
   const source=cfg&&typeof cfg==='object'?cfg:{};
-  const res=await _activeCompanionRequest('/credentials',{method:'POST',body:{credentials:[{
-    credentialRef:id,characterId:id,provider:String(source.provider||'openai'),apiKey:key,
-    endpoint:String(source.endpoint||''),model:String(source.model||'')
-  }]},timeout:8000});
+  const credential={credentialRef:id,characterId:id,provider:String(source.provider||'openai'),apiKey:key,
+    endpoint:String(source.endpoint||''),model:String(source.model||'')};
+  if(source.displayName)credential.displayName=String(source.displayName).trim().slice(0,80);
+  if(source.userManaged===true)credential.userManaged=true;
+  const res=await _activeCompanionRequest('/credentials',{method:'POST',body:{credentials:[credential]},timeout:8000});
   const refs=Array.isArray(res&&res.credentialRefs)?res.credentialRefs.map(String):[];
   if(!res||res.ok!==true||Number(res.stored||0)<1||String(res.credentialRef||'')!==id||refs.indexOf(id)<0)
     throw new Error('credentials-save-rejected');
@@ -1129,7 +1526,10 @@ async function _ibPersistImportedApiSetting(setting){
   if(!setting||typeof setting!=='object')throw new Error('invalid-api-setting');
   const copy=Object.assign({},setting);
   const settingId=String(copy.id==null?'':copy.id).trim();
-  if(!_ibApiIdAllowed(settingId)||((copy.credentialRef!=null&&String(copy.credentialRef).trim())&&!_ibApiIdAllowed(copy.credentialRef)))
+  if(!_ibApiIdAllowed(settingId)
+    ||((copy.credentialRef!=null&&String(copy.credentialRef).trim())&&!_ibApiIdAllowed(copy.credentialRef))
+    ||((copy.imageGenCredentialRef!=null&&String(copy.imageGenCredentialRef).trim())&&!_ibApiIdAllowed(copy.imageGenCredentialRef))
+    ||(copy.imageGenCredentialProvider!=null&&String(copy.imageGenCredentialProvider||'')&&!_ibImageCredentialProviderAllowed(copy.imageGenCredentialProvider)))
     throw Object.assign(new Error('API_CONFIG_ID_INVALID'),{code:'API_CONFIG_ID_INVALID'});
   copy.id=settingId;
   const key=String(copy.apiKey||'').trim();
@@ -1147,12 +1547,16 @@ async function _ibPersistImportedApiSetting(setting){
 async function _ibClearApiConfigCredential(configId,confirmClear){
   const cfg=(apiConfigs||[]).find(function(a){return String(a&&a.id||'')===String(configId||'')});
   if(!cfg)throw new Error('api-config-not-found');
-  if(confirmClear!==false&&!window.confirm('清除该配置的 API Key？此操作会从 Credential Vault 删除对应凭据。'))return false;
   const bindingId=_ibApiConfigCredentialRef(cfg);
-  if(bindingId)await _ibDeleteVaultCredential(bindingId);
+  const remaining=bindingId?await _ibCountCredentialReferences(bindingId,cfg.id):0;
+  const prompt=remaining
+    ?'从当前角色配置解绑 API Key？该 Vault 凭据仍被 '+remaining+' 项配置或预设引用，会保留在 Vault 中。'
+    :'清除该配置的 API Key？此操作会从 Credential Vault 删除对应凭据。';
+  if(confirmClear!==false&&!window.confirm(prompt))return false;
+  if(bindingId&&!remaining)await _ibDeleteVaultCredential(bindingId);
   await _persistApiConfig(Object.assign({},cfg,{credentialRef:'',apiKey:''}));
   await renderApiList();
-  toast('API Key 已清除');
+  toast(remaining?'当前配置已解绑；共享 Vault 凭据已保留':'API Key 已从 Vault 清除');
   return true;
 }
 function _ibOpenApiKeyModal(configId,mode){
@@ -1282,6 +1686,131 @@ function _renderApiBannerPreview(src){
   if(safeSource&&window.IBSafeImage){el.style.backgroundImage=window.IBSafeImage.cssUrl(safeSource);el.classList.add('has-img');el.classList.remove('is-empty')}
   else{el.style.backgroundImage='';el.classList.remove('has-img');el.classList.add('is-empty')}
 }
+function _ibPresetStatus(message,bad){var el=document.getElementById('api-profile-preset-status');if(el){el.textContent=String(message||'');el.classList.toggle('is-error',!!bad)}}
+async function _ibReadApiProfilePresets(){try{var data=await dbGet('apiSettings',API_PROFILE_PRESET_STORAGE_ID);return data&&data.configs&&typeof data.configs==='object'?data:{id:API_PROFILE_PRESET_STORAGE_ID,version:1,configs:{}}}catch(e){return{id:API_PROFILE_PRESET_STORAGE_ID,version:1,configs:{}}}}
+async function _ibWriteApiProfilePresets(data){var value=Object.assign({},data||{},{id:API_PROFILE_PRESET_STORAGE_ID,version:1});await dbPut('apiSettings',value);return value}
+async function _ibRemoveApiProfilePresets(configId){var id=String(configId||'');if(!id)return;var data=await _ibReadApiProfilePresets();if(data.configs&&Object.prototype.hasOwnProperty.call(data.configs,id)){delete data.configs[id];await _ibWriteApiProfilePresets(data)}}
+function _ibEndpointHost(value){try{return new URL(String(value||'')).host}catch(e){return ''}}
+async function _ibRenderApiProfilePresets(configId){
+  var select=document.getElementById('api-profile-preset-select'),apply=document.getElementById('api-profile-preset-apply'),remove=document.getElementById('api-profile-preset-delete'),save=document.getElementById('api-profile-preset-save');
+  if(!select)return;
+  var id=String(configId||editingApiId||''),data=await _ibReadApiProfilePresets(),list=data.configs&&Array.isArray(data.configs[id])?data.configs[id]:[];
+  select.textContent='';var placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='选择已保存预设';select.appendChild(placeholder);
+  list.forEach(function(preset,index){var option=document.createElement('option');option.value=String(index);var credential=(preset.credentialRef&&_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===preset.credentialRef});option.textContent=String(preset.name||'未命名')+' · '+String(preset.provider||'')+(preset.model?' / '+String(preset.model):'')+(preset.endpoint?' · '+_ibEndpointHost(preset.endpoint):'')+(preset.credentialRef?' · Vault '+(credential? _ibCredentialDisplayName(credential,null):String(preset.credentialRef)):' · 无 Vault 凭据');select.appendChild(option)});
+  if(apply)apply.disabled=!id||!apiConfigs.some(function(cfg){return String(cfg.id)===id})||!list.length;
+  if(remove)remove.disabled=!id||!list.length;
+  if(save)save.disabled=!id||!apiConfigs.some(function(cfg){return String(cfg.id)===id});
+  _ibPresetStatus(list.length?'已保存 '+list.length+' 套；预设只切换 API 参数，不改权限与图片/语音独立设置。':(id?'还没有预设。保存时只记录 Vault 引用，不复制密钥。':'新配置保存后即可添加预设。'),false);
+}
+async function _ibSaveCurrentApiPreset(){
+  var cfg=apiConfigs.find(function(item){return item&&String(item.id)===String(editingApiId||'')});
+  if(!cfg){_ibPresetStatus('先保存当前 API 配置，再存为预设。',true);return}
+  var name=String((document.getElementById('api-profile-preset-name')||{}).value||'').trim().slice(0,48);
+  if(!name){_ibPresetStatus('请给预设起一个名称。',true);return}
+  var provider=String((document.getElementById('api-provider')||{}).value||cfg.provider||''),model=String((document.getElementById('api-model')||{}).value||'').trim(),endpoint=String((document.getElementById('api-endpoint')||{}).value||'').trim();
+  if(!PROVIDERS||!PROVIDERS[provider]){_ibPresetStatus('当前 Provider 不在 Provider 目录中。',true);return}
+  if(endpoint&&!_ibSafeVaultEndpoint(endpoint)){_ibPresetStatus('Endpoint 格式无效或包含凭据；预设没有保存。',true);return}
+  if(provider==='custom'&&!endpoint){_ibPresetStatus('自定义 Provider 需要 Endpoint。',true);return}
+  var refSelect=document.getElementById('api-credential-ref'),selectedRef=String(refSelect&&refSelect.value||'__current__');
+  var credentialRef=selectedRef==='__current__'?_ibApiConfigCredentialRef(cfg):selectedRef;
+  if(credentialRef&&selectedRef!=='__current__'){
+    var catalog=await _ibRefreshVaultCredentialCatalog(false),credential=(catalog.credentials||[]).find(function(item){return item.credentialRef===credentialRef});
+    if(!catalog.ok||!credential||credential.provider!==provider){_ibPresetStatus('所选 Vault 凭据不可用或与 Provider 不匹配；预设未保存。',true);return}
+  }
+  var preset={name:name,provider:provider,model:model,endpoint:endpoint,credentialRef:credentialRef};
+  try{
+    var data=await _ibReadApiProfilePresets();data.configs=data.configs||{};var list=Array.isArray(data.configs[cfg.id])?data.configs[cfg.id].slice():[];var found=-1;
+    list.forEach(function(item,index){if(String(item&&item.name||'')===name)found=index});
+    if(found>=0)list[found]=preset;else list.push(preset);
+    if(list.length>20){_ibPresetStatus('每个 API 配置最多保存 20 套预设。',true);return}
+    data.configs[cfg.id]=list;await _ibWriteApiProfilePresets(data);
+    var nameEl=document.getElementById('api-profile-preset-name');if(nameEl)nameEl.value='';
+    await _ibRenderApiProfilePresets(cfg.id);_ibPresetStatus(found>=0?'已更新预设「'+name+'」。':'已保存预设「'+name+'」。',false);
+  }catch(error){_ibPresetStatus('预设保存失败：'+String(error&&error.message||error).slice(0,120),true)}
+}
+async function _ibApplyApiProfilePreset(){
+  var id=String(editingApiId||''),select=document.getElementById('api-profile-preset-select'),index=Number(select&&select.value);
+  var cfg=apiConfigs.find(function(item){return item&&String(item.id)===id});
+  if(!cfg||!select||!select.value)return;
+  try{
+    var data=await _ibReadApiProfilePresets(),list=data.configs&&data.configs[id]||[],preset=list[index];if(!preset)return;
+    if(!PROVIDERS||!PROVIDERS[preset.provider])throw new Error('预设 Provider 已不在当前目录中');
+    if(preset.endpoint&&!_ibSafeVaultEndpoint(preset.endpoint))throw new Error('预设 Endpoint 无效');
+    if(preset.credentialRef){var catalog=await _ibRefreshVaultCredentialCatalog(false),credential=(catalog.credentials||[]).find(function(row){return row.credentialRef===preset.credentialRef});if(catalog.ok&&credential&&credential.provider&&credential.provider!==preset.provider)throw new Error('预设 Provider 与 Vault 凭据不一致；为保护现有配置，未应用。')}
+    var next=Object.assign({},cfg,{provider:preset.provider,model:String(preset.model||''),endpoint:String(preset.endpoint||''),credentialRef:String(preset.credentialRef||''),apiKey:''});
+    var result=await _persistApiConfig(next);if(!result||result.ok===false)throw new Error('API 配置没有保存');
+    await loadApiConfigs();editApi(id);await renderApiList();_ibPresetStatus('已应用「'+String(preset.name||'未命名')+'」；角色权限与图片/语音独立配置保持原样，引用此角色 API 的功能会使用新参数。',false);
+  }catch(error){_ibPresetStatus('预设未应用：'+String(error&&error.message||error).slice(0,160),true)}
+}
+async function _ibDeleteApiProfilePreset(){
+  var id=String(editingApiId||''),select=document.getElementById('api-profile-preset-select'),index=Number(select&&select.value);if(!id||!select||!select.value)return;
+  try{var data=await _ibReadApiProfilePresets(),list=data.configs&&data.configs[id]||[],preset=list[index];if(!preset)return;if(!window.confirm('删除接口预设「'+String(preset.name||'未命名')+'」？不会删除 Vault 凭据。'))return;list=list.slice();list.splice(index,1);data.configs[id]=list;await _ibWriteApiProfilePresets(data);await _ibRenderApiProfilePresets(id)}catch(error){_ibPresetStatus('预设删除失败：'+String(error&&error.message||error).slice(0,120),true)}
+}
+function _ibApiModelsUrl(provider,endpoint){
+  var url;try{url=new URL(endpoint)}catch(e){throw new Error('请先填写有效 Endpoint')}
+  url.search='';url.hash='';var path=String(url.pathname||'').replace(/\/+$/,'');
+  if(provider==='gemini'){path=path.replace(/\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/i,'/models');if(!/\/models$/i.test(path))path=path.replace(/\/v1beta$/i,'')+'/v1beta/models';url.pathname=path;url.search='?pageSize=500';return url.toString()}
+  if(provider==='anthropic'){path=path.replace(/\/(?:messages|models)$/i,'');if(!/\/v\d+[a-z]*$/i.test(path))path+='/v1';url.pathname=path+'/models';url.search='?limit=1000';return url.toString()}
+  path=path.replace(/\/(?:chat\/completions|responses|completions|text\/chatcompletion_v2|embeddings|models)$/i,'');if(!path)path='/v1';else if(!/\/v\d+[a-z]*$/i.test(path))path+='/v1';url.pathname=path+'/models';return url.toString();
+}
+function _ibParseApiModels(value,provider){
+  var root=typeof value==='string'?JSON.parse(value):value;if(!root||typeof root!=='object')return [];
+  var rows=Array.isArray(root)?root:null,candidates=[root.data,root.models,root.items,root.result,root.model_list];
+  for(var i=0;i<candidates.length&&!rows;i++){if(Array.isArray(candidates[i]))rows=candidates[i];else if(candidates[i]&&Array.isArray(candidates[i].data))rows=candidates[i].data}
+  var out=[],seen=Object.create(null);(rows||[]).forEach(function(item){var id=typeof item==='string'?item:String(item&&(item.id||item.name||item.model_name||item.model)||'');id=id.trim();if(provider==='gemini')id=id.replace(/^models\//,'');if(id&&!seen[id]){seen[id]=true;out.push({id:id,label:String(item&&typeof item==='object'&&(item.display_name||item.displayName||'')||'')})}});return out.slice(0,500);
+}
+async function _ibFetchApiModels(button){
+  var id=String(editingApiId||''),saved=apiConfigs.find(function(item){return item&&String(item.id)===id});
+  var status=document.getElementById('api-model-list-status'),provider=String((document.getElementById('api-provider')||{}).value||''),endpoint=String((document.getElementById('api-endpoint')||{}).value||'').trim();
+  function say(message,bad){if(status){status.textContent=message;status.classList.toggle('is-error',!!bad)}}
+  if(!saved){say('先保存 API 配置并绑定 Vault 凭据，再获取模型列表。',true);return}
+  if(!PROVIDERS||!PROVIDERS[provider]){say('请选择有效 Provider。',true);return}
+  endpoint=endpoint||String(PROVIDERS[provider].endpoint||'');if(!endpoint||!_ibSafeVaultEndpoint(endpoint)){say('请填写有效的 API Endpoint。',true);return}
+  var requestUrl;try{requestUrl=_ibApiModelsUrl(provider,endpoint)}catch(error){say(error.message,true);return}
+  if(button)button.disabled=true;say('正在连接 '+_ibEndpointHost(requestUrl)+' …',false);
+  try{
+    var cfg=Object.assign({},saved,{provider:provider,endpoint:endpoint,credentialRef:_ibApiConfigCredentialRef(saved)});
+    var models=await window._ibWithRuntimeApiCredential(cfg,async function(runtimeCfg){
+      var headers={};if(provider==='gemini')headers['x-goog-api-key']=runtimeCfg.apiKey;else if(provider==='anthropic'){headers['x-api-key']=runtimeCfg.apiKey;headers['anthropic-version']='2023-06-01'}else headers.Authorization='Bearer '+runtimeCfg.apiKey;
+      var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},10000);
+      try{
+        var response=await fetch(requestUrl,{method:'GET',headers:headers,cache:'no-store',credentials:'omit',signal:controller.signal});
+        if(!response.ok)throw Object.assign(new Error('HTTP '+response.status),{status:response.status});
+        var raw=await response.text(),payload;
+        try{payload=JSON.parse(raw)}catch(parseError){throw new Error(/^\s*</.test(raw)?'Endpoint 返回了网页而不是模型 JSON。':'Endpoint 没有返回有效的模型 JSON。')}
+        return _ibParseApiModels(payload,provider);
+      }finally{clearTimeout(timer)}
+    },{endpoint:endpoint,expectedProvider:provider});
+    if(!models.length)throw new Error('服务没有返回可识别的模型列表；仍可手动填写模型名。');
+    var list=document.getElementById('api-model-list');if(list){list.textContent='';models.forEach(function(model){var option=document.createElement('option');option.value=model.id;if(model.label)option.label=model.label;list.appendChild(option)})}
+    say('已获取 '+models.length+' 个模型。输入模型名可筛选；选中后仍需保存 API 配置。',false);
+  }catch(error){var message=String(error&&error.message||error||'模型列表获取失败');if(error&&error.code==='CREDENTIAL_UNAVAILABLE'||/credential/i.test(message))message='Vault 凭据不可用或 Provider 不匹配；请在 API 编辑器确认凭据绑定。';else if(error&&[401,403].indexOf(Number(error.status))>=0)message='服务拒绝当前凭据（HTTP '+Number(error.status)+'）；请确认 Provider、Key 和服务权限。';else if(error&&Number(error.status)===404)message='服务没有提供模型列表接口；可以手动填写模型名。';else if(/Failed to fetch|NetworkError|CORS/i.test(message))message='连接失败或服务未允许桌面跨域；可以手动填写模型名。';say('获取失败：'+message.slice(0,150),true)}
+  finally{if(button)button.disabled=false}
+}
+window._ibFetchApiModels=_ibFetchApiModels;
+function _ibWireApiEditorEnhancements(){
+  var apply=document.getElementById('api-profile-preset-apply'),save=document.getElementById('api-profile-preset-save'),remove=document.getElementById('api-profile-preset-delete'),select=document.getElementById('api-profile-preset-select'),fetchButton=document.getElementById('api-fetch-models');
+  if(apply&&!apply.dataset.ibBound){apply.dataset.ibBound='1';apply.addEventListener('click',_ibApplyApiProfilePreset)}
+  if(save&&!save.dataset.ibBound){save.dataset.ibBound='1';save.addEventListener('click',_ibSaveCurrentApiPreset)}
+  if(remove&&!remove.dataset.ibBound){remove.dataset.ibBound='1';remove.addEventListener('click',_ibDeleteApiProfilePreset)}
+  if(select&&!select.dataset.ibBound){select.dataset.ibBound='1';select.addEventListener('change',function(){if(apply)apply.disabled=!select.value;if(remove)remove.disabled=!select.value})}
+  if(fetchButton&&!fetchButton.dataset.ibBound){fetchButton.dataset.ibBound='1';fetchButton.addEventListener('click',function(){_ibFetchApiModels(fetchButton)})}
+  var vaultOpen=document.getElementById('api-vault-manager-open'),voiceVaultOpen=document.getElementById('api-vt-vault-manage'),vaultSave=document.getElementById('ib-vault-save'),vaultClose=document.getElementById('ib-vault-manager-close');
+  if(vaultOpen&&!vaultOpen.dataset.ibBound){vaultOpen.dataset.ibBound='1';vaultOpen.addEventListener('click',function(){_ibOpenVaultCredentialManager('vault')})}
+  if(voiceVaultOpen&&!voiceVaultOpen.dataset.ibBound){voiceVaultOpen.dataset.ibBound='1';voiceVaultOpen.addEventListener('click',function(){_ibOpenVaultCredentialManager('voice')})}
+  if(vaultSave&&!vaultSave.dataset.ibBound){vaultSave.dataset.ibBound='1';vaultSave.addEventListener('click',function(){_ibSaveIndependentVaultCredential(vaultSave)})}
+  if(vaultClose&&!vaultClose.dataset.ibBound){vaultClose.dataset.ibBound='1';vaultClose.addEventListener('click',_ibCloseVaultCredentialManager)}
+  var provider=document.getElementById('api-provider'),endpoint=document.getElementById('api-endpoint');
+  function resetModelChoices(){var list=document.getElementById('api-model-list'),status=document.getElementById('api-model-list-status');if(list)list.textContent='';if(status)status.textContent=''}
+  if(provider&&!provider.dataset.modelListBound){provider.dataset.modelListBound='1';provider.addEventListener('change',function(){resetModelChoices();_ibRenderChatCredentialOptions(editingApiId,(document.getElementById('api-credential-ref')||{}).value||'__current__')})}
+  if(endpoint&&!endpoint.dataset.modelListBound){endpoint.dataset.modelListBound='1';endpoint.addEventListener('input',resetModelChoices)}
+  var imageEndpoint=document.getElementById('api-imagegen-endpoint'),imageProvider=document.getElementById('api-imagegen-provider'),imageAdd=document.getElementById('api-imagegen-credential-add'),voiceEndpoint=document.getElementById('api-vt-endpoint');
+  if(imageEndpoint&&!imageEndpoint.dataset.vaultBound){imageEndpoint.dataset.vaultBound='1';imageEndpoint.addEventListener('input',function(){var selector=document.getElementById('api-imagegen-credential');if(selector)selector.dataset.imageEndpointAuto='0';_ibRenderImageCredentialOptions((selector||{}).value||'',editingApiId)})}
+  if(imageProvider&&!imageProvider.dataset.vaultBound){imageProvider.dataset.vaultBound='1';imageProvider.addEventListener('change',function(){_ibRenderImageCredentialOptions((document.getElementById('api-imagegen-credential')||{}).value||'',editingApiId)})}
+  if(imageAdd&&!imageAdd.dataset.vaultBound){imageAdd.dataset.vaultBound='1';imageAdd.addEventListener('click',function(){_ibOpenVaultCredentialManager('image')})}
+  if(voiceEndpoint&&!voiceEndpoint.dataset.vaultBound){voiceEndpoint.dataset.vaultBound='1';voiceEndpoint.addEventListener('input',function(){var selector=document.getElementById('api-vt-credential');if(selector)selector.dataset.endpointAuto='0'})}
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_ibWireApiEditorEnhancements);else _ibWireApiEditorEnhancements();
 function _normApiHandle(v){
   return String(v||'').trim().replace(/^@+/,'').replace(/\s+/g,'_').replace(/[^\w\u4e00-\u9fa5.\-]/g,'').replace(/^[_.]+/,'').slice(0,32);
 }
@@ -1314,22 +1843,26 @@ function addNewApi(){
   document.getElementById('api-story-personalize').checked=false;
   var visionEl=document.getElementById('api-vision-toggle');
   if(visionEl)visionEl.checked=!!(PROVIDERS[document.getElementById('api-provider').value]&&PROVIDERS[document.getElementById('api-provider').value].vision);
-  var streamEl=document.getElementById('api-streaming-toggle');
-  if(streamEl)streamEl.checked=!!(PROVIDERS[document.getElementById('api-provider').value]&&PROVIDERS[document.getElementById('api-provider').value].streaming);
+  var _newProvider=document.getElementById('api-provider').value;
+  var _newProviderCaps=PROVIDERS[_newProvider];
+  _ibSyncStreamingControl(_newProvider,document.getElementById('api-model').value,_newProviderCaps&&_newProviderCaps.streaming);
   var thinkEl=document.getElementById('api-thinking-toggle');
   _showThinkingTouched=false;_syncShowThinkingDefault();thinkEl.disabled=false;
   var wsEl=document.getElementById('api-websearch-toggle');
   if(wsEl)wsEl.checked=false;
   _syncVisionUI();
   _syncSamplingUI();
-  /* Image：新角色必须清空**全部**五个图片字段。只清 toggle/model 会让上一个角色的
-     图片服务商 / 图片接口地址 / 图片 API Key 静默带进新角色（与 Voice 克隆引用同一类问题，
-     所以这里逐字段 reset，而不是依赖字段为空时的"复用文字凭据"回退去掩盖残留）。 */
+  /* Image：新角色清空自己的 Provider / Endpoint / Model 与 credentialRef 选择；
+     “跟随角色聊天凭据”由图片凭据下拉框的空值表达。 */
   var _igT=document.getElementById('api-imagegen-toggle');if(_igT)_igT.checked=false;
   var _igM=document.getElementById('api-imagegen-model');if(_igM)_igM.value='';
   var _igP=document.getElementById('api-imagegen-provider');if(_igP)_igP.value='';
   var _igE=document.getElementById('api-imagegen-endpoint');if(_igE)_igE.value='';
-  _ibSetVaultManagedKeyInput('api-imagegen-apikey');
+  _ibRenderImageCredentialOptions('',editingApiId);
+  _ibRenderChatCredentialOptions(editingApiId,'__current__');
+  _ibUpdateApiEditorActions(null);
+  _ibRenderApiProfilePresets(editingApiId);
+  _ibRefreshVaultCredentialCatalog(false).then(function(){_ibRenderChatCredentialOptions(editingApiId,(document.getElementById('api-credential-ref')||{}).value||'__current__');_ibRenderImageCredentialOptions('',editingApiId)});
   var amT=document.getElementById('api-automem-toggle');if(amT)amT.checked=false;
   var amM=document.getElementById('api-automem-mode');if(amM)amM.value='hybrid';
   var amB=document.getElementById('api-automem-budget');if(amB)amB.value='1200';
@@ -1522,8 +2055,8 @@ function editApi(id){
   document.getElementById('api-story-personalize').checked=!!cfg.storyPersonalize;
   var visionEl=document.getElementById('api-vision-toggle');
   if(visionEl)visionEl.checked=cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision);
-  var streamEl=document.getElementById('api-streaming-toggle');
-  if(streamEl)streamEl.checked=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
+  var streamDefault=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
+  _ibSyncStreamingControl(cfg.provider,cfg.model,streamDefault);
   /* P16：编辑既有配置时，endpoint/model 是用户数据而非「自动填入」，不得被一键预填覆盖 */
   _ibMarkAutoFilled('api-endpoint',false);
   _ibMarkAutoFilled('api-model',false);
@@ -1551,7 +2084,11 @@ function editApi(id){
   var _igM2=document.getElementById('api-imagegen-model');if(_igM2)_igM2.value=cfg.imageGenModel||'';
   var _igP2=document.getElementById('api-imagegen-provider');if(_igP2)_igP2.value=cfg.imageGenProvider||'';
   var _igE2=document.getElementById('api-imagegen-endpoint');if(_igE2)_igE2.value=cfg.imageGenEndpoint||'';
-  _ibSetVaultManagedKeyInput('api-imagegen-apikey');
+  _ibRenderImageCredentialOptions(cfg.imageGenCredentialRef||'',id);
+  _ibRenderChatCredentialOptions(id,'__current__');
+  _ibUpdateApiEditorActions(cfg);
+  _ibRenderApiProfilePresets(id);
+  _ibRefreshVaultCredentialCatalog(false).then(function(){_ibRenderChatCredentialOptions(id,(document.getElementById('api-credential-ref')||{}).value||'__current__');_ibRenderImageCredentialOptions(cfg.imageGenCredentialRef||'',id)});
   /* Voice settings */
   var vc=cfg.voice||{};
   var _vt=document.getElementById('api-voice-toggle');if(_vt)_vt.checked=!!vc.enabled;
@@ -1582,6 +2119,10 @@ function editApi(id){
   _renderApiAvatarPreview(_avSrc);
   var lbl=document.getElementById('api-avatar-label');
   if(lbl)lbl.textContent=(cfg.nickname||'AI')+' 的头像';
+  var live2dInput=document.getElementById('api-live2d-model-url');
+  if(live2dInput){var live2dCfg=cfg.live2dModelUrl||cfg.live2dModelPath||(typeof cfg.live2dModel==='string'?cfg.live2dModel:(cfg.live2dModel&&(cfg.live2dModel.url||cfg.live2dModel.path)))||(cfg.character&&(cfg.character.live2dModelUrl||cfg.character.live2dModelPath))||'';live2dInput.value=String(live2dCfg||'')}
+  try{if(window.IBLive2DModels&&typeof window.IBLive2DModels.loadRoleEditor==='function')window.IBLive2DModels.loadRoleEditor(cfg)}catch(e){}
+  try{if(window.IBPuppetModels&&typeof window.IBPuppetModels.loadRoleEditor==='function')window.IBPuppetModels.loadRoleEditor(cfg)}catch(e){}
   /* 社交身份（AI 社交网络）：handle / banner / bio / signature / joinedAt（旧数据无字段则回落到派生值） */
   var _hd=document.getElementById('api-handle');if(_hd)_hd.value=cfg.handle||'';
   var _bd=document.getElementById('api-bio');if(_bd)_bd.value=cfg.bio||'';
@@ -1605,9 +2146,9 @@ function editApi(id){
 
 async function saveCurrentApi(btn){
   if(btn&&btn.disabled)return;
-  var keyInput=document.getElementById('api-key'),imageKeyInput=document.getElementById('api-imagegen-apikey');
-  if(String(keyInput&&keyInput.value||'').trim()||String(imageKeyInput&&imageKeyInput.value||'').trim()){
-    if(keyInput)keyInput.value='';if(imageKeyInput)imageKeyInput.value='';
+  var keyInput=document.getElementById('api-key');
+  if(String(keyInput&&keyInput.value||'').trim()){
+    if(keyInput)keyInput.value='';
     toast('API 凭据由 Credential Vault 管理；此表单不会保存或导入密钥。');
     return;
   }
@@ -1627,6 +2168,22 @@ async function saveCurrentApi(btn){
     if(_hDup){toast('@账号「@'+_hVal+'」已被「'+(_hDup.nickname||_hDup.model||'另一角色')+'」使用，请换一个。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   }
   if(!editingApiId){toast('保存失败：API 配置标识已失效，请重新打开编辑器');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  const existing=apiConfigs.find(a=>a.id===editingApiId)||{};
+  var live2dRoleAppearance=window.IBLive2DModels&&typeof window.IBLive2DModels.readRoleEditor==='function'
+    ?window.IBLive2DModels.readRoleEditor(existing)
+    :{live2dMode:existing.live2dMode||'auto',live2dModelRef:existing.live2dModelRef||'',live2dModelUrl:String((document.getElementById('api-live2d-model-url')||{}).value||'').trim(),live2dScale:existing.live2dScale||100,live2dOffsetX:existing.live2dOffsetX||0,live2dOffsetY:existing.live2dOffsetY||0};
+  var puppetRoleAppearance=window.IBPuppetModels&&typeof window.IBPuppetModels.readRoleEditor==='function'
+    ?window.IBPuppetModels.readRoleEditor(existing)
+    :{puppetRef:existing.puppetRef||'',puppetScale:existing.puppetScale||100,puppetOffsetX:existing.puppetOffsetX||0,puppetOffsetY:existing.puppetOffsetY||0,puppetFrameRate:existing.puppetFrameRate||'auto'};
+  var live2dModelUrl=String(live2dRoleAppearance.live2dModelUrl||'').trim();
+  if(live2dModelUrl){
+    var live2dUrlParsed=null;
+    try{live2dUrlParsed=new URL(live2dModelUrl,location.href)}catch(e){}
+    if(!live2dUrlParsed||!(/\.model3\.json$/i.test(live2dUrlParsed.pathname))||!(/^(?:https?:|tauri:)$/i.test(live2dUrlParsed.protocol))||live2dUrlParsed.username||live2dUrlParsed.password||(/^http:/i.test(live2dUrlParsed.protocol)&&live2dUrlParsed.origin!==location.origin)){
+      toast('Live2D 模型请填写同源应用路径或 HTTPS 的 .model3.json 地址；file、data 与脚本地址不可用。');
+      if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
+    }
+  }
   var _savingVoicebox=(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)==='voicebox';
   /* VoiceClone：选了 Clone 但还没有 Reference Audio（未上传 / 引用已清空）→ 阻断保存 */
   if(!_savingVoicebox&&_voiceCurrentType()==='clone'&&(!_voiceCloneSelection||!_voiceCloneSelection.refAudioId)){
@@ -1640,10 +2197,48 @@ async function saveCurrentApi(btn){
   }
   /* Merge with existing config to preserve sortOrder, avatar, created, archived etc. */
   _syncVisionUI();/* 视觉模型名命中时保持“支持图片识别”与保存值一致 */
-  const existing=apiConfigs.find(a=>a.id===editingApiId)||{};
   if(existing._credentialImageSecretLegacy&&document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked){
     toast('此配置曾有独立图片凭据，但 Vault 当前没有对应的图片凭据绑定。已阻止保存；请先关闭图片生成功能或补齐 Vault binding。');
     if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
+  }
+  var _imgCredentialRef=String((document.getElementById('api-imagegen-credential')||{}).value||'').trim();
+  var _imgCredentialOption=document.getElementById('api-imagegen-credential');
+  var _imgCredentialProvider=String(_imgCredentialOption&&_imgCredentialOption.options[_imgCredentialOption.selectedIndex]&&_imgCredentialOption.options[_imgCredentialOption.selectedIndex].dataset.provider||'');
+  if(_imgCredentialRef&&_ibVaultCredentialCatalog.ok&&_imgCredentialProvider){
+    if(!_ibImageCredentialProviderAllowed(_imgCredentialProvider)){toast('图片凭据必须使用 OpenAI Compatible 或 Gemini Provider。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  }
+  var _imageGenerationEnabled=!!(document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked);
+  if(_imageGenerationEnabled){
+    var _imageCredentialEntry=null,_imageCredentialChanged=_imgCredentialRef!==String(existing.imageGenCredentialRef||'').trim();
+    if(_imgCredentialRef){
+      _imageCredentialEntry=_ibVaultCredentialCatalog.ok?(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===_imgCredentialRef}):null;
+      if(_imageCredentialChanged&&(!_ibVaultCredentialCatalog.ok||!_imageCredentialEntry)){toast('无法确认新图片凭据是否存在于 Credential Vault；未保存配置。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+      if(_imageCredentialEntry&&_imageCredentialEntry.authorized===false){toast('此图片凭据尚未授权给当前 Credential Resolver；未保存配置。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+    }else{
+      var _chatSelectForImage=document.getElementById('api-credential-ref'),_chatChoiceForImage=String(_chatSelectForImage&&_chatSelectForImage.value||'__current__'),_chatRefForImage=_chatChoiceForImage==='__current__'?_ibApiConfigCredentialRef(existing):_chatChoiceForImage;
+      _imageCredentialEntry=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===_chatRefForImage})||null;
+      if(!_imageCredentialEntry&&_chatRefForImage){var _chatConfigForImage=(apiConfigs||[]).find(function(item){return item&&_ibApiConfigCredentialRef(item)===_chatRefForImage})||existing;_imageCredentialEntry={credentialRef:_chatRefForImage,provider:_chatChoiceForImage==='__current__'?String((document.getElementById('api-provider')||{}).value||_chatConfigForImage.provider||''):String((document.getElementById('api-provider')||{}).value||''),endpoint:_chatChoiceForImage==='__current__'?String(_chatConfigForImage.endpoint||''):String((_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===_chatRefForImage})&&(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===_chatRefForImage}).endpoint||'')}}
+    }
+    if(_imageCredentialEntry){
+      var _imageCompatibility=_ibImageCredentialCompatibility(_imageCredentialEntry);
+      if(!_imageCompatibility.ok){var _imageCompatibilityText=_ibImageCredentialText(_imageCompatibility.reason==='provider-mismatch'||_imageCompatibility.reason==='provider-unsupported'?'api.imageCredentialProviderMismatch':'api.imageCredentialEndpointMismatch',_imageCompatibility.reason==='provider-mismatch'||_imageCompatibility.reason==='provider-unsupported'?'图片 Provider 与凭据格式不匹配。':'Endpoint 主机与凭据来源不匹配。');toast(_imageCompatibilityText+' 请调整图片 Endpoint 或选择相符的 Vault 凭据。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+      if(!_imageCompatibility.verified&&(_imageCredentialChanged||String(document.getElementById('api-imagegen-endpoint').value||'').trim()!==String(existing.imageGenEndpoint||'').trim()))toast(_ibImageCredentialText('api.imageCredentialEndpointUnknown','Vault 未记录凭据来源 Endpoint，请确认它适用于当前地址。'));
+    }
+  }
+  var chatRefSelect=document.getElementById('api-credential-ref'),chatRefChoice=String(chatRefSelect&&chatRefSelect.value||'__current__');
+  var chatCredentialRef=chatRefChoice==='__current__'?_ibApiConfigCredentialRef(existing):chatRefChoice;
+  if(chatRefChoice!=='__current__'&&chatCredentialRef){
+    var chatCredential=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===chatCredentialRef});
+    if(!_ibVaultCredentialCatalog.ok||!chatCredential){toast('Vault 凭据目录暂不可用或所选引用不存在；未切换 API Key。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+    if(chatCredential.provider!==String((document.getElementById('api-provider')||{}).value||'').toLowerCase()){toast('所选 Vault 凭据属于 '+_ibVaultProviderName(chatCredential.provider)+'；请切回匹配 Provider，或选择另一凭据。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  }
+  var chatRefSelect=document.getElementById('api-credential-ref');
+  var chatRefChoice=String(chatRefSelect&&chatRefSelect.value||'__current__');
+  var chatCredentialRef=chatRefChoice==='__current__'?_ibApiConfigCredentialRef(existing):chatRefChoice;
+  if(chatRefChoice!=='__current__'&&chatCredentialRef){
+    var chatCredential=(_ibVaultCredentialCatalog.credentials||[]).find(function(item){return item.credentialRef===chatCredentialRef});
+    if(!_ibVaultCredentialCatalog.ok||!chatCredential){toast('Vault 凭据目录暂不可用或所选引用不存在；未切换 API Key。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+    if(chatCredential.provider!==String((document.getElementById('api-provider')||{}).value||'').toLowerCase()){toast('所选 Vault 凭据属于 '+_ibVaultProviderName(chatCredential.provider)+'；请切回匹配 Provider，或选择另一凭据。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   }
   /* Resolve avatar: _pendingApiAvatar===null means no change, ''=remove, string=new */
   var avatarVal=existing.avatar||'';
@@ -1673,6 +2268,8 @@ async function saveCurrentApi(btn){
     id:editingApiId,
     provider:document.getElementById('api-provider').value,
     apiKey:'',
+    credentialRef:chatCredentialRef,
+    credentialRef:chatCredentialRef,
     model:modelVal,
     endpoint:document.getElementById('api-endpoint').value.trim(),
     systemPrompt:document.getElementById('api-system').value||(_sysPromptCleared?'':getDefaultPromptForTheme()),
@@ -1691,7 +2288,8 @@ async function saveCurrentApi(btn){
     temperature:parseFloat(document.getElementById('api-temperature').value)||1.0,
     storyPersonalize:document.getElementById('api-story-personalize').checked,
     vision:_isDeepSeekNativeVisionModel(modelVal)?true:!!document.getElementById('api-vision-toggle').checked,
-    streaming:!!document.getElementById('api-streaming-toggle').checked,
+    streaming:_ibUsesGlmStreaming(document.getElementById('api-provider').value,modelVal)
+      ?true:!!document.getElementById('api-streaming-toggle').checked,
     webSearch:!!(document.getElementById('api-websearch-toggle')&&document.getElementById('api-websearch-toggle').checked),
     replyStyle:(document.getElementById('api-concise-toggle')&&document.getElementById('api-concise-toggle').checked)?'concise':'normal',
     naturalEnding:!!(document.getElementById('api-naturalending-toggle')&&document.getElementById('api-naturalending-toggle').checked),
@@ -1701,6 +2299,8 @@ async function saveCurrentApi(btn){
     waifu:!!(document.getElementById('api-waifu-toggle')&&document.getElementById('api-waifu-toggle').checked),
     imageGenProvider:(function(){var el=document.getElementById('api-imagegen-provider');var v=(el&&el.value||'');return['','openai','gemini'].indexOf(v)>-1?v:''})(),
     imageGenEndpoint:(document.getElementById('api-imagegen-endpoint')?document.getElementById('api-imagegen-endpoint').value.trim():''),
+    imageGenCredentialRef:_imgCredentialRef,
+    imageGenCredentialProvider:_imgCredentialRef?(_imgCredentialProvider||existing.imageGenCredentialProvider||''): '',
     imageGenApiKey:'',
     autoMem:!!(document.getElementById('api-automem-toggle')&&document.getElementById('api-automem-toggle').checked),
     autoMemMode:(document.getElementById('api-automem-mode')&&document.getElementById('api-automem-mode').value)||'hybrid',
@@ -1751,6 +2351,18 @@ async function saveCurrentApi(btn){
       });
     })(),
     avatar:avatarVal,
+    live2dModelUrl:live2dModelUrl,
+    live2dModelRef:String(live2dRoleAppearance.live2dModelRef||''),
+    live2dMode:String(live2dRoleAppearance.live2dMode||'auto'),
+    live2dScale:Number(live2dRoleAppearance.live2dScale)||100,
+    live2dOffsetX:Number(live2dRoleAppearance.live2dOffsetX)||0,
+    live2dOffsetY:Number(live2dRoleAppearance.live2dOffsetY)||0,
+    characterEngine:String(live2dRoleAppearance.characterEngine||existing.characterEngine||'auto'),
+    puppetRef:String(puppetRoleAppearance.puppetRef||''),
+    puppetScale:Number(puppetRoleAppearance.puppetScale)||100,
+    puppetOffsetX:Number(puppetRoleAppearance.puppetOffsetX)||0,
+    puppetOffsetY:Number(puppetRoleAppearance.puppetOffsetY)||0,
+    puppetFrameRate:['auto','30','60','120'].indexOf(String(puppetRoleAppearance.puppetFrameRate||'auto'))>=0?String(puppetRoleAppearance.puppetFrameRate||'auto'):'auto',
     sortOrder:existing.sortOrder!=null?existing.sortOrder:undefined,
     created:existing.created||Date.now(),
     sealTimestamp:existing.sealTimestamp||undefined
@@ -2007,7 +2619,7 @@ async function _archiveApiConfig(id){
   const cfg=apiConfigs.find(a=>a.id===id);if(!cfg)return false;
   if(typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(id,'归档角色')))return false;
   try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('归档失败：无法清理群聊成员引用');return false}
-  try{const ref=_ibApiConfigCredentialRef(cfg);if(ref)await _ibDeleteVaultCredential(ref)}catch(e){toast('归档失败：Credential Vault 暂不可用，角色未归档');return false}
+  try{const ref=_ibApiConfigCredentialRef(cfg),remaining=ref?await _ibCountCredentialReferences(ref,'',id):0;if(ref&&!remaining)await _ibDeleteVaultCredential(ref)}catch(e){toast('归档失败：Credential Vault 暂不可用，角色未归档');return false}
   cfg.archived=true;cfg.archivedAt=Date.now();cfg.apiKey='';cfg.credentialRef='';/* 归档清除 Vault 凭据，非敏感配置保留 */
   try{await _persistApiConfig(cfg)}catch(e){toast('归档失败：凭据已清除，但角色配置未能保存');return false}
   await renderApiList();
@@ -2023,9 +2635,10 @@ async function _hardDeleteApiConfig(id){
      directional 关系记录与其轮次账本一并清理。删除失败不阻塞角色删除本身。 */
   try{if(window.IB&&IB.roleDm&&typeof IB.roleDm.onCharacterDeleted==='function')await IB.roleDm.onCharacterDeleted(id)}catch(e){console.warn('Role DM cleanup failed',e)}
   try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('删除失败：无法清理群聊成员引用');return false}
-  try{const cfg=apiConfigs.find(a=>a.id===id)||{};const ref=_ibApiConfigCredentialRef(cfg);if(ref)await _ibDeleteVaultCredential(ref)}catch(e){toast('删除失败：Credential Vault 暂不可用，角色配置仍保留');return false}
+  try{const cfg=apiConfigs.find(a=>a.id===id)||{},ref=_ibApiConfigCredentialRef(cfg),remaining=ref?await _ibCountCredentialReferences(ref,'',id,id):0;if(ref&&!remaining)await _ibDeleteVaultCredential(ref)}catch(e){toast('删除失败：Credential Vault 暂不可用，角色配置仍保留');return false}
   try{await dbDelete('apiConfigs',id)}catch(e){console.warn('IndexedDB API delete failed',e);toast('删除失败：角色配置未能从数据库移除');return false}
   _apiFallbackRemove(id);
+  try{await _ibRemoveApiProfilePresets(id)}catch(e){}
   /* Clear related messages */
   const msgs=await dbGetByIndex('chatMessages','byFriend',id);
   for(const m of msgs){await dbDelete('chatMessages',m.id)}
@@ -2060,7 +2673,7 @@ function _apiArchToggleUI(){
   if(_apiArchView){
     t.replaceChildren();
     var archivedTitle=document.createElement('span');archivedTitle.textContent=_apiUiText('api.archivedLibrary','已归档的 API');
-    var archivedCount=document.createElement('span');archivedCount.className='section-meta';archivedCount.textContent=_apiUiText('api.archivedLimit','（最多 20 个角色）');
+    var archivedCount=document.createElement('span');archivedCount.className='section-meta';archivedCount.textContent=archivedConfigs.length===1?_apiUiText('api.archivedCountOne','（1 个归档角色）'):_apiUiText('api.archivedCount','（{count} 个归档角色）',{count:archivedConfigs.length});
     t.appendChild(archivedTitle);t.appendChild(document.createTextNode(' '));t.appendChild(archivedCount);
     b.classList.add('arch-return');
     b.innerHTML=_ARCH_RETURN_SVG+_apiUiText('api.returnToLibrary','Return');
@@ -2069,7 +2682,7 @@ function _apiArchToggleUI(){
   }else{
     t.replaceChildren();
     var libraryTitle=document.createElement('span');libraryTitle.textContent=_apiUiText('api.roleLibrary','角色库');
-    var libraryCount=document.createElement('span');libraryCount.className='section-meta';libraryCount.textContent=_apiUiText('api.unlimitedRoles','（数量不限）');
+    var libraryCount=document.createElement('span');libraryCount.className='section-meta';libraryCount.textContent=apiConfigs.length===1?_apiUiText('api.roleCountOne','（1 个角色）'):_apiUiText('api.roleCount','（{count} 个角色）',{count:apiConfigs.length});
     t.appendChild(libraryTitle);t.appendChild(document.createTextNode(' '));t.appendChild(libraryCount);
     b.classList.remove('arch-return');
     b.innerHTML=_ARCH_CLOCK_SVG+_apiUiText('api.archived','Archived');
@@ -2079,10 +2692,14 @@ function _apiArchToggleUI(){
 }
 document.addEventListener('ib:locale-changed',function(){
   _apiArchToggleUI();
+  const list=document.getElementById('api-list-container');
+  if(list){if(_apiArchView)renderApiArchiveList();else if(apiConfigs.length)_ibRenderApiList(list,apiConfigs,_apiCredentialStatusById,false)}
   const editor=document.getElementById('api-editor');
   if(editor&&editor.style.display!=='none'){
-    const exists=Array.isArray(apiConfigs)&&apiConfigs.some(function(cfg){return cfg&&cfg.id===editingApiId});
+    const current=Array.isArray(apiConfigs)?apiConfigs.find(function(cfg){return cfg&&cfg.id===editingApiId}):null;
+    const exists=!!current;
     _apiSetEditorTitle(exists?'api.editRole':'api.newRole',exists?'编辑API':'添加API');
+    _ibUpdateApiEditorActions(current||null);
   }
 });
 function toggleApiArchiveView(){
@@ -2099,12 +2716,19 @@ async function renderApiArchiveList(){
     var avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
     var avatar=_ibApiAvatarSource(a.avatar);
     var avHtml=avatar?'<div class="api-item-avatar"><img src="'+_ibApiHtmlAttribute(avatar)+'" alt=""></div>':'<div class="api-item-avatar">'+esc(avInit)+'</div>';
+    var name=String(a.nickname||a.model||'未命名');
+    var intro=String(a.bio||a.signature||'').trim();
+    var modelInfo=[String(a.provider||'').trim(),String(a.model||'').trim()].filter(Boolean).join(' · ');
+    var moreLabel=_apiUiText('api.moreActions','更多操作');
+    var deleteLabel=_apiUiText('api.deletePermanently','彻底删除…');
+    var deleteAction='event.stopPropagation();archHardDeleteAsk(this,'+idArg+')';
     return '<div class="chat-history-item api-arch-item" style="gap:12px" data-arch-id="'+idAttr+'">'+avHtml
-      +'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+'</strong>'
-      +(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')
-      +'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider||'')+' · '+esc(a.model||'')+'</div></div>'
-      +'<span class="arch-ops"><button class="arch-restore-btn" title="恢复到API管理区" onclick="openApiRestoreDialog('+idArg+')">'+_ARCH_RESTORE_SVG+'</button>'
-      +'<span class="del-btn" title="彻底删除" onclick="archHardDeleteAsk(this,'+idArg+')">✕</span></span></div>';
+      +'<span class="api-role-copy"><strong class="api-item-name">'+esc(name)+'</strong>'
+      +(intro?'<span class="api-role-intro">'+esc(intro)+'</span>':'')
+      +(modelInfo?'<span class="api-item-detail api-role-model">'+esc(modelInfo)+'</span>':'')+'</span>'
+      +'<span class="arch-ops"><button type="button" class="arch-restore-btn" title="恢复到API管理区" onclick="openApiRestoreDialog('+idArg+')">'+_ARCH_RESTORE_SVG+'</button>'
+      +'<details class="api-more-menu" onclick="event.stopPropagation()"><summary aria-label="'+_ibApiHtmlAttribute(moreLabel)+'" title="'+_ibApiHtmlAttribute(moreLabel)+'"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg></summary>'
+      +'<div class="api-more-popover"><button type="button" class="api-more-delete" onclick="'+deleteAction+'">'+esc(deleteLabel)+'</button></div></details></span></div>';
   }).join('');
 }
 function archHardDeleteAsk(el,id){

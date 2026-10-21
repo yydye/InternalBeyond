@@ -371,7 +371,9 @@ body:not(.theme-infernal) .game-char-lightcast::before{opacity:0.45}
 .game-dialogue-portrait{position:absolute;bottom:0;left:-50px;z-index:21;
   width:450px;height:560px;pointer-events:none;opacity:0;
   display:flex;align-items:flex-end;justify-content:flex-end;
-  transition:opacity 0.4s ease;transform-origin:bottom center}
+  transition:opacity 0.4s ease;
+  transform:translate(var(--ib-diy-portrait-x,0px),var(--ib-diy-portrait-y,0px)) scale(var(--ib-diy-portrait-scale,1));
+  transform-origin:bottom center}
 .game-dialogue-portrait.show{opacity:1}
 .game-dialogue-portrait img{max-width:100%;max-height:100%;width:auto;height:auto;
   object-fit:contain;object-position:bottom right;
@@ -1005,10 +1007,20 @@ function customPortraitSrc(cfg){
   if(!nick) return null;
   return 'game/portraits/portrait_['+nick+'].png';
 }
-function loadCustomPortrait(cfg){
-  const src=customPortraitSrc(cfg);
-  if(!src) return Promise.resolve(null);
-  return loadImage(src);
+async function loadCustomPortrait(cfg){
+  const legacySrc=customPortraitSrc(cfg);
+  if(window.IBDIYWorkshop){
+    try{
+      await window.IBDIYWorkshop.ready;
+      const customSrc=window.IBDIYWorkshop.getPortraitSource(cfg);
+      if(customSrc){
+        const customImage=await loadImage(customSrc);
+        if(customImage)return customImage;
+      }
+    }catch(e){}
+  }
+  if(!legacySrc)return null;
+  return loadImage(legacySrc);
 }
 
 /* ── VIEWPORT CREATION ───────────────────────────────── */
@@ -1165,6 +1177,7 @@ function createViewport(container){
 
   container.appendChild(vp);
   G.viewport = vp;
+  if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyRoomAssets(vp);
   return vp;
 }
 

@@ -228,7 +228,9 @@ const TEA_CSS = `
    rests on the frame's left rose border and just kisses the writing area. */
 .game-tea-chat-portrait{position:absolute;bottom:0;right:375px;width:520px;height:760px;z-index:0;
   display:flex;align-items:flex-end;justify-content:flex-end;pointer-events:none;
-  opacity:0;transition:opacity 0.6s ease}
+  opacity:0;transition:opacity 0.6s ease;
+  transform:translate(var(--ib-diy-portrait-x,0px),var(--ib-diy-portrait-y,0px)) scale(var(--ib-diy-portrait-scale,1));
+  transform-origin:bottom center}
 .game-tea-chat-portrait.show{opacity:1}
 .game-tea-chat-portrait img{max-width:100%;max-height:100%;width:auto;height:auto;
   object-fit:contain;object-position:bottom right;filter:drop-shadow(2px 6px 16px rgba(0,0,0,0.45))}
@@ -376,6 +378,7 @@ function openTeaSelect(){
     </div>
   </div>`;
 
+  if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyRoomAssets(overlay);
   /* Add visual icon images (display only, not clickable) */
   const iconsLayer=overlay.querySelector('#tea-icons-layer');
   TEA_DRINKS.forEach(d=>{
@@ -831,6 +834,10 @@ ${profileContext?'\n关于你的茶伴：\n'+profileContext:''}`;
     </div>
   </div>`;
 
+  if(window.IBDIYWorkshop){
+    window.IBDIYWorkshop.applyRoomAssets(chatEl);
+    window.IBDIYWorkshop.applyPortrait(chatEl.querySelector('.game-tea-chat-portrait'),G._teaCfg);
+  }
   chatEl.classList.add('show');
 
   /* Bind events */

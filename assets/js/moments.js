@@ -425,12 +425,30 @@ async function _momentsWriteCanonical(m,options){
   options=options||{};
   const hn=_momentsHomeNodeMoments();
   if(hn){
-    const res=await hn.put(m,options.requestId?{requestId:String(options.requestId)}:undefined);
+    const writeOptions={};
+    if(options.requestId)writeOptions.requestId=String(options.requestId);
+    if(options.expectedRev!=null)writeOptions.expectedRev=Number(options.expectedRev);
+    const res=await hn.put(m,Object.keys(writeOptions).length?writeOptions:undefined);
     if(!res||res.ok!==true)throw new Error('moment-write-failed:'+String((res&&res.error)||'unknown'));
+    if(res.moment&&typeof res.moment==='object')Object.assign(m,res.moment);
     return{authority:String((res&&res.authority)||'home-node'),outcome:String((res&&res.outcome)||''),revision:(res&&res.revision)||null};
   }
   await dbPut(MOMENT_STORE,m);
   return{authority:'indexeddb',outcome:'local',revision:null};
+}
+async function _momentsRemoveCanonical(id,expectedRev,options){
+  options=options||{};
+  const hn=_momentsHomeNodeMoments();
+  if(hn){
+    if(typeof hn.remove!=='function')throw new Error('moments-remove-unavailable');
+    const removeOptions={requestId:String(options.requestId||_momentsId('mut'))};
+    if(expectedRev!=null)removeOptions.expectedRev=Number(expectedRev);
+    const res=await hn.remove(String(id||''),removeOptions);
+    if(!res||res.ok!==true)throw new Error('moment-delete-failed:'+String((res&&res.error)||'unknown'));
+    return res;
+  }
+  await dbDelete(MOMENT_STORE,id);
+  return{ok:true,authority:'indexeddb',outcome:'local'};
 }
 /* 落库之后的**表现层**副作用：UI 刷新 + AI 点赞/评论/@ 管线。
    与 canonical persistence 结构分离 —— 写入权威只负责写，表现层由调用方选择。
@@ -525,7 +543,7 @@ async function deleteMoment(id,opts){
     const run=await _momentsRunMutation(
       {mutationType:'moment.delete',actorId:actorId,actorKind:(isUserActor?'user':'role'),source:String(opts.source||(isUserActor?'user':'role_ai')),targetMomentId:String(id)},
       _momentsMutationFacts(m,{actorId:actorId,isUserActor:isUserActor}),
-      async()=>{await dbDelete(MOMENT_STORE,id);return{ok:true}}
+      async()=>{await _momentsRemoveCanonical(id,m.rev,{requestId:_momentsId('mut')});return{ok:true}}
     );
     if(!run.executed)return{ok:false,error:(run.reason==='not-owner'?'只有作者可以删除这条动态':'删除被拒绝')};
     if(!run.ok)return{ok:false,error:run.error||'删除失败'};
@@ -571,7 +589,7 @@ async function likeMoment(id,likerId){
       _momentsMutationFacts(m,{actorId:who,isUserActor:isUserActor}),
       async()=>{
         if(i>=0)m.likes.splice(i,1);else m.likes.push(who);/* 用户可取消；AI 点赞不撤销 */
-        await dbPut(MOMENT_STORE,m);
+        await _momentsWriteCanonical(m,{expectedRev:m.rev==null?0:Number(m.rev),requestId:_momentsId('mut')});
         return{ok:true,liked:i<0,count:m.likes.length};
       }
     );
@@ -621,7 +639,7 @@ async function addMomentComment(id,data){
         }
         m.comments.push(c);
         if(c.authorType==='user')_obsRec('user_comment',{momentId:id});
-        await dbPut(MOMENT_STORE,m);
+        await _momentsWriteCanonical(m,{expectedRev:m.rev==null?0:Number(m.rev),requestId:_momentsId('mut')});
         return{ok:true,comment:c,count:m.comments.length};
       }
     );
@@ -664,7 +682,7 @@ async function deleteMomentComment(momentId,commentId,actorRoleId){
       _momentsMutationFacts(m,{actorId:actorId,isUserActor:isUserActor,comment:c}),
       async()=>{
         m.comments=m.comments.filter(x=>x.id!==commentId);
-        await dbPut(MOMENT_STORE,m);
+        await _momentsWriteCanonical(m,{expectedRev:m.rev==null?0:Number(m.rev),requestId:_momentsId('mut')});
         return{ok:true};
       }
     );
@@ -2116,7 +2134,7 @@ async function _momentsIngestEvent(ev,userId){
       const run=await _momentsRunMutation(
         {mutationType:'comment.delete',actorId:actorId,actorKind:'role',source:'companion',targetMomentId:mid,targetCommentId:cid},
         _momentsMutationFacts(existing,{actorId:actorId,isUserActor:false,comment:c}),
-        async()=>{existing.comments=existing.comments.filter(x=>String(x.id)!==String(cid));await dbPut(MOMENT_STORE,existing);return{ok:true}}
+        async()=>{existing.comments=existing.comments.filter(x=>String(x.id)!==String(cid));await _momentsWriteCanonical(existing,{expectedRev:existing.rev==null?0:Number(existing.rev),requestId:_momentsId('mut')});return{ok:true}}
       );
       if(!run.executed){
         _obsRec('post_blocked',{actor:actorId,origin:'companion',reason:String(run.reason||'mutation-denied').slice(0,60),mutationType:'comment.delete',momentId:mid});
@@ -2149,7 +2167,7 @@ async function _momentsIngestEvent(ev,userId){
           commentExists:(existing.comments||[]).some(x=>String(x.id)===String(c.replyTo||'')),
           comment:(existing.comments||[]).find(x=>String(x.id)===String(c.replyTo||''))||null,
           canSeeMoment:(isRole?_momentsVisibleToRole(existing,c.authorId):true)}),
-        async()=>{existing.comments=(existing.comments||[]).concat([c]);await dbPut(MOMENT_STORE,existing);return{ok:true,comment:c}}
+        async()=>{existing.comments=(existing.comments||[]).concat([c]);await _momentsWriteCanonical(existing,{expectedRev:existing.rev==null?0:Number(existing.rev),requestId:_momentsId('mut')});return{ok:true,comment:c}}
       );
       if(!run.executed){
         _obsRec('post_blocked',{actor:c.authorId,origin:'companion',reason:String(run.reason||'mutation-denied').slice(0,60),mutationType:'reply.create',momentId:mid});

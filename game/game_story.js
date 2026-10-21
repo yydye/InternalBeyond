@@ -738,6 +738,7 @@ function openStoryWindow(){
     </div>`;
   G.viewport.appendChild(win);
   G.swEl=win;
+  if(window.IBDIYWorkshop)window.IBDIYWorkshop.applyRoomAssets(win);
   /* 精灵帧宽自适应：素材载入后按 naturalWidth/6 校正（占位图/正式图均适配，无需改代码） */
   const probe=new Image();
   probe.onload=()=>{

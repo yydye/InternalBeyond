@@ -556,14 +556,17 @@ async function main() {
     && !/memoryAuthority|disclosureFacts/.test(stripComments(MOMENTS_SRC)));
   check('CC43.noMiddleBrainRefs',
     !/middle-brain|middleBrain|astra/i.test(stripComments(companionSrc) + stripComments(MOMENTS_SRC)));
-  check('CC44.mutationAuthorityUntouched',
-    countOf(stripComments(MOMENTS_SRC), 'await dbPut(MOMENT_STORE,m);') >= 4
-    && countOf(stripComments(MOMENTS_SRC), 'dbDelete(MOMENT_STORE,id);') === 1
-    && /likeMoment|addMomentComment|deleteMomentComment/.test(MOMENTS_SRC));
-  check('CC45.canonicalWriterStillUnique',
-    countOf(stripComments(MOMENTS_SRC), 'function createMoment(') === 1
-    && countOf(stripComments(MOMENTS_SRC), 'await _momentsWriteCanonical(') === 1
-    && countOf(stripComments(MOMENTS_SRC), 'hn.put(m,') === 1);
+  const momentsCode = stripComments(MOMENTS_SRC);
+  check('CC44.mutationActionsUseCanonicalWriters',
+    countOf(momentsCode, 'await _momentsWriteCanonical(') >= 6
+    && countOf(momentsCode, 'await _momentsRemoveCanonical(') === 1
+    && /likeMoment|addMomentComment|deleteMomentComment/.test(momentsCode));
+  check('CC45.canonicalWritersRemainUnique',
+    countOf(momentsCode, 'function createMoment(') === 1
+    && countOf(momentsCode, 'async function _momentsWriteCanonical(') === 1
+    && countOf(momentsCode, 'async function _momentsRemoveCanonical(') === 1
+    && countOf(momentsCode, 'hn.put(m,') === 1
+    && countOf(momentsCode, 'hn.remove(') === 1);
   check('CC49.allAutonomousPathsEnumerateToAutonomy',
     /runMomentAutonomy\(finalized\.candidate,deps\)/.test(stripComments(MOMENTS_SRC))
     && countOf(stripComments(MOMENTS_SRC), 'await _momentsRunAutonomousPost(') === 1
