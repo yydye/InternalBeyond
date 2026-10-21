@@ -38,7 +38,7 @@ function _amRecordOnlyBlock(cfg){
   const u=_amUserName();
   return '【记忆系统 · 静默模式】\n'
   +'你可以为'+u+'维护长期记忆档案。当前为静默模式：不注入已有档案。\n'
-  +'仅当'+u+'明确要求你记住某事时，才使用以下标签写入（系统拦截执行，对方可见卡片通知）：\n'
+  +'只有用户明确要求维护这份角色档案时，才使用以下 Auto Memory 标签；用户要求记住、修改或删除 canonical Memory 时，使用随后给出的 <ws_mem_write> 操作，不要同时输出 mem_create。\n'
   +'<mem_create category="分类" priority="优先级">{"content":"记忆内容","confidence":0,"reasons":["为什么值得长期保存"]}</mem_create>\n'
   +'分类：work_context｜personal_context｜top_of_mind｜brief_history｜long_term_background｜user_instructions\n'
   +'优先级：always｜normal｜low\n'
@@ -53,6 +53,7 @@ function _amChatImplicitInstrBlock(){
     +'若当前消息包含“那个/上次/之前/老地方/她说的那个”等指代，只有收到 Host 提供的唯一指代落地结果时才能输出 mem_create，并以其中无悬空指代的含义为候选；没有结果或结果有歧义时不要写入候选，正常回复可按需自然澄清。不要输出 message id 或 provenance。\n'
     +'不要为倒水、临时状态、一次性操作、玩笑、寒暄生成候选。持续计划可以是 ongoing，不要把它改写成已经完成或永久事实。\n'
     +'该标签只是候选，runtime admission 可能忽略；runtime 才能决定是否写入。不要输出 memoryId、id、revision、authority、canonical 或任何写入成功声明。普通 Chat 的新建候选使用此标签，不要为同一事实输出第二个 mem_create。\n'
+    +'用户明确要求记住、修改或删除 canonical Memory 时改用 <ws_mem_write>，不要同时输出 mem_create；<mem_update>/<mem_delete> 只用于用户明确指定要修改或删除 Auto Memory 角色档案的情况。\n'
     +'只有用户明确纠正/要求删除一条已注入的旧 Auto Memory 档案时，才可用 mem_update 或 mem_delete，并且 id 必须逐字取自现有档案；不得为新候选伪造 id。';
 }
 async function amBuildInject(cfg,queryText,options){
@@ -434,8 +435,8 @@ function _amArchToggleUI(){
   const setbtn=document.getElementById('am-setbtn');
   if(l)l.textContent=_amUiText(_amArchMode?'memory.autoMemoryArchived':'memory.autoMemory',_amArchMode?'Archived · Role archive':'Auto Memory · 角色档案');
   if(note)note.textContent=_amArchMode
-    ?_amUiText('memory.autoMemoryArchivedAuthority','已归档 API 的独立角色档案；仍不属于 Home Node canonical Memory，也不参与 canonical Recall。')
-    :_amUiText('memory.autoMemoryAuthority','按 AI 角色分区的独立 IndexedDB 档案；不属于 Home Node canonical Memory，也不参与 canonical Recall。');
+    ?_amUiText('memory.autoMemoryArchivedAuthority','已收起的角色记忆，与共同记忆分开保存。')
+    :_amUiText('memory.autoMemoryAuthority','每位角色各自珍藏的记忆，与共同记忆分开保存。');
   if(b){
     if(_amArchMode){b.classList.add('arch-return');b.innerHTML=_ARCH_RETURN_SVG+_amUiText('memory.return','Return')}
     else{b.classList.remove('arch-return');b.innerHTML=_amUiText('memory.archived','Archived')+_ARCH_CLOCK_SVG}

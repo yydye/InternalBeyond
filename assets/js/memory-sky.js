@@ -163,4 +163,47 @@ NS.expose('memorySky', {
   s.src='assets/js/memory-world.js';
   document.head.appendChild(s);
 })();
+
+/* ---- Memory Atmosphere · 记忆氛围层的加载接缝 ----
+   与上面 Memory World 完全同构：id 守卫 + 运行时注入 + 失败静默。
+   氛围层是纯展示、可关闭、可整体移除的附加层（localStorage
+   "ib.memory.atmosphere"，默认开启），它自己挂 assets/css/memory-atmosphere.css，
+   因此 InternalBeyond.html 的样式表数量预算与既有 Memory 功能都不受影响。 */
+(function loadMemoryAtmosphere(){
+  try {
+    if (!document || !document.head) return;
+    if (document.getElementById('ib-mem-atmosphere-loader')) return;
+    var s=document.createElement('script');
+    s.id='ib-mem-atmosphere-loader';
+    s.src='assets/js/memory-atmosphere.js';
+    document.head.appendChild(s);
+  } catch (e) { /* 氛围层加载失败必须静默：Memory 页既有功能不受影响。 */ }
+})();
+
+/* ---- Original Memory UI · read-only adapter then transplanted Coastline UI ----
+   Adapter owns the only data seam. The view script is loaded after it so the
+   Coastline can read current Memory records while Fathom/Tidebook render the
+   original empty states when the runtime has no corresponding history store. */
+(function loadMemoryReferenceUI(){
+  try {
+    if (!document || !document.head || document.getElementById('ib-memory-reference-adapter-loader')) return;
+    var adapter=document.createElement('script');
+    adapter.id='ib-memory-reference-adapter-loader';
+    adapter.src='assets/js/memory-reference-adapter.js';
+    adapter.onload=function(){
+      var template=document.createElement('script');
+      template.id='ib-memory-coast-template-loader';
+      template.src='assets/js/memory-coast-template.js';
+      template.onload=function(){
+        if(document.getElementById('ib-memory-reference-ui-loader'))return;
+        var ui=document.createElement('script');
+        ui.id='ib-memory-reference-ui-loader';
+        ui.src='assets/js/memory-reference-ui.js';
+        document.head.appendChild(ui);
+      };
+      document.head.appendChild(template);
+    };
+    document.head.appendChild(adapter);
+  } catch (e) { /* 页面外观加载失败时，现有 Memory 页面继续工作。 */ }
+})();
 })(window.IB || (window.IB = {}));

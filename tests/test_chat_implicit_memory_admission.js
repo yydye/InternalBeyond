@@ -274,6 +274,22 @@ async function main() {
   await new Promise(resolve => setImmediate(resolve));
   check('background admission completion is detached from the Chat response path', scheduledFinished === true);
 
+  let rejectedScheduleResult = null;
+  IMPLICIT.schedule({ sourceMessageId: 'msg_background_exception' }, {
+    process: () => Promise.reject(new Error('private failure detail')),
+    onResult: result => { rejectedScheduleResult = result; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  check('unexpected background admission failure reports a closed reason without exception text',
+    rejectedScheduleResult && rejectedScheduleResult.ok === false
+      && rejectedScheduleResult.reason === 'admission-unavailable'
+      && !JSON.stringify(rejectedScheduleResult).includes('private failure detail'));
+
+  const tracedImplicitSchedules = (communication.match(/onResult:function\(_result\)\{_ibTraceImplicitMemoryResult\(_turnTraceId,_result\)\}/g) || []).length;
+  check('streaming and non-streaming implicit Memory admission report outcomes through the existing Turn Trace',
+    tracedImplicitSchedules === 2 && communication.includes("memoryAuthority:'implicit_extraction'")
+      && communication.includes("memoryAuthority:'implicit_candidate'"));
+
   check('explicit Host Action still precedes provider execution',
     communication.includes('const _explicitMemoryIntent=')
       && communication.indexOf('window.IBChatExplicitMemory.route') < communication.indexOf('callApiChatStream(cfg,messages'));

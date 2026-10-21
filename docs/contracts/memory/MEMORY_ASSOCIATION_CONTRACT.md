@@ -105,6 +105,14 @@ The result is session-derived. It is not persisted or written as a canonical
 Memory. For the same turn, the Recall runtime replay memo returns the same context
 and Association trace without repeating activation, exposure, or model work.
 
+The Fathom history projection is separate from this result and from canonical
+Memory relations. After a successful authoritative Recall, it may retain a bounded
+event containing only the character scope, source channel, time, direct memory ids,
+Association endpoint ids and relation labels, and Recall counts. It must not retain
+turn text, query text, conversation ids, candidate bodies, or a writable relation
+record. Fathom reads re-check current Memory visibility and never include Agent
+Memory or Role DM state in the Chat history scope.
+
 ## 6. Model and failure policy
 
 - At most one provider call per Recall, with at most 12 pairs.

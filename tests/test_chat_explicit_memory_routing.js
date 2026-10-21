@@ -16,6 +16,9 @@ const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memo
 const createMemoryRetrieval = require(path.join(ROOT, 'services', 'home-node', 'memory-retrieval.js'));
 const htmlSource = fs.readFileSync(path.join(ROOT, 'InternalBeyond.html'), 'utf8');
 const communication = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'communication.js'), 'utf8');
+const workspaceSource = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'workspace.js'), 'utf8');
+const autoMemorySource = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'memory', 'auto-memory.js'), 'utf8');
+const roleDmSource = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'role-dm.js'), 'utf8');
 const integrations = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'integrations.js'), 'utf8');
 const memorySource = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'memory.js'), 'utf8');
 const bridgeSource = fs.readFileSync(path.join(ROOT, 'services', 'ib-bridge-service.js'), 'utf8');
@@ -66,6 +69,7 @@ async function main() {
     naturalBirthday,
     '你能记住我的生日是 3 月 25 日吗？',
     '能不能记住我的生日是 3 月 25 日？',
+    '能记一下，我的生日吗？是3月25呢',
     '帮我记一下我的生日',
     '麻烦你把这个记下来',
     '以后要记得我喜欢喝咖啡',
@@ -77,6 +81,8 @@ async function main() {
     positiveMessages.every(text => !!EXPLICIT.classify(text)));
   check('question-form birthday request extracts only the persistable fact',
     EXPLICIT.classify(naturalBirthday).fact === '我的生日是 3 月 25 日');
+  check('captured "能记一下" request extracts its supplied birthday as a clean fact',
+    EXPLICIT.classify('能记一下，我的生日吗？是3月25呢').fact === '我的生日是3月25');
   const deictic = EXPLICIT.classify('麻烦你把这个记下来');
   check('deictic save request is intercepted and asks for content instead of saving a placeholder',
     !!deictic && deictic.needsContent === true);
@@ -86,6 +92,7 @@ async function main() {
     '不用记',
     '别保存',
     '你能记住东西吗？',
+    '能记住东西吗？',
     '我只是想问你能不能记住东西',
     '“记住我的生日”是什么意思？',
     '如果我说“记住 X”会发生什么？',
@@ -95,6 +102,23 @@ async function main() {
     negativeMessages.every(text => !EXPLICIT.classify(text)));
   check('ability-question false positive stays zero for the explicit example',
     EXPLICIT.classify('你能记住东西吗？') === null);
+
+  const modelCreateOperation = {
+    action: 'create', intentEvidence: '把这个记在长期记忆里', evidence: '我周三会去游泳',
+    title: '每周三游泳', summary: '用户每周三会去游泳。', content: '用户每周三晚上会去游泳。',
+    domain: '日常', tags: ['游泳','每周安排'], importance: 5
+  };
+  const modelCreateText = '<ws_mem_write>' + JSON.stringify(modelCreateOperation) + '</ws_mem_write>';
+  const parsedModelCreate = EXPLICIT.parseModelOperation(modelCreateText);
+  check('model Memory operation is parsed as a closed host action and removed from reply text',
+    parsedModelCreate.detected === true && parsedModelCreate.valid === true
+      && parsedModelCreate.operation.action === 'create' && parsedModelCreate.cleanText === '');
+  check('model Memory operation is rejected when mixed with prose or extra operations',
+    EXPLICIT.parseModelOperation('我记住了。' + modelCreateText).valid === false
+      && EXPLICIT.parseModelOperation(modelCreateText + modelCreateText).valid === false);
+  check('ordinary questions and negative phrasing do not create model Memory operations',
+    EXPLICIT.parseModelOperation('你能帮我记住生日吗？').detected === false
+      && EXPLICIT.parseModelOperation('不要记住这个。').detected === false);
 
   let legacyPut = null;
   const legacyQuickCreate = extractQuickCreateMemory(async function (storeName, record) {
@@ -109,6 +133,7 @@ async function main() {
   const store = createMemoryStore({ dataDir: tempDir, logger: () => {} });
   store.open();
   let online = true;
+  let rejectWrites = false;
   let remotePutCalls = 0;
   const local = makeLocal();
   const remote = {
@@ -116,6 +141,7 @@ async function main() {
     put: (record, options) => {
       remotePutCalls++;
       if (!online) return Promise.resolve({ ok: false, error: 'home-node-unreachable' });
+      if (rejectWrites) return Promise.resolve({ ok: false, error: 'memory-write-denied' });
       const result = store.putRecord(record, options || {});
       return Promise.resolve({ ok: true, outcome: result.outcome, id: result.id, revision: result.revision });
     },
@@ -359,6 +385,102 @@ async function main() {
   check('the Chat fast path persists its host-authored receipt response without a model call',
     singlePath.slice(singleRoute, singleProvider).includes('chatAction:\'explicit-memory-write\'')
       && singlePath.slice(singleRoute, singleProvider).includes('memoryWriteOk:_memoryWrite.ok===true'));
+
+  const capturedBirthdayText='能记一下，我的生日吗？是3月25呢';
+  const capturedIntent=EXPLICIT.classify(capturedBirthdayText);
+  const beforeCapturedWrite=store.countRecords();
+  const capturedWrite=await EXPLICIT.route({text:capturedBirthdayText,sourceMessageId:'msg_captured_explicit_birthday',
+    conversationId:'conversation:friend-1:main',timestamp:1700000011000},{quickCreateMemory:quickCreate.__quickCreateMemory});
+  const capturedRecord=capturedWrite.ok?store.getRecord(capturedWrite.id):null;
+  check('captured user phrasing reaches the isolated canonical writer through the explicit action',
+    capturedIntent&&capturedIntent.fact==='我的生日是3月25'
+      &&capturedWrite.ok===true&&capturedRecord&&capturedRecord.content==='我的生日是3月25'
+      &&store.countRecords()===beforeCapturedWrite+1);
+
+  const modelOperationInput = {
+    operation: parsedModelCreate.operation,
+    userText: '把这个记在长期记忆里：我周三会去游泳。',
+    sourceMessageId: 'msg_model_memory_create', conversationId: 'conversation:friend-1:main',
+    timestamp: 1700000012000, friendId: 'friend-1', cfg: { id: 'friend-1', nickname: 'Smoke' }
+  };
+  const modelOperationDeps = {
+    authority: authority, quickCreateMemory: quickCreate.__quickCreateMemory,
+    isMemoryVisibleTo: function (record, roleId) { return roleId === 'friend-1' && record.visibility === 'public'; }
+  };
+  const modelCreateBefore = store.countRecords();
+  const modelCreateResult = await EXPLICIT.executeModelOperation(modelOperationInput, modelOperationDeps);
+  const modelCreatedRecord = modelCreateResult.ok ? store.getRecord(modelCreateResult.id) : null;
+  check('model-proposed explicit create writes one canonical row through Home Node receipt',
+    modelCreateResult.status === 'written' && modelCreateResult.receipt.authority === 'home-node'
+      && modelCreatedRecord && modelCreatedRecord.content === '用户每周三晚上会去游泳。'
+      && store.countRecords() === modelCreateBefore + 1);
+  const duplicateModelCreate = await EXPLICIT.executeModelOperation(Object.assign({}, modelOperationInput,
+    { sourceMessageId: 'msg_model_memory_create_retry' }), modelOperationDeps);
+  check('repeat model proposal detects existing canonical content and avoids a duplicate write',
+    duplicateModelCreate.status === 'duplicate' && store.countRecords() === modelCreateBefore + 1);
+
+  const ambiguousModelUpdateBefore = store.countRecords();
+  const ambiguousModelUpdate = await EXPLICIT.executeModelOperation({
+    operation: { action: 'update', intentEvidence: '改成4月1日', evidence: '生日', target: '生日', content: '用户生日是4月1日。' },
+    userText: '把记忆里的生日改成4月1日。', sourceMessageId: 'msg_model_memory_ambiguous_update',
+    conversationId: 'conversation:friend-1:main', friendId: 'friend-1', cfg: { id: 'friend-1' }
+  }, modelOperationDeps);
+  check('ambiguous update target asks for clarification and does not change canonical Memory',
+    ambiguousModelUpdate.status === 'clarification' && store.countRecords() === ambiguousModelUpdateBefore);
+
+  const updateResult = await EXPLICIT.executeModelOperation({
+    operation: { action: 'update', intentEvidence: '改为周四', evidence: '游泳安排', target: '每周三游泳',
+      title: '每周四游泳', summary: '用户每周四晚上会去游泳。', content: '用户每周四晚上会去游泳。' },
+    userText: '把每周三游泳的记忆改为周四，游泳安排从周三调整到周四。',
+    sourceMessageId: 'msg_model_memory_update', conversationId: 'conversation:friend-1:main',
+    friendId: 'friend-1', cfg: { id: 'friend-1' }
+  }, modelOperationDeps);
+  const updatedModelRecord = store.getRecord(modelCreateResult.id);
+  check('unique model-proposed update uses the existing canonical Authority and receipt',
+    updateResult.status === 'updated' && updateResult.receipt.authority === 'home-node'
+      && updatedModelRecord.title === '每周四游泳' && updatedModelRecord.content === '用户每周四晚上会去游泳。');
+
+  const deleteText = '请把记忆里的每周四游泳删掉。';
+  const deleteOperation = { action: 'delete', intentEvidence: '删掉', evidence: '每周四游泳', target: '每周四游泳' };
+  const beforeDeleteCancel = store.countRecords();
+  const cancelledDelete = await EXPLICIT.executeModelOperation({
+    operation: deleteOperation, userText: deleteText, sourceMessageId: 'msg_model_memory_delete_cancel',
+    conversationId: 'conversation:friend-1:main', friendId: 'friend-1', cfg: { id: 'friend-1' }
+  }, Object.assign({}, modelOperationDeps, {
+    requestApproval: async function () { return { approved: false, ignored: true }; }
+  }));
+  check('model-proposed delete cannot mutate Memory without user confirmation',
+    cancelledDelete.status === 'cancelled' && store.countRecords() === beforeDeleteCancel
+      && store.getRecord(modelCreateResult.id) != null);
+  const confirmedDelete = await EXPLICIT.executeModelOperation({
+    operation: deleteOperation, userText: deleteText, sourceMessageId: 'msg_model_memory_delete_confirm',
+    conversationId: 'conversation:friend-1:main', friendId: 'friend-1', cfg: { id: 'friend-1' }
+  }, Object.assign({}, modelOperationDeps, {
+    requestApproval: async function (candidate) { return { approved: true, value: await candidate.commit() }; }
+  }));
+  check('confirmed model-proposed delete requires and validates the Home Node deletion receipt',
+    confirmedDelete.status === 'deleted' && confirmedDelete.receipt.authority === 'home-node'
+      && confirmedDelete.receipt.outcome === 'deleted' && store.getRecord(modelCreateResult.id) == null);
+
+  const beforeRejectedModelWrite = store.countRecords();
+  rejectWrites = true;
+  const rejectedModelWrite = await EXPLICIT.executeModelOperation(Object.assign({}, modelOperationInput,
+    { sourceMessageId: 'msg_model_memory_write_rejected', userText: '请记住：我周日会做面包。', operation: {
+      action: 'create', intentEvidence: '请记住', evidence: '我周日会做面包', title: '周日烘焙',
+      summary: '用户周日会做面包。', content: '用户周日会做面包。', domain: '日常', tags: ['烘焙'], importance: 5
+    } }), modelOperationDeps);
+  rejectWrites = false;
+  check('Home Node rejection never produces a successful model Memory confirmation',
+    rejectedModelWrite.ok === false && rejectedModelWrite.status === 'failed'
+      && !/已记住|已保存/.test(rejectedModelWrite.replyText)
+      && store.countRecords() === beforeRejectedModelWrite);
+
+  check('model Memory prompt and stream parser stay in single Chat; non-Chat execution is explicitly refused',
+    communication.includes('modelOperationPrompt()') && communication.includes('executeModelOperation')
+      && !roleDmSource.includes('modelOperationPrompt()')
+      && workspaceSource.includes("if(op.type==='mem_write')")
+      && workspaceSource.includes('suppressAfterMemoryWrite=true')
+      && autoMemorySource.includes('不要同时输出 mem_create'));
 
   store.close();
   fs.rmSync(tempDir, { recursive: true, force: true });

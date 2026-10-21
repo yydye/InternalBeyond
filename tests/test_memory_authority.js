@@ -280,6 +280,22 @@ function mockLocal(options) {
     check('T3.6 status.degraded 为 true 且给出原因',
       authority.status().degraded === true && typeof authority.status().degradedReason === 'string',
       authority.status().degradedReason);
+
+    const readRemote = mockRemote({ online: false });
+    const readLocal = mockLocal([mem('cached-mirror')]);
+    const readAuthority = AUTHORITY.createMemoryAuthority({ remote: readRemote, local: readLocal, mode: 'canonical', clock: () => 5000 });
+    const degradedRows = await readAuthority.getAll();
+    check('T3.7 resolved offline list envelope marks the mirror degraded',
+      degradedRows.length === 1 && degradedRows.readFrom === 'mirror-degraded' &&
+        readAuthority.status().remoteOnline === false && readAuthority.status().degradedReason === 'home-node-unreachable',
+      readAuthority.status());
+    readRemote.state.online = true;
+    const recoveredRows = await readAuthority.getAll();
+    check('T3.8 next canonical read retries hydrate and clears degraded state',
+      recoveredRows.length === 0 && readAuthority.status().remoteOnline === true &&
+        readAuthority.status().degraded === false && readAuthority.status().hydrated === true &&
+        readAuthority.status().lastError === null,
+      readAuthority.status());
   }
 
   /* ══════════════ T4 · 明确拒绝 ≠ 离线 ════════════════════════════════════ */
@@ -317,7 +333,8 @@ function mockLocal(options) {
     const hydratedAfterMirrorFailure = await authority.getAll();
     check('T5.7 next canonical read rebuilds the stale mirror and clears degraded state',
       hydratedAfterMirrorFailure.some(row => row.id === 'm-mirrorfail')
-        && authority.status().degraded === false && authority.status().hydrated === true);
+        && authority.status().degraded === false && authority.status().hydrated === true
+        && authority.status().lastError === null);
   }
 
   /* ══════════════ T6 · 记忆可变：内容变化必须真的更新 ═════════════════════ */

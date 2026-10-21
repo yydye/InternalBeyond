@@ -216,6 +216,7 @@ function createRuntimeRecall(deps) {
      small batch, and any failure leaves the direct Recall result usable. */
   const memoryRetrieval = deps.memoryRetrieval || null;
   const memoryStore = deps.memoryStore || null;
+  const fathomHistory = deps.fathomHistory || null;
   const registry = deps.registry || null;
   /* sessionState 被接受，但**只**用于两件事：describe() 如实说
      `sessionStateOwned: false`，以及让装配层能把**同一个**实例同时交给
@@ -2312,6 +2313,31 @@ function createRuntimeRecall(deps) {
           turnIdentity: turnIdentity,
           activationIds: reinforcementIds.slice()
         });
+        /* Fathom is an additive history projection of this completed, canonical
+           Recall. The store accepts references and bounded trace metadata only;
+           failure to keep history must never fail or alter the Recall itself. */
+        if (fathomHistory && typeof fathomHistory.recordRecall === 'function') {
+          try {
+            const savedTrace = fathomHistory.recordRecall({
+              characterId: characterId,
+              channel: shape.isGroup === true ? 'group' : 'chat',
+              selectedIds: selectedIds,
+              association: associationMeta,
+              counts: counts
+            });
+            if (!savedTrace || savedTrace.ok !== true) {
+              note('runtime-recall-fathom-history-skipped', {
+                characterId: characterId,
+                reason: bounded(savedTrace && savedTrace.error || 'history-unavailable')
+              });
+            }
+          } catch (historyError) {
+            note('runtime-recall-fathom-history-skipped', {
+              characterId: characterId,
+              reason: bounded((historyError && historyError.code) || 'history-write-failed')
+            });
+          }
+        }
         while (settledTurns.size > MAX_SETTLED_TURNS) {
           const oldest = settledTurns.keys().next();
           if (oldest.done) break;

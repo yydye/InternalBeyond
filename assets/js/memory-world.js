@@ -1815,18 +1815,17 @@
   }
 
   /* --------------------------------------- 旧星图共存（DOM 重排，非删除） */
-  /* STAR_MAP_COEXISTENCE_DECISION = C+B：把既有星图迁入 Library 段并默认折叠。
-     理由（见审计）：星图是 ambient 数据视图，**没有交互**（点星只冒一下火花，
-     不导航、不打开记忆），却紧贴在 Memory World 入口下方，形成两个互相竞争的
-     视觉场。它一个功能都不删：同样的 id、同样的 buildMemorySky、
-     同样的 legend，只是从「页面主角位」移到 Library 末尾的一个折叠项，
-     展开即用（canvas 由 ResizeObserver 在尺寸出现时重建）。 */
+  /* Keep the original Sky/Coast surface together inside the Library view. */
   function foldStarMap() {
     var page = document.getElementById('page-memory');
     if (!page) return false;
     var sky = document.getElementById('mem-sky');
     var layout = page.querySelector('.mem-page-layout');
     if (!sky || !layout) return false;
+    /* The original Sky/Coast control is already the accessible secondary path
+       to the Observatory; wrapping it would push the primary Coastline below
+       the Memory World entry and add a second, redundant disclosure. */
+    if (document.getElementById('mem-sky-coast')) return false;
     if (document.getElementById('mem-world-skyfold')) return true;
 
     var fold = document.createElement('details');
@@ -1849,7 +1848,16 @@
     var legend = document.getElementById('mem-sky-legend');
     body.appendChild(sky);
     if (legend) body.appendChild(legend);
-    layout.parentNode.insertBefore(fold, layout.nextSibling);
+    var library = document.getElementById('mem-view-lib');
+    var stats = document.getElementById('memory-stats-disclosure');
+    if (document.getElementById('mem-sky-coast')) {
+      fold.open = true;
+      if (library) library.insertBefore(fold, stats && stats.parentNode === library ? stats : library.firstChild);
+      else layout.parentNode.insertBefore(fold, layout.nextSibling);
+    } else {
+      if (library) library.insertBefore(fold, stats && stats.parentNode === library ? stats : library.firstChild);
+      else layout.parentNode.insertBefore(fold, layout.nextSibling);
+    }
     return true;
   }
 
@@ -1864,8 +1872,10 @@
     if (!page) return api;
 
     var entry = buildEntry();
+    var entrySlot = document.getElementById('memory-world-entry-slot');
     var intro = page.querySelector('.module-intro');
-    if (intro && intro.parentNode === page) page.insertBefore(entry.root, intro.nextSibling);
+    if (entrySlot) entrySlot.appendChild(entry.root);
+    else if (intro && intro.parentNode === page) page.insertBefore(entry.root, intro.nextSibling);
     else page.insertBefore(entry.root, page.firstChild);
 
     var world = buildWorld();

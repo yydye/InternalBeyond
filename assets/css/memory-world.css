@@ -691,9 +691,9 @@ body.theme-infernal .memory-world-scope {
   border: 0;
 }
 
-/* ==================================== 星图共存（Library 折叠项）====== */
-/* STAR_MAP_COEXISTENCE_DECISION = C+B：既有星图迁入 Library 末段并默认折叠。
-   功能一个不删：同一批 id / 同一个 buildMemorySky / 同一条 legend。 */
+/* ================================ 星图与海岸共存（Library 视图）====== */
+/* 星图和 Coastline 保留为同一组原版场景切换，位于 Memory 主视图内；
+   统计与 Memory World 入口由页面自己的次级折叠区承载。 */
 
 .memory-world-skyfold {
   margin-block-start: var(--ib-token-space-xxl, var(--space-6, 24px));

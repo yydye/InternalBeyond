@@ -1,0 +1,224 @@
+﻿/* ============================================================================
+   Memory Atmosphere · 记忆氛围层
+   ----------------------------------------------------------------------------
+   ROLE ................ PRESENTATION_LAYER_ONLY（纯展示，零数据写入）
+   MOUNT ............... 运行时注入：memory-sky.js -> memory-atmosphere.js，
+                        样式由本模块自己挂 <link id="ib-mem-atmos-style">。
+                        绝不改动 InternalBeyond.html 的静态样式表预算。
+   MOTION .............. 只用 transform / opacity（合成器线程）；canvas 里的
+                        星雾与花瓣由 JS 一次性烘焙或按帧绘制，本文件不画任何
+                        原生色彩、不使用背景模糊，视觉权重全部落在 canvas。
+   TOKENS .............. 只消费 core.css 语义 token（颜色 / 圆角 / 阴影 /
+                        字号 / 动效），因此浅色 Internal 与暗色 Infernal
+                        自动各自成立，无需本文件再做主题分叉。
+   约束：scripts/ui-guardrail.js 把本文件当新文件扫描 —— 不得出现原生色值、
+   英文关键词「曲面填充」、背景模糊声明、字面量小字号、>=20px 圆角与强制优先级。
+   ============================================================================ */
+
+/* ---- 1. 背景纵深层：星雾 + 记忆微尘（canvas 烘焙，只有 CSS 位移） -------- */
+
+/* 语义 token 的解析探针：JS 通过它把 token 交给浏览器求值（不参与布局与绘制）。 */
+.ib-mem-atmos__probe{
+  position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;
+  opacity:0;pointer-events:none;clip-path:inset(50%);
+}
+
+#ib-mem-atmos-back{
+  position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden;
+  opacity:0;visibility:hidden;
+  transition:opacity 1.8s cubic-bezier(0.4,0,0.2,1),visibility 0s linear 1.8s;
+}
+#ib-mem-atmos-back.is-page{
+  opacity:1;visibility:visible;
+  transition:opacity 1.8s cubic-bezier(0.4,0,0.2,1),visibility 0s;
+}
+#ib-mem-atmos-back canvas{
+  position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;
+}
+.ib-mem-atmos__nebula{
+  transform-origin:36% 28%;will-change:transform;
+  animation:ibMemNebulaDrift 120s cubic-bezier(0.4,0,0.2,1) infinite alternate;
+}
+.ib-mem-atmos__motes{
+  will-change:transform,opacity;
+  animation:ibMemMotesDrift 168s cubic-bezier(0.4,0,0.2,1) infinite alternate,
+    ibMemMotesBreathe 26s cubic-bezier(0.4,0,0.2,1) infinite alternate;
+}
+
+@keyframes ibMemNebulaDrift{
+  from{transform:translate3d(-0.6%,0.4%,0) scale(1.035)}
+  to{transform:translate3d(1.4%,-1.2%,0) scale(1.085)}
+}
+@keyframes ibMemMotesDrift{
+  from{transform:translate3d(0.9%,-0.7%,0) scale(1.02)}
+  to{transform:translate3d(-1.7%,1.5%,0) scale(1.06)}
+}
+@keyframes ibMemMotesBreathe{
+  from{opacity:.55}
+  to{opacity:.9}
+}
+
+/* ---- 2. 前景层：从左侧探入的枝 + 花瓣 + 氛围开关 ----------------------- */
+
+#ib-mem-atmos-front{
+  position:fixed;inset:0;z-index:90;pointer-events:none;overflow:hidden;
+  opacity:0;visibility:hidden;
+  transition:opacity 1.8s cubic-bezier(0.4,0,0.2,1),visibility 0s linear 1.8s;
+}
+#ib-mem-atmos-front.is-page{
+  opacity:1;visibility:visible;
+  transition:opacity 1.8s cubic-bezier(0.4,0,0.2,1),visibility 0s;
+}
+
+/* 枝：近 / 远两张 SVG，各自缓慢摆动 + 相位错开，transform-origin 钉在左缘。
+   可见切片按「左缘约 150px 宽、约 420px 高」构图；1440+ 时 220px 画框左移 70px，
+   枝条右缘在 SVG 内部已渐隐，不会在文字列前硬切。
+   1100-1360 缩放（依赖同一层渐隐），<1100 直接隐藏枝，只保留花瓣与星雾。 */
+.ib-mem-atmos__bough{
+  position:absolute;top:-3vh;height:auto;display:block;
+  pointer-events:none;user-select:none;-webkit-user-drag:none;
+  transform-origin:0% 4%;will-change:transform;
+}
+.ib-mem-atmos__bough--main{
+  left:calc(var(--ib-navigation-width,0px) - 96px);
+  width:clamp(160px,12.5vw,200px);
+  animation:ibMemSway 18s cubic-bezier(0.4,0,0.2,1) infinite alternate;
+  animation-delay:-4s;
+}
+.ib-mem-atmos__bough--far{display:none}
+
+@media (min-width: 1360px){
+  .ib-mem-atmos__bough--main{
+    left:calc(var(--ib-navigation-width,0px) - 70px);
+    width:220px;
+  }
+  .ib-mem-atmos__bough--far{
+    display:block;top:6vh;left:calc(var(--ib-navigation-width,0px) - 40px);
+    width:150px;opacity:.3;
+    animation:ibMemSwayFar 24s cubic-bezier(0.4,0,0.2,1) infinite alternate;
+    animation-delay:-13s;
+  }
+}
+@media (max-width: 1099px){
+  .ib-mem-atmos__bough--main{display:none}
+}
+
+@keyframes ibMemSway{
+  from{transform:rotate(-0.55deg) translate3d(0,0,0)}
+  to{transform:rotate(0.85deg) translate3d(3px,2px,0)}
+}
+@keyframes ibMemSwayFar{
+  from{transform:rotate(0.4deg) translate3d(2px,0,0)}
+  to{transform:rotate(-0.6deg) translate3d(-2px,3px,0)}
+}
+
+/* 共振：微弱光点沿枝的走向短暂滑过（约 1.6s），只在真实卡片的 hover / focus
+   时触发；置顶卡片用极少量金色（--mem-gold 由 JS 从页面元素取值后落在
+   --ib-mem-warm 上，CSS 只负责换色）。 */
+.ib-mem-atmos__resonance{
+  position:absolute;
+  left:calc(var(--ib-navigation-width,0px) + 10px);top:54vh;
+  width:9px;height:9px;margin:-4px 0 0 -4px;border-radius:50%;
+  background:var(--accent-light);
+  filter:blur(5px);
+  opacity:0;pointer-events:none;will-change:transform,opacity;
+}
+#ib-mem-atmos-front.is-resonating-pinned .ib-mem-atmos__resonance{
+  background:var(--ib-mem-warm,var(--status-warning));
+}
+#ib-mem-atmos-front.is-resonating .ib-mem-atmos__resonance{
+  animation:ibMemResonanceTravel 1.6s cubic-bezier(0.4,0,0.2,1) both;
+}
+@keyframes ibMemResonanceTravel{
+  0%{opacity:0;transform:translate3d(0,0,0) scale(.6)}
+  18%{opacity:.5}
+  62%{opacity:.4;transform:translate3d(6vw,-27vh,0) scale(1)}
+  100%{opacity:0;transform:translate3d(10vw,-46vh,0) scale(.72)}
+}
+
+/* 花瓣画布：全屏、透明、不吃事件；绘制与数量上限由 JS 控制。 */
+.ib-mem-atmos__petals{
+  position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;
+}
+
+/* 氛围开关属于页面内容（插在 #page-memory .module-intro 内），不是视口浮层：
+   因此永远不会盖住统计条 / 卡片 / 工具条；宽度变化由页面流自然换行。
+   min-height 44px 保证触摸目标；状态点随 aria-pressed 切换。 */
+.ib-mem-atmos__control-row{
+  display:flex;align-items:center;gap:var(--space-3);
+  min-height:44px;margin-top:var(--space-3);
+}
+.ib-mem-atmos__toggle{
+  display:inline-flex;align-items:center;gap:8px;
+  min-height:44px;padding:0 15px;margin:0;
+  border:1px solid var(--glass-border-soft);border-radius:var(--radius-control);
+  background:var(--glass-bg-elevated);color:var(--content-secondary);
+  box-shadow:var(--shadow-card);
+  font-family:var(--font-ui);font-size:var(--fs-meta);font-weight:400;line-height:1;
+  letter-spacing:.16em;text-transform:uppercase;
+  cursor:pointer;
+  transition:color var(--motion-normal) cubic-bezier(0.4,0,0.2,1),
+    border-color var(--motion-normal) cubic-bezier(0.4,0,0.2,1),
+    background var(--motion-normal) cubic-bezier(0.4,0,0.2,1);
+}
+.ib-mem-atmos__toggle:hover{
+  color:var(--content-primary);
+  border-color:var(--border-strong);
+  background:var(--glass-bg-floating);
+}
+.ib-mem-atmos__toggle:active{background:var(--surface-pressed)}
+.ib-mem-atmos__toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.ib-mem-atmos__toggle-dot{
+  width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+  background:var(--accent-light);
+  box-shadow:0 0 6px color-mix(in srgb,var(--accent-light) 55%,transparent);
+  transition:background var(--motion-normal) cubic-bezier(0.4,0,0.2,1),
+    box-shadow var(--motion-normal) cubic-bezier(0.4,0,0.2,1);
+}
+.ib-mem-atmos__toggle-label{display:inline-block;white-space:nowrap}
+.ib-mem-atmos__toggle[aria-pressed="false"]{color:var(--content-muted)}
+.ib-mem-atmos__toggle[aria-pressed="false"] .ib-mem-atmos__toggle-dot{
+  background:var(--content-muted);box-shadow:none;
+}
+
+/* ---- 3. 省电 / 暂停：页面不在前台或图层关闭时冻结所有 CSS 动画 ---------- */
+
+#ib-mem-atmos-front.is-paused .ib-mem-atmos__bough,
+#ib-mem-atmos-front.is-paused .ib-mem-atmos__resonance,
+#ib-mem-atmos-back.is-paused .ib-mem-atmos__nebula,
+#ib-mem-atmos-back.is-paused .ib-mem-atmos__motes{
+  animation-play-state:paused;
+}
+
+/* ---- 4. 减少动态：枝与星雾静止，只有极淡的存在感 ----------------------- */
+
+@media (prefers-reduced-motion: reduce){
+  .ib-mem-atmos__bough,
+  .ib-mem-atmos__nebula,
+  .ib-mem-atmos__motes,
+  .ib-mem-atmos__resonance{animation:none}
+  #ib-mem-atmos-back,#ib-mem-atmos-front{
+    transition:none;
+  }
+}
+
+/* ---- 5. 响应式：窄屏收敛开关的内边距；枝的断点见上方第 2 节 ------------- */
+
+@media (max-width: 620px){
+  .ib-mem-atmos__toggle{padding:0 13px;letter-spacing:.12em}
+}
+
+/* ---- 6. 关闭态：氛围层完全退出（开关本身保留，以便随时恢复） ----------- */
+
+#ib-mem-atmos-back[data-enabled="false"]{
+  opacity:0;visibility:hidden;transition:none;
+}
+#ib-mem-atmos-front[data-enabled="false"] .ib-mem-atmos__bough,
+#ib-mem-atmos-front[data-enabled="false"] .ib-mem-atmos__petals,
+#ib-mem-atmos-front[data-enabled="false"] .ib-mem-atmos__resonance{
+  opacity:0;visibility:hidden;
+}
+#ib-mem-atmos-front[data-error="true"] .ib-mem-atmos__petals,
+#ib-mem-atmos-back[data-error="true"] canvas{
+  opacity:0;visibility:hidden;
+}

@@ -285,7 +285,14 @@
     var run = deps.process || admit;
     Promise.resolve().then(function () { return run(input, deps); })
       .then(function (result) { if (typeof deps.onResult === 'function') deps.onResult(result); })
-      .catch(function () {})
+      .catch(function () {
+        /* Keep the existing async boundary, but do not erase an unexpected
+           admission exception from the caller's existing turn trace. Never
+           forward exception text, candidate content, or provider details. */
+        if (typeof deps.onResult === 'function') {
+          try { deps.onResult(fail('admission-unavailable')); } catch (_) {}
+        }
+      })
       .then(function () { delete pendingByMessage[messageId]; });
   }
 

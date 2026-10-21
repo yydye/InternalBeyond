@@ -96,6 +96,33 @@
       ctx.degradedReason = (error && error.code) || 'home-node-unreachable';
       ctx.lastError = String((error && error.message) || error || '');
     }
+    /* The HTTP client resolves transport/HTTP failures as result objects instead
+       of rejecting. Keep those failures in the authority state too, so a failed
+       initial hydrate cannot leave remoteOnline=null/not-probed or accidentally
+       retain a previous healthy status. HTTP responses mean the service answered;
+       offline/transport results mean it did not. */
+    function noteRemoteResultFailure(result, fallbackCode) {
+      var code = String((result && (result.error || result.code)) || fallbackCode || 'home-node-request-failed');
+      var detail = String((result && (result.detail || result.message || result.error)) || code);
+      if (isTransportFailure(result)) {
+        noteRemoteFailure({ code: code, message: detail });
+        return;
+      }
+      if (Number(result && result.status) >= 100) ctx.remoteOnline = true;
+      ctx.degradedReason = code;
+      ctx.lastError = detail;
+    }
+    function remoteFailureResult(result, fallbackCode) {
+      noteRemoteResultFailure(result, fallbackCode);
+      return {
+        ok: false,
+        error: String((result && (result.error || result.code)) || fallbackCode || 'home-node-request-failed'),
+        status: result && result.status,
+        offline: !!(result && result.offline),
+        retryable: !!(result && result.retryable),
+        detail: result && (result.detail || result.message)
+      };
+    }
     function noteMirrorFailure(reason, error) {
       /* Home Node committed, but the materialized IndexedDB view is stale.
          Force the next read through a full hydrate and keep the UI degraded
@@ -144,11 +171,12 @@
       if (!remoteEnabled()) return Promise.resolve({ ok: true, skipped: true, reason: ctx.degradedReason });
       if (!ctx.hydrated || options.full) return hydrate(options);
       return remote.changes(ctx.cursor, { limit: options.limit }).then(function (res) {
-        if (!res || !res.ok) return Promise.resolve({ ok: false, error: (res && res.error) || 'changes-failed' });
+        if (!res || !res.ok) return remoteFailureResult(res, 'changes-failed');
         return applyChanges(res).then(function (applied) {
           ctx.cursor = res.cursor;
           ctx.remoteOnline = true;
           ctx.degradedReason = null;
+          ctx.lastError = null;
           ctx.lastSyncAt = clock();
           ctx.stats.syncs++;
           if (applied) log('memory-sync', { cursor: ctx.cursor, upserts: res.upserts.length, deletes: res.deletes.length, hasMore: !!res.hasMore });
@@ -164,7 +192,7 @@
       options = options || {};
       var seedLimit = options.seedLimit || DEFAULT_SEED_LIMIT;
       return remote.list({ limit: seedLimit }).then(function (page) {
-        if (!page || !page.ok) return { ok: false, error: (page && page.error) || 'list-failed' };
+        if (!page || !page.ok) return remoteFailureResult(page, 'list-failed');
         ctx.stats.hydrations++;
         /* 播种只写镜像：Home Node 是来源。
            先整表替换，避免 Home Node 已删除的行作为旧影子留在镜像里
@@ -174,6 +202,7 @@
           ctx.hydrated = true;
           ctx.remoteOnline = true;
           ctx.degradedReason = null;
+          ctx.lastError = null;
           ctx.lastSyncAt = clock();
           ctx.hasFullHistory = !page.truncated;
           log('memory-hydrate', { seeded: (page.records || []).length, cursor: ctx.cursor, truncated: !!page.truncated });

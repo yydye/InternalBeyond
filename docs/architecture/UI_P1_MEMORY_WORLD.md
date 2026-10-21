@@ -346,16 +346,18 @@ LIGHT_WORLD_IS_DARK_INVERSION = NO
 ### 17.7 星图共存
 
 ```
-STAR_MAP_COEXISTENCE_DECISION = C+B（迁入 Library 段 + 默认折叠）
+STAR_MAP_COEXISTENCE_DECISION = C+B（Memory World 单独使用时迁入 Library 段 + 默认折叠；原版 Coastline/Fathom 共用时移至共享视图位 + 默认展开）
 ```
 
 审计结论：既有星图是 **ambient 数据视图、没有任何交互** —— 点星只冒一下火花，
 不导航、不打开记忆（`memory/constellations.js:65-70`）。它却紧贴 Memory World
 入口下方，形成两个互相竞争的视觉场。
 
-处理：模块挂载时把它（连同 legend）**移入 Library 末尾的 `<details>` 折叠项**
-（`星图 · Star Map`），默认收起。**功能一个不删**：同样的 id、同样的
-`buildMemorySky`、同样的 legend；展开即用（canvas 由 ResizeObserver 在尺寸出现时重建）。
+处理：没有原版 Coastline 控件时，模块挂载把它（连同 legend）移入 Library 末尾的
+`<details>` 折叠项（`星图 · Star Map`），默认收起。存在 Coastline 控件时，折叠项
+移到共享仪表盘之前并默认展开，使 Library 与 Fathom 共用同一星图和 legend。**功能一个不删**：
+同样的 id、同样的 `buildMemorySky`、同样的 legend；折叠项展开即用（canvas 由 ResizeObserver
+在尺寸出现时重建）。
 `test_memory_smoke.js` 的星座断言针对自建 SVG，不受影响。
 
 ### 17.8 运动

@@ -60,8 +60,10 @@ async function main() {
 
     const onPage = await H.goToMemoryPage(cdp);
     check('entry.mountedOnMemoryPage', onPage, '#mem-world-entry 未出现在 Memory 页');
-    check('entry.sitsAfterModuleIntro',
-      await H.evaluate(cdp, "(function(){var p=document.getElementById('page-memory'),i=p.querySelector('.module-intro'),e=document.getElementById('mem-world-entry');return !!i && !!e && i.parentNode===p && i.nextSibling===e})()"));
+    check('entry.isSecondaryInCollapsedDisclosure',
+      await H.evaluate(cdp, "(function(){var d=document.getElementById('memory-world-entry-details'),s=document.getElementById('memory-world-entry-slot'),e=document.getElementById('mem-world-entry');return !!d && !d.open && !!s && !!e && e.parentNode===s})()"));
+    await H.evaluate(cdp, "document.getElementById('memory-world-entry-details').open=true");
+    await H.settle(cdp);
     check('entry.isRealButtonWithDialogSemantics',
       await H.evaluate(cdp, "(function(){var e=document.getElementById('mem-world-entry');return e.tagName==='BUTTON' && e.type==='button' && e.getAttribute('aria-haspopup')==='dialog' && e.getAttribute('aria-controls')==='mem-world-overlay' && !!e.getAttribute('aria-label')})()"));
     check('entry.usesCanvasesNotDomCards',

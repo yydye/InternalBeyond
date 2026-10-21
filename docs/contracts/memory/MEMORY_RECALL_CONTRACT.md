@@ -591,6 +591,12 @@ trace 的 candidate detail。**最好连标题也不进入** —— 只允许
 
 **MUST NOT**：每条 memory 的标题/正文被无条件打进生产日志。
 
+Fathom history is a separate, bounded event projection of successful authoritative
+Recall. It stores only character scope, source channel, time, direct ids, Association
+endpoint ids and relation labels, plus aggregate counts. Reads re-check current
+visibility. This does not add telemetry fields to `MemoryRecord`, change Recall
+selection, or persist user text.
+
 **FUTURE CONTRACT（durable recall telemetry 的前置条件）**：
 
 > 未来如果**任何** recall telemetry 被提升为 durable `MemoryRecord` 字段，

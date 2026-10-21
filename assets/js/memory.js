@@ -1,6 +1,7 @@
 ﻿/* ====================== MEMORY SYSTEM ====================== */
 /* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.memory 注册）。 */
 (function(NS){
+function memUiText(key,fallback,vars){try{if(window.IBI18n&&typeof window.IBI18n.t==='function'){var value=window.IBI18n.t(key,vars);if(value!==key)return value}}catch(e){}return fallback}
 function _memSafeJsArg(value){var guard=window.IBSafeImage;return guard&&typeof guard.jsArgument==='function'?guard.jsArgument(value):'""'}
 function _memSafeHtmlAttr(value){var guard=window.IBSafeImage;return guard&&typeof guard.escapeAttribute==='function'?guard.escapeAttribute(value):''}
 /* Ombre Brain 理念改造版：情感坐标 + 自然衰减 + 浮现机制 + 可见性控制 */
@@ -613,17 +614,17 @@ function getMemoryAuthorityUiState(readResult,readError){
   var revision=readResult&&readResult.revision!=null?Number(readResult.revision):null;
   if(status&&status.mode==='canonical'&&status.authority==='home-node'){
     if(status.authorityEffective===true&&status.remoteOnline===true&&status.hydrated===true&&status.fullHistory===true&&status.degraded!==true&&readFrom!=='mirror-degraded'&&!readError){
-      return{state:'canonical',label:'CANONICAL · HOME NODE',detail:'memory_records · IndexedDB 镜像已同步'+(Number.isFinite(revision)?' · revision '+revision:'')};
+      return{state:'canonical',label:memUiText('memory.authority.synced','已同步 · HOME NODE'),detail:memUiText('memory.authority.syncedDetail','记忆已与 Home Node 同步。')};
     }
     if(status.remoteOnline===false||status.degraded||readFrom==='mirror-degraded'||readError){
-      return{state:'degraded',label:'DEGRADED · HOME NODE',detail:'当前显示最近同步的 IndexedDB 镜像；新写入必须由 Home Node 确认'+(status.degradedReason?' · '+String(status.degradedReason):'')};
+      return{state:'degraded',label:memUiText('memory.authority.degraded','连接暂缓 · HOME NODE'),detail:memUiText('memory.authority.degradedDetail','正在显示最近同步的记忆，可能不是最新；新增或更改需经 Home Node 确认。')};
     }
-    return{state:'syncing',label:'SYNCING · HOME NODE',detail:'canonical Memory 镜像尚未完成完整同步。'};
+    return{state:'syncing',label:memUiText('memory.authority.syncing','正在同步 · HOME NODE'),detail:memUiText('memory.authority.syncingDetail','记忆正在同步，稍后即可查看。')};
   }
   if(status&&(status.authority==='indexeddb'||status.mode==='mirror'||status.mode==='off'||status.fileOrigin===true)){
-    return{state:'local',label:'LOCAL ONLY · INDEXEDDB',detail:'当前是浏览器本地模式；这份数据不是 Home Node canonical Memory。'};
+    return{state:'local',label:memUiText('memory.authority.local','仅本机可见 · LOCAL'),detail:memUiText('memory.authority.localDetail','这些记忆保存在此浏览器，尚未与 Home Node 同步。')};
   }
-  return{state:'unavailable',label:'AUTHORITY UNKNOWN',detail:'无法确认 Memory 数据来源；请检查 Home Node 状态。'};
+  return{state:'unavailable',label:memUiText('memory.authority.unknown','来源待确认 · SOURCE UNKNOWN'),detail:memUiText('memory.authority.unknownDetail','暂时无法确认记忆是否同步；请检查 Home Node 连接后重试。')};
 }
 function updateMemoryAuthorityStatus(readResult,readError){
   const root=document.getElementById('memory-authority-status');
@@ -636,20 +637,39 @@ function updateMemoryAuthorityStatus(readResult,readError){
   if(detail)detail.textContent=info.detail;
   return info;
 }
+function refreshMemoryAuthorityCopy(){
+  const root=document.getElementById('memory-authority-status');if(!root)return;
+  const copy={
+    canonical:['memory.authority.synced','已同步 · HOME NODE','memory.authority.syncedDetail','记忆已与 Home Node 同步。'],
+    degraded:['memory.authority.degraded','同步受阻 · HOME NODE','memory.authority.degradedDetail','正在显示最近同步的记忆，可能不是最新；新增或更改需经 Home Node 确认。'],
+    syncing:['memory.authority.syncing','正在同步 · HOME NODE','memory.authority.syncingDetail','记忆正在同步，稍后即可查看。'],
+    local:['memory.authority.local','仅本机可见 · LOCAL','memory.authority.localDetail','这些记忆保存在此浏览器，尚未与 Home Node 同步。'],
+    unavailable:['memory.authority.unknown','来源待确认 · SOURCE UNKNOWN','memory.authority.unknownDetail','暂时无法确认记忆是否同步；请检查 Home Node 连接后重试。']
+  }[root.dataset.state]||['memory.authority.unknown','来源待确认 · SOURCE UNKNOWN','memory.authority.unknownDetail','暂时无法确认记忆是否同步；请检查 Home Node 连接后重试。'];
+  const label=document.getElementById('memory-authority-label'),detail=document.getElementById('memory-authority-detail');
+  if(label)label.textContent=memUiText(copy[0],copy[1]);if(detail)detail.textContent=memUiText(copy[2],copy[3]);
+}
+document.addEventListener('ib:locale-changed',refreshMemoryAuthorityCopy);
+/* Home Node bootstrap may recover after this page's first local-mirror render.
+   Refresh the visible authority badge when its existing sync path completes;
+   do not wait for the user to leave and reopen Memory. */
+try{window.addEventListener('ib:memory-authority-sync',function(){updateMemoryAuthorityStatus()})}catch(e){}
 function _memoryUiMutationFailure(action,error,completed){
   updateMemoryAuthorityStatus(null,error);
   const code=String(error&&error.code||'');
+  const actionKeys={'读取详情':'details','读取':'read','保存':'save','更新':'update','删除':'delete','更新状态':'resolve','置顶':'pin','导出':'export','导入':'import','清理':'clean'};
+  const actionText=memUiText('memory.action.'+(actionKeys[action]||''),action);
   let message;
   if(code==='home-node-offline'||code==='home-node-unhealthy'||/unreachable|timeout/i.test(code)){
-    message='Home Node 当前不可用，'+action+'未获 canonical 确认。';
+    message=memUiText('memory.homeNodeUnavailable','Home Node 暂时不可用，记忆未能{action}。',{action:actionText});
   }else if(code.indexOf('memory-authority-')===0||code==='canonical-memory-authority-unavailable'){
-    message='canonical Memory authority 未就绪，'+action+'未执行。';
+    message=memUiText('memory.homeNodeNotReady','Home Node 尚未就绪，记忆未能{action}。',{action:actionText});
   }else if(code==='home-node-rejected'||code==='invalid-record'){
-    message='Home Node 拒绝了这次'+action+'，未保存。';
+    message=memUiText('memory.homeNodeRejected','Home Node 未接受这次记忆{action}，内容未保存。',{action:actionText});
   }else{
-    message='Memory '+action+'失败，未确认写入。';
+    message=memUiText('memory.actionFailed','记忆{action}未能完成，请稍后重试。',{action:actionText});
   }
-  if(Number(completed)>0)message+=' 已确认写入 '+Number(completed)+' 条；其余未完成。';
+  if(Number(completed)>0)message+=memUiText('memory.actionPartiallyCompleted',' 已确认完成 {count} 条；其余尚未完成。',{count:Number(completed)});
   toast(message);
 }
 
@@ -675,7 +695,7 @@ async function renderMemories(){
   try{all=await dbGetAll('memories');updateMemoryAuthorityStatus(all)}catch(e){
     updateMemoryAuthorityStatus(null,e);
     const failedList=document.getElementById('mem-list');
-    if(failedList)failedList.textContent='Memory 暂时无法读取；请检查 Home Node 状态后重试。';
+    if(failedList)failedList.textContent=memUiText('memory.readFailed','记忆暂时无法读取；请检查 Home Node 连接后重试。');
     return;
   }
   if(!Array.isArray(all))all=[];
@@ -1136,11 +1156,11 @@ async function exportMemories(){
     all=await dbGetAll('memories');
     authorityState=updateMemoryAuthorityStatus(all);
   }catch(e){_memoryUiMutationFailure('导出',e);return}
-  if(!all.length){toast('没有记忆可导出');return}
+  if(!all.length){toast(memUiText('memory.exportEmpty','此刻没有可导出的记忆。'));return}
   downloadJSON(all,'memories_backup_'+new Date().toISOString().slice(0,10)+'.json');
   const state=authorityState&&authorityState.state;
-  const sourceNote=state==='degraded'?' · 来自最近同步的镜像，可能不是最新':state==='local'?' · 当前为本机 IndexedDB 数据，不是 Home Node canonical Memory':state==='canonical'?'':' · Memory authority 状态未确认';
-  toast('记忆已导出（'+all.length+'条）'+sourceNote);
+  const sourceNote=state==='degraded'?memUiText('memory.exportDegraded',' · 这是最近同步的副本，可能不是最新'):state==='local'?memUiText('memory.exportLocal',' · 这是此设备上的记忆副本'):state==='canonical'?'':memUiText('memory.exportUnknown',' · 记忆来源尚未确认');
+  toast(memUiText('memory.exportSuccess','已带走 {count} 段记忆。',{count:all.length})+sourceNote);
 }
 
 /* --- 导入记忆：每条都经过同一 canonical dbPut seam --- */

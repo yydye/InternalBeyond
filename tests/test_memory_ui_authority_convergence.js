@@ -15,6 +15,7 @@ const siteOperations = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'site-ope
 const core = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8');
 const localVault = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'local-vault.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'InternalBeyond.html'), 'utf8');
+const i18n = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'i18n.js'), 'utf8');
 const memoryContract = fs.readFileSync(path.join(ROOT, 'docs', 'contracts', 'memory', 'MEMORY_RECALL_CONTRACT.md'), 'utf8');
 const authorityModule = require(path.join(ROOT, 'assets', 'js', 'memory-authority.js'));
 const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memory-store.js'));
@@ -92,16 +93,20 @@ async function main() {
       && /memoryAuthority\.get\(key\)/.test(wrapperGet)
       && /memoryAuthority\.getAll\(\)/.test(wrapperGetAll));
   check('Memory UI labels canonical/degraded/local source and surfaces write failures',
-    /CANONICAL · HOME NODE/.test(memoryUi)
-      && /DEGRADED · HOME NODE/.test(memoryUi)
-      && /LOCAL ONLY · INDEXEDDB/.test(memoryUi)
+    /memory\.authority\.synced/.test(memoryUi)
+      && /memory\.authority\.degraded/.test(memoryUi)
+      && /memory\.authority\.local/.test(memoryUi)
       && /status\.degraded!==true/.test(memoryUi)
-      && /Home Node 当前不可用/.test(memoryUi));
+      && /memory\.homeNodeUnavailable/.test(memoryUi)
+      && /'memory\.authority\.synced':/.test(i18n)
+      && /'memory\.authority\.degraded':/.test(i18n)
+      && /'memory\.authority\.local':/.test(i18n)
+      && /'memory\.homeNodeUnavailable':/.test(i18n));
   check('Memory World exposes the same source state while open',
     /mem-world-authority/.test(worldUi) && /getMemoryAuthorityUiState/.test(worldUi));
   check('Auto Memory remains a separately labeled role archive and parallel recall path',
-    /Auto Memory · 角色档案/.test(html)
-      && /不属于 Home Node canonical Memory，也不参与 canonical Recall/.test(html)
+    /'memory\.autoMemory':/.test(i18n)
+      && /'memory\.autoMemoryAuthority':/.test(i18n)
       && /dbGetByIndex\('autoMemory','byFriend'/.test(autoMemory)
       && /独立 store `autoMemory`/.test(memoryContract)
       && /Auto Memory \*\*不得\*\*被描述为 canonical Memory 的 producer/.test(memoryContract));

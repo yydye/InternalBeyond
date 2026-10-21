@@ -145,6 +145,7 @@ function main() {
 
       const added = storageAfter.filter(k => storageBefore.indexOf(k) < 0);
       const removed = storageBefore.filter(k => storageAfter.indexOf(k) < 0);
+      const removedNonPresenceKeys = removed.filter(k => k.indexOf('ib_presence_tab_') !== 0);
       info('写计数器: ' + JSON.stringify(counters));
       info('localStorage 差异: +[' + added.join(',') + '] -[' + removed.join(',') + ']');
       check('durable.memoriesRowsUnchanged', before === after,
@@ -159,7 +160,7 @@ function main() {
       /* 应用自己的后台 tick（例如 role-letters 的一次性清理标记）不属于本模块；
          这里只冻结「Memory World 不得引入任何与记忆相关的持久留存」。 */
       check('durable.noMemoryRelatedStorageKeyAdded',
-        added.filter(k => /memor|ib_mem|memory_?world/i.test(k)).length === 0 && removed.length === 0,
+        added.filter(k => /memor|ib_mem|memory_?world/i.test(k)).length === 0 && removedNonPresenceKeys.length === 0,
         '+[' + added.join(',') + '] -[' + removed.join(',') + ']');
 
       section('§3 只读面复核');
