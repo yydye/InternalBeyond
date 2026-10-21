@@ -1,6 +1,6 @@
 {
   "schema": "ib-guide-shots/1",
-  "guideVersion": "1.0",
+  "guideVersion": "1.1",
   "viewport": { "width": 1440, "height": 900, "deviceScaleFactor": 1 },
   "shotDir": "docs/guide/shots",
   "renderer": "scripts/capture-guide-shots.js",
@@ -13,15 +13,13 @@
   ],
   "shots": [
     {
-      "id": "01-welcome",
-      "file": "01-welcome.png",
-      "title": "首启欢迎页",
-      "chapter": "welcome",
-      "prepare": "splash",
-      "target": ".splash-buttons",
-      "label": "第一次使用，点「开始设置」",
-      "region": "box",
-      "caption": "第一次打开 IB 时看到的欢迎页"
+      "id": "01-home",
+      "file": "01-home.png",
+      "title": "主页概览",
+      "chapter": "home",
+      "prepare": "home-start",
+      "region": "none",
+      "caption": "主页展示最近活动和继续聊天入口；首次设置由向导单独引导"
     },
     {
       "id": "02-provider",
@@ -46,15 +44,15 @@
       "caption": "向导第 3 步：填入 API Key（输入框默认只显示圆点）"
     },
     {
-      "id": "04-test-ok",
-      "file": "04-test-ok.png",
+      "id": "04-test-mock",
+      "file": "04-test-mock.png",
       "title": "测试连接成功",
       "chapter": "ai",
       "prepare": "wizard-test-ok",
       "target": ".ib-setup-msg.is-ok",
-      "label": "看到「连接成功」就对了",
+      "label": "本地 mock 的成功响应示例",
       "region": "box",
-      "caption": "向导第 5 步：点「测试连接」，看到成功的提示"
+      "caption": "本图使用本地 mock 响应演示界面状态，不代表任何外部 AI 服务已连接"
     },
     {
       "id": "05-role",
@@ -68,8 +66,8 @@
       "caption": "向导第 6 步：填写角色昵称与说话方式"
     },
     {
-      "id": "06-done",
-      "file": "06-done.png",
+      "id": "06-setup-complete",
+      "file": "06-setup-complete.png",
       "title": "设置完成",
       "chapter": "role",
       "prepare": "wizard-done",
@@ -84,10 +82,8 @@
       "title": "主聊天页",
       "chapter": "chat",
       "prepare": "chat-demo",
-      "target": "#chat-full-input",
-      "label": "在这里输入，按回车发送",
-      "region": "box",
-      "caption": "Chat 页：左侧是好友列表，底部是输入框与发送按钮"
+      "region": "none",
+      "caption": "Chat 页：左侧是好友列表，右侧显示对话，底部是消息输入框"
     },
     {
       "id": "08-api-entry",
@@ -117,10 +113,10 @@
       "title": "主动消息入口",
       "chapter": "active",
       "prepare": "active-page",
-      "target": ".active-switch-line",
-      "label": "打开这个开关，TA 才会主动找你",
+      "target": ".active-card-title",
+      "label": "先查看主动规划的运行方式",
       "region": "box",
-      "caption": "Active 页：打开「允许角色主动联系」并设置频率"
+      "caption": "Active 页：了解主动规划规则，再按需开启角色主动联系"
     },
     {
       "id": "11-moments",
@@ -145,15 +141,15 @@
       "caption": "Chat 页右上角的电话按钮：发起语音通话"
     },
     {
-      "id": "13-diagnostics-ok",
-      "file": "13-diagnostics-ok.png",
-      "title": "Diagnostics 正常",
+      "id": "13-diagnostics-pending",
+      "file": "13-diagnostics-pending.png",
+      "title": "Diagnostics 待检查状态",
       "chapter": "diagnostics",
-      "prepare": "diag-normal",
-      "target": "#ib-diag-headline",
-      "label": "一切正常时会这样写",
+      "prepare": "diag-pending",
+      "target": "#ib-diag-service-list [data-cap=\"credentialVault\"]",
+      "label": "Vault 只读状态尚未验证",
       "region": "box",
-      "caption": "一切正常时，Diagnostics 顶部会写「系统运行正常」"
+      "caption": "无法验证的只读状态会显示为待检查，不会被写成正常"
     },
     {
       "id": "14-diagnostics-degraded",
@@ -161,8 +157,8 @@
       "title": "Diagnostics 部分不可用",
       "chapter": "diagnostics",
       "prepare": "diag-degraded",
-      "target": "#ib-diag-list",
-      "label": "看哪一项显示「不可用」",
+      "target": "#ib-diag-service-list [data-cap=\"bridge\"]",
+      "label": "这里会说明 Bridge 服务不可用",
       "region": "box",
       "caption": "部分功能不可用时，会写清哪一项出了问题"
     },

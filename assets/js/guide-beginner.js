@@ -24,7 +24,7 @@
      真实产品版本来自单一版本源 VERSION：由启动器附加在地址栏（?ibv=x.y.z），
      或由宿主定义 window.IB_GUIDE_VERSION 注入。两者都没有时使用指南内容版本——
      版本标识永远不发起网络请求，也不影响阅读与操作。 */
-  var VERSION_FALLBACK = '1.0';
+  var VERSION_FALLBACK = '1.1';
 
   function versionFromUrl() {
     try {
@@ -50,17 +50,17 @@
   var CHAPTERS = [
     {
       id: 'welcome',
-      title: '欢迎使用 InternalBeyond',
-      goal: '先花一分钟认识这个页面：它是什么、你的东西存在哪里、下一步该点哪个按钮。',
-      shots: [{ id: '01-welcome', caption: '第一次打开 IB 时看到的欢迎页' }],
+      title: '从主页开始',
+      goal: '先认识主页与设置向导，再决定下一步要去哪里。',
+      shots: [{ id: '01-home', caption: '主页中的最近活动与继续聊天入口' }],
       steps: [
-        '打开 InternalBeyond 后，你会先看到欢迎页。页面上有三个按钮：「游戏引导」「开始设置」「查看说明」。',
-        '第一次使用，请点「开始设置」。它会带你一步步把 AI 配好，大约三分钟。',
-        '想先看看再配置，就点底部的「跳过，直接探索」；之后随时可以回来重新设置。'
+        '主页集中展示最近活动和继续聊天入口。第一次打开时，设置向导会自动出现。',
+        '按向导配置 AI 和角色；如果想稍后再设，也可以先关闭向导，之后从 API 页面重新打开。',
+        '配置完成后，主页和左侧导航都可以带你进入 Chat、Memory、社交圈等页面。'
       ],
       tip: {
         title: '遇到问题？',
-        text: '你的聊天、记忆、信件等内容都保存在你自己的这台电脑上，不会自动上传到别的地方。想留个备份，用右上角的 Export 导出一份存档文件即可。'
+        text: '应用数据保存在本机。使用云端 AI 时，请求所需的提示词、对话上下文和所选附件会发送给你配置的服务商；也可以配置本地模型。备份可用右上角的 Export 导出。'
       }
     },
     {
@@ -88,7 +88,7 @@
       title: '添加 / 配置 AI',
       goal: '让 IB 连上你选择的 AI 服务，并确认连接是通的。',
       shots: [
-        { id: '04-test-ok', caption: '向导第 5 步：点「测试连接」，看到成功的提示' },
+        { id: '04-test-mock', caption: '向导测试步骤的本地 mock 成功状态示例' },
         { id: '08-api-entry', caption: 'API 设置页：顶部是获取 API Key 的入口，下方是「+ 添加API」' }
       ],
       steps: [
@@ -109,7 +109,7 @@
       goal: '给这个 AI 起个名字、写一句性格设定，它就成为聊天列表里的一个「好友」。',
       shots: [
         { id: '05-role', caption: '向导第 6 步：填写角色昵称与说话方式' },
-        { id: '06-done', caption: '向导第 7 步：设置完成，点「开始聊天」' }
+        { id: '06-setup-complete', caption: '向导第 7 步：设置完成，点「开始聊天」' }
       ],
       steps: [
         '在向导最后一步填写角色昵称，例如「小助手」。',
@@ -125,7 +125,7 @@
       id: 'chat',
       title: '开始聊天',
       goal: '发出第一条消息，并知道在哪里看回复。',
-      shots: [{ id: '07-chat', caption: 'Chat 页：左侧是好友列表，底部是输入框与发送按钮' }],
+      shots: [{ id: '07-chat', caption: 'Chat 页：左侧是好友列表，中间是对话，底部是输入框' }],
       steps: [
         '打开左侧导航的「Chat」。',
         '在左侧「好友列表」里点一个角色。',
@@ -222,7 +222,7 @@
       title: '系统诊断与故障恢复',
       goal: '某个功能不好用时，用这一个页面就能看懂问题、尝试修复、导出报告。',
       shots: [
-        { id: '13-diagnostics-ok', caption: '一切正常时，Diagnostics 顶部会写「系统运行正常」' },
+        { id: '13-diagnostics-pending', caption: '无法验证的只读状态会显示为待检查，不会被写成正常' },
         { id: '14-diagnostics-degraded', caption: '部分功能不可用时，会写清哪一项出了问题' },
         { id: '15-repair', caption: '可以修复的问题会出现「尝试修复」按钮' },
         { id: '16-export', caption: '修不好就点「导出诊断报告」，把文件发给维护者' }

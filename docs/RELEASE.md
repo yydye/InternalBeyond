@@ -759,7 +759,7 @@ primary 直连 200 一次成功，回退门（`fallbackAllowed(result) === (resu
 真实构建回归默认不跑（需要 Inno Setup 6，约 35 s），见
 [P7-TEST-BUDGET.md](P7-TEST-BUDGET.md)。
 
-## 10. Windows 1.0.8 / P35 打包与验收规则
+## 10. Windows 1.1.1 / P35 打包与验收规则
 
 本节是当前 Windows 产品打包规则；产品版本以根目录 `VERSION` 为准。Tauri Host 由锁定的 Cargo
 依赖构建，`src-tauri/Cargo.toml` 版本必须与 `VERSION` 一致；`installer/InternalBeyond.iss` 经
@@ -772,7 +772,9 @@ primary 直连 200 一次成功，回退门（`fallbackAllowed(result) === (resu
   信任公钥及 Work Mode UI 接线；不包含完整 `runtime/dsh-runtime`。完整 DSH Runtime 只进入独立的
   `InternalBeyond-DSH-Runtime-<runtime-version>-windows-x64.zip`，不随主程序安装。
 - P35 ZIP 必须与 pin 中的 Runtime 版本、源码 revision、目标架构、文件数、SHA-256 和产品兼容范围
-  一致。`dsh-runtime-stable.json` 由 `scripts/sign-dsh-runtime-release.js` 在本地离线签名，客户端
+  一致。兼容范围来自 `runtime/dsh-runtime-package-pin.json`；仍处于该范围内的 IB 补丁版本复用同一
+  ZIP，避免仅因 IB 版本号变化而改变已签名归档。修改兼容范围时必须重新生成 ZIP 并离线签署
+  `dsh-runtime-stable.json`。客户端
   使用 `runtime/dsh-runtime-release-trust.json` 中的公钥校验后才允许安装；私钥不得上传。已安装
   Runtime 应能在离线时继续启动，清单或网络故障不得替换、删除已有版本。
 - 旧版内嵌 DSH 只根据旧版 `ib-payload-manifest.json` 中声明的文件迁移到

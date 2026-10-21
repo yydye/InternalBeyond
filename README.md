@@ -5,10 +5,10 @@
 >
 > Project-IB (边界之外) began on **May 23, 2026**. **InternalBeyond** is the name of its primary implementation / engineering system.
 
-**一个离线运行、数据留在本机的个人 AI 陪伴站。** 支持同时对接多个 AI 模型，
-包含像素互动房间、多角色聊天、社交圈、长期记忆、日记、书信、代码工作区等 13 个模块与两套视觉主题。
+**一个本机优先的个人 AI 陪伴应用。** 个人数据保存在本机，可连接云端 AI 服务或你自己运行的本地模型；联网模型请求会发送到你选择的服务商。
+包含像素互动房间、多角色聊天、社交圈、长期记忆、语音与角色形象、工作模式、日记、书信和代码工作区等功能，并提供两套视觉主题。
 
-`Windows 10+` · 当前版本 **1.0.8** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
+`Windows 10+` · 当前版本 **1.1.2** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
 
 > **本仓库是 [Sui](https://github.com/Sui-IB) 的 [Internal Beyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版本**（已与原作者沟通）。原作者署名、原项目地址与许可文件全部保留，改动内容说明见文末「关于本仓库 / About this fork」。
 > This is an **unofficial derivative** of [Sui](https://github.com/Sui-IB)'s Internal Beyond — original project: <https://github.com/Sui-IB/InternalBeyond>.
@@ -17,7 +17,7 @@
 
 ## ⬇ 下载 InternalBeyond for Windows
 
-**正式发行文件：`InternalBeyond-Setup-<版本号>.exe`（约 49 MB，`<版本号>` 即本文开头标注的当前版本）**
+**正式发行文件：`InternalBeyond-Setup-<版本号>.exe`，`<版本号>` 即本文开头标注的当前版本。**
 
 👉 **[前往 GitHub Releases 下载最新版](https://github.com/yydye/InternalBeyond/releases)**
 
@@ -86,15 +86,17 @@
 
 ## 功能预览
 
-截图来自 P6 图文教程管线：真实页面 + 全新临时浏览器配置 + 合成演示数据（不含任何真实密钥与私人数据）。
+截图由 1.1.2 页面通过 P6 图文教程管线生成：使用全新临时浏览器配置、合成演示数据和本地 mock Provider，不含真实密钥或私人数据，也不代表外部服务验收。
 
 | Chat · 多角色对话 | 社交圈 · Moments / Social Net | 系统诊断 · Diagnostics |
 |---|---|---|
-| ![Chat](docs/guide/shots/07-chat.png) | ![社交圈](docs/guide/shots/11-moments.png) | ![系统诊断](docs/guide/shots/13-diagnostics-ok.png) |
+| ![Chat](docs/guide/shots/07-chat.png) | ![社交圈](docs/guide/shots/11-moments.png) | ![系统诊断](docs/guide/shots/13-diagnostics-pending.png) |
 
 ---
 
 ## 功能一览
+
+本次更新：[`InternalBeyond 1.1.2 发布说明`](docs/release-notes/1.1.2.md) · [`完整变更历史`](docs/CHANGELOG.md)
 
 | 模块 | 说明 |
 |------|------|
@@ -104,16 +106,21 @@
 | **Blog** | 日志 / 密码日记本 / AI 评论 / AI 批注 / 自定义剧本 |
 | **Letters** | AI 书信 — 异步通信，AI 读取你的资料后写回信 |
 | **Role DM** | 角色私信 — 角色之间的持久私聊：对方只以自己的**公开资料**出现，带上**有向关系**（信任 / 熟悉 / 好感）与**跨会话共同历史备忘**；可在开关开启后自主发起（有日额、冷却、退避与免打扰） |
-| **Memory** | 长期情感记忆库 — 星图可视化 + 自然衰减 + API 上下文自动注入 + Auto Memory（AI 自主记忆） |
+| **Memory** | 长期情感记忆库 — 星图与海岸线视图、关联追溯、自然衰减、上下文注入和 Auto Memory；Memory V2 召回仍为显式可选，V1 是默认模式 |
 | **Active** | 全天候主动信息 — 每天 / 每周 / 自定义间隔，结合角色设定、关系、Memory、时间与最近聊天生成；关页后仍可继续（本地服务随应用自动启动） |
 | **Moments** | AI 朋友圈 → 已升级为 **社交圈（AI 社交网络）**：角色拥有主页（Banner/头像/@账号/简介/签名/关注）、混合 Feed（文字/图片/点赞/评论/回复线程/转发引用）、好友目录与完整讨论串；角色自主发布、互评互赞与私人日志全部保留（有冷却与去重） |
 | **Music** | 本地音乐播放器 + 48 条频率可视化波形 |
+| **Map** | 环球旅行地图与角色旅程记录；可在聊天中引用选定地点与旅行内容 |
 | **Profile** | 液态玻璃风格个人名片 — 头像 + 简介 + 作品集 |
 | **API** | 角色配置中心 — 角色数量不限，各有昵称、关系与提示词；单个群聊最多 10 名成员 |
 | **ICode** | AI 代码工作区 — 文件管理 + 预览 + 内联编辑 + 搜索定位 + 脚本沙箱运行 + 文档生成（DOCX / PDF / XLSX） |
-| **DIY** | 自定义透明立绘、占卜桌布、外部工具、MCP 服务器、沙箱扩展与文件解析库 |
+| **DIY Workshop** | 自定义工具、MCP 服务器、文件解析与沙箱扩展；Puppet Studio 可编辑分层角色、骨骼和动作，并导出供视频通话使用的 IB Puppet 形象 |
+| **QQ 接入** | QQ Official Bot 与 OneBot / NapCat 可选接入；按账号和授权对象隔离，连接与权限由用户配置 |
+| **Voicebox / Calls** | 语音库、ASR / TTS 与语音通话；角色可绑定静态立绘或分层动画形象，Voicebox 本地运行时需单独配置 |
+| **Work Mode / DSH** | 需要明确授权的本地 Agent 工作运行、项目与结果管理；可选 DSH Runtime 独立下载，不是主安装包的依赖 |
+| **Agent Economy** | 本地虚拟钱包、目录与库存，带预算、授权和结算边界 |
 
-配套能力：语音通话（Phase 1 浏览器 VAD + 回合式 ASR/TTS）、共读 / 观影等陪伴活动、AI 日记、收藏夹、行为观测层。
+配套能力：共读 / 观影等陪伴活动、AI 日记、收藏夹、行为观测层。仓库包含 Android Home Node 客户端源码预览；本次 Release 不提供 Android 安装包。
 
 ## 主题系统
 
@@ -126,16 +133,17 @@
 Anthropic、OpenAI、Grok、DeepSeek、Gemini、GLM、Qwen、豆包、Moonshot、MiMo、MiniMax、Yi、百川、Mistral，以及任意 OpenAI 兼容的自定义中转站。
 **角色数量不限**；单个群聊最多 10 名成员。
 
-- **云端 API**：在 API 页添加密钥即可；支持 Anthropic 原生格式与 OpenAI 兼容格式。
+- **云端 API**：在 API 页配置服务；支持 Anthropic 原生格式与 OpenAI 兼容格式。只有你发起的功能请求会将对应内容交给所选服务商处理。
 - **本机模型（可选）**：**API → 数据保险 → 本地优先中心** 提供 Ollama（`127.0.0.1:11434`）、LM Studio（`127.0.0.1:1234`）、vLLM / OpenAI 兼容服务（`127.0.0.1:8000`）预设。仅允许回环端点，因此本机模型可以不填 API Key。
 - **离线就绪度**：文件解析库按需下载并缓存；Python / Pyodide 运行时仍是按需资源。
 - **静谧模式**：关闭背景动效、玻璃模糊与长过渡，适合省电、低性能设备与专注写作。
 
 ## 数据与隐私
 
-- **数据在你自己的电脑上**：核心数据保存在浏览器 IndexedDB；只有你显式开启"关页调度"的 Active 计划才会额外写入本机服务的数据文件。不使用云端调度服务器，不上传聊天内容。
+- **本地数据**：角色、聊天、Memory 与设置保存在浏览器或本机应用数据目录；Home Node / Active 服务运行在本机，不依赖 InternalBeyond 的云端数据服务器。
+- **模型请求**：使用云端模型时，当前请求所需的提示词、对话上下文及你选择的附件会发送给对应服务商；配置回环地址的本地模型可让这些模型请求留在本机。API Key 由本机 Credential Vault 管理，不随源码或诊断报告公开。
 - **导出 / 导入**：右上角 **Export** 导出备份，**Import** 导入；另有加密 `.ibvault` 备份。
-- **⚠ 备份建议**：数据仅存于浏览器本地，清除浏览器数据或换浏览器将永久丢失，请定期导出。
+- **⚠ 备份建议**：浏览器 IndexedDB 与本机应用数据分开保存；更换浏览器或清理浏览器数据前，请先使用 **Export** 导出备份。
 - **设备兼容性**：需支持 IndexedDB、CSS backdrop-filter、ES6+ 的现代浏览器（推荐 Chrome / Edge / Firefox 最新版）。Windows / macOS / Linux、iPhone / iPad、Android / HarmonyOS 均可访问；Room 模块设计视口 1672×941px，桌面端体验最佳。
 
 ---
@@ -255,9 +263,9 @@ vision/                    # 可选本地视觉服务（Python，默认不随包
 
 ## Introduction (EN)
 
-**InternalBeyond** is a local-first personal AI companion site that runs offline and keeps your data on your own machine.
+**InternalBeyond** is a local-first personal AI companion app. Personal data stays on your device; AI requests go to the cloud provider you configure, or to a local model if you choose one.
 It is the primary implementation of the project **Project-IB (边界之外)**, which began on **May 23, 2026**.
-It ships 13 feature modules, two visual themes, and can talk to 15 AI providers at once.
+It includes two visual themes and multiple companion, memory, voice, workspace and social features, with 15 provider presets plus OpenAI-compatible endpoints.
 
 **Download for Windows:** see [GitHub Releases](https://github.com/yydye/InternalBeyond/releases) →
 `InternalBeyond-Setup-<version>.exe`. No Node.js, npm, Python, PowerShell or admin rights required;
@@ -282,6 +290,12 @@ Your data (characters, API settings, Memory, Diary, Moments) is always preserved
 - **Memory** — long-term emotional memory with star map, natural decay, automatic context injection and Auto Memory.
 - **Active** — character-initiated messages on daily / weekly / custom schedules; keeps running after the browser closes.
 - **Moments / Social Net** — AI social network: profiles, mixed feed, likes, comment threads, reposts, private logs and autonomous posting.
+- **QQ integrations** — optional QQ Official Bot and OneBot / NapCat adapters with account and authorization boundaries; users configure and connect their own accounts.
+- **Voicebox and calls** — voice profiles, ASR / TTS, voice calls and role-bound animated portraits. The optional Voicebox runtime is configured separately.
+- **Work Mode / DSH** — consented local Agent runs with project and result tracking; the optional DSH Runtime is a separate download.
+- **Map and travel** — a world map for character journeys and places that can be referenced in chat.
+- **DIY Workshop** — create tools and MCP connections; Puppet Studio edits layered characters, bones and actions for the IB Puppet call renderer.
+- **Agent Economy** — local virtual wallet, catalog and inventory with budget and approval boundaries.
 - **Music** — local audio player with a 48-band visualizer.
 - **Profile** — liquid-glass personal card.
 - **API** — unlimited characters with custom nicknames, relationships and system prompts; up to 10 members per group chat.
@@ -290,8 +304,7 @@ Your data (characters, API settings, Memory, Diary, Moments) is always preserved
 
 Also included: voice calls, co-reading / cinema activities, AI diary, favorites and a behavior observation layer.
 
-**Data & privacy** — everything is stored locally (browser IndexedDB plus, only for schedules you explicitly enable,
-a local service data file). Nothing is uploaded to a scheduling server. Use **Export** / **Import** for backups.
+**Data & privacy** — app data is stored in browser storage or the local application data directory; Home Node and Active run on your device. A cloud AI request sends the selected prompt, conversation context and any selected attachments to the provider you configured. A loopback local model keeps that model request on-device. Use **Export** / **Import** for backups.
 
 **Developers** — run from source by cloning the repository and opening `InternalBeyond.html`, or run the local services with
 `start-local-services.cmd`. Full details, ports, runtime resolution and test/build commands are in the Chinese

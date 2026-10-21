@@ -3,6 +3,14 @@
 > 本文档回答「以前发生过什么」。当前状态与待办见 [HANDOVER.md](HANDOVER.md)；机制如何工作见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 > 注：原 HANDOVER.md 的章节编号 9.x 沿用为时间线索引；原文即无 9.31，非遗漏。各条目中记录的测试断言/入口计数以当日原文为准（不同轮次间存在小幅出入，未作统一改写）。
 
+## 1.1.2 · Windows desktop release
+
+- Added optional QQ Official Bot and OneBot / NapCat integrations with account-scoped configuration.
+- Added Voicebox controls and Puppet Studio for editing role-bound layered call characters; the release contains no sample character art or Cubism Core.
+- Expanded Home Node and Memory surfaces, keeping Memory V1 as the default and Memory V2 as opt-in.
+- Added consented Work Mode runs with the DSH Runtime distributed separately, alongside map, travel, music and cinema improvements.
+- Hardened local credential, service lifecycle and recovery boundaries. See the [1.1.2 release notes](release-notes/1.1.2.md) for setup and download details.
+
 ## ✦ 作者彩蛋（关系是怎么"演"出来的）
 
 `［叙事］` 有一件被作者本人证实、却从未写进任何"机制"文档的事：**想要两个角色在社交圈里聊得很嗨，最有效的办法不是等关系状态层（D13），而是直接把关系写进她们各自的系统提示词。** 一句「A 和小 B 是多年挚友 / 恋人」，加上已有的 `pairAffinity` 哈希（决定谁会被点名互动）+ 回复链（45min 冷却、一次一步、多角色轮流接话），角色便会顺着这份声明在朋友圈里你来我往——**结果意外地跟真人差不多**。

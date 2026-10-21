@@ -1018,7 +1018,9 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 - `apps/catalog.json` + `apps/catalog.js`（file:// 退回壳）、`apps/ib-app-cinema.js`（独立 APP）、`assets/js/app-store.js`（loader）。
 - APP 经 `IBApps.register({id,version,sdk:2,icon,mount(body,ctx),back,unmount})` 注册，`open(id)` 调 `mount`；APP 只经 `ctx` 与主程序对话（`app/storage/blog/chat/ai/ui/sys/on/off`），**不触碰底层 db/发送函数**——隔离按接口收窄（同 Mobile 约定，非强制 iframe 沙箱）。
 - **Media Adapter v1**（`apps/ib-media-adapter.js` → `window.IBMedia`）：统一 `resolveMedia(url|{file}) → {type,provider,id,url,caps{canFrame,canSeek,remote}}` 与 `createAdapter(media,host) → {load,play,pause,seek,getCurrentTime,getDuration,on,destroy}`。支持 `NativeVideoAdapter`（本地/直链 .mp4/.webm/blob:）、`HLSAdapter`（.m3u8，优先浏览器原生 / `window.Hls`，否则 graceful fallback）、`YouTubeAdapter`（官方 iframe API）、`BilibiliAdapter`（官方 embed iframe）、`UnknownAdapter`（未知来源提示，不强行播放）。平台受限（地区/X-Frame-Options/登录/浏览器）只识别并 graceful fallback，**禁止** DRM 绕过 / 防盗链破解 / Cookie·Token 偷取 / 下载受保护视频 / 代理绕过。Cinema Runtime 只依赖统一接口做进度/字幕/弹幕/共看/Memory/Proactive，不复制 Chat/Memory/Activity Runtime。
-- 视频/字幕文件**不入库、不随备份**（`ctx.storage` 只存片名/秒数/梗概；播放点不续播）。会话/进度/Memory/Proactive 仍经 `IB.activity` 统一运行时。**留影**仅 `caps.canFrame=true`（本地/直链/HLS）可用，帧经 `visionReference` 随当轮请求进入既有视觉链路（不入库、不进 Memory、不写聊天记录）；YouTube/Bilibili 嵌入源 `canFrame=false`，不截帧、不伪造进度（Bilibili 播放进度未知时如实标记 `noTime`），UI/文案不得暗示模型看到了当前画面。
+- 视频与字幕文件**不入库、不随备份**。本地视频只用文件名/大小/修改时间/类型的哈希定位 Activity，不保存绝对路径或媒体字节；用户重新选择同一文件后，可从 `activities.progress.sec` 续播。字幕文件仍需重新选择；Activity 仅保留最近字幕切片、用户手动生成的滚动梗概与播放秒数。离开放映将 Activity 标为 `paused` 并清除 current，避免普通 Chat 误继承观影上下文；恢复时再激活。
+- Cinema 不自动触发 Provider 请求或长期 Memory 写入。正常讨论沿既有 `IB.activity.send` / Chat / Middle Brain 路径；「整理下一段」必须由用户点击并确认，最多发送 15 分钟字幕，回复写回 Activity 进度并留在当前角色聊天记录。Memory 只由用户明确点击「存记忆」写入。
+- **留影**只响应用户主动点击，且仅 `caps.canFrame=true`（本地/直链/HLS）并且当前角色支持图像识别时可用；单帧经 `visionReference` 随当轮请求进入既有视觉链路（不入库、不进 Memory、不写聊天记录）。不做周期性截帧或连续视频上传。YouTube/Bilibili 嵌入源 `canFrame=false`，不截帧、不伪造进度（Bilibili 播放进度未知时如实标记 `noTime`），UI/文案不得暗示模型看到了当前画面。
 - 安装/卸载：enable 集合存 localStorage `ib_apps_on_v1`（app id→1）；builtin 不可卸载、「卸载但保留数据」。
 
 ### 11.5 App Store（manifest + loader）

@@ -84,7 +84,9 @@
   → 运行中升级一次（同目录覆盖安装）
        · 本安装目录实例被停止、端口释放
        · runtime\node\node.exe 被干净替换（解锁等待生效）
+       · 可用只读的旧 Runner 文件种子验证 1.0.9 同版本升级确实替换 Runner 字节
        · 无关 Node 进程存活、用户数据保留
+       · 升级后从已安装载荷启动 Runner，验证 Home Node 单实例与一次故障恢复，再按安装目录精确停止
   → 卸载（程序文件与快捷方式移除、用户数据保留、注册表项移除）
   → 断言开发实例端口行为完全未变
 ```
@@ -105,6 +107,7 @@
 5. 运行前后探测开发实例四个端点的身份，`deepStrictEqual` 必须一致
 6. 所有子进程 PID 记录在册，teardown 按 PID（`/F /T /PID`）结束，绝不按镜像名
 7. 逐 case 硬超时（默认 60s，安装/卸载/启动 240s）+ 全局 15min；超时打印残留资源报告
+8. TestMode Host 使用独立 Tauri identifier，并把 WebView2 用户目录指向临时数据根，避免单实例转交给正式窗口或复用正式 WebView profile
 
 ---
 
@@ -142,6 +145,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 # 唯一一次隔离验证（每个构建只成功一次）
 node tests/test_installer_smoke.js --real-install-smoke
+# 可选传入已安装旧版 Runner（只读）以证明同版本覆盖安装会替换 Runner 字节
+node tests/test_installer_smoke.js --real-install-smoke --exe <test-only-exe> --runner-baseline <old-local-services-runner.js>
 
 # 隔离载荷审计（构建可选步骤，不启动应用）
 node tests/test_installer_smoke.js --install-audit

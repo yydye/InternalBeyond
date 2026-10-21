@@ -10,6 +10,7 @@
  *   · 全新临时浏览器配置目录 —— 开发者本机的真实数据永远不进画面；
  *   · 演示数据来自 scripts/guide-fixtures.js，写进产品自己的存储结构；
  *   · 文件名稳定（<id>.png），UI 改了重跑一次即可全部重生成；
+ *   · 向导连接成功画面只使用本地 mock Provider 和内存中的合成 Vault 凭据，不访问外部服务；
  *   · 图片缺失不影响正文（正文在 assets/js/guide-beginner.js 里，与本管线解耦）；
  *   · 每张图都会回读页面文本做一次密钥 / 私人数据自检。
  *
@@ -128,6 +129,26 @@ function activeHandler() {
   };
 }
 
+function homeNodeHandler() {
+  return (req, res) => {
+    const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+    const p = String(req.url || '').split('?')[0];
+    if (p === '/health') {
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({
+        ok: true,
+        service: 'internal-beyond-home-node',
+        serving: true,
+        open: true,
+        stores: [{ store: 'chatMessages', open: true, category: '' }, { store: 'memories', open: true, category: '' }]
+      }));
+      return;
+    }
+    res.writeHead(404, cors);
+    res.end(JSON.stringify({ ok: false }));
+  };
+}
+
 function restartHandler() {
   return (req, res) => {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -149,6 +170,7 @@ function writeLaunchRecord(dir, webPort, ports) {
     static: { required: true, affectsOverall: true, probed: true, healthy: true, state: 'healthy', host: '127.0.0.1', port: webPort, url: 'http://127.0.0.1:' + webPort, identity: 'InternalBeyond Web' },
     bridge: { required: false, affectsOverall: true, probed: true, healthy: true, state: 'healthy', port: ports.bridgePort },
     active: { required: false, affectsOverall: true, probed: true, healthy: true, state: 'healthy', port: ports.activePort },
+    homeNode: { required: false, affectsOverall: false, probed: true, healthy: true, state: 'healthy', host: '127.0.0.1', port: ports.homeNodePort },
     restart: { required: false, affectsOverall: false, probed: true, healthy: true, state: 'healthy', port: ports.restartPort },
     vision: { required: false, affectsOverall: false, probed: false, healthy: false, state: 'not-enabled', reason: { category: 'not-enabled', message: 'optional' } }
   };
@@ -245,6 +267,7 @@ async function enterSite(cdp) {
   /* 欢迎层是带 backdrop-filter 的全屏遮罩，淡出约 4.8s；不等到它真正消失，
      后面每张图都会被它洗成一层蓝雾（这正是第一轮截图暴露出来的问题）。 */
   await wait(cdp, "(function(){var s=document.getElementById('splash');if(!s)return true;var cs=getComputedStyle(s);return cs.visibility==='hidden'||Number(cs.opacity)===0;})()", 20000);
+  await wait(cdp, "!document.getElementById('preloader')", 20000);
   await sleep(250);
 }
 
@@ -281,15 +304,17 @@ async function capture(opts) {
   const provider = await startMockProvider();
   const bridge = startJsonService(bridgeHandler);
   const active = startJsonService(activeHandler);
+  const homeNode = startJsonService(homeNodeHandler);
   const restart = startJsonService(restartHandler);
   const bridgePort = await bridge.up();
   const activePort = await active.up();
+  const homeNodePort = await homeNode.up();
   const restartPort = await restart.up();
 
   const webSrv = WEB.createWebServer({ port: 0, root: ROOT });
   const webPort = await new Promise((res, rej) => { webSrv.once('error', rej); webSrv.listen(0, '127.0.0.1', () => res(webSrv.address().port)); });
   const pageUrl = 'http://127.0.0.1:' + webPort + '/InternalBeyond.html';
-  writeLaunchRecord(tmpStateDir, webPort, { bridgePort, activePort, restartPort });
+  writeLaunchRecord(tmpStateDir, webPort, { bridgePort, activePort, homeNodePort, restartPort });
 
   let browser = null;
   let cdp = null;
@@ -356,7 +381,7 @@ async function capture(opts) {
       await clearAnnotation(cdp);
       const buf = Buffer.from(shotData.data, 'base64');
       const file = path.join(outDir, shot.file);
-      fs.writeFileSync(file, buf);
+        await writeScreenshot(file, buf);
       const dim = pngSize(buf);
       const rec = {
         id: shot.id, file: shot.file, bytes: buf.length, width: dim.width, height: dim.height,
@@ -376,18 +401,17 @@ async function capture(opts) {
 
     /* ── 各具名动作 ── */
     const PREPARE = {
-      async splash() {
-        /* 欢迎页：DOM 一就绪就拍（设置向导要 15s 后才会自动出现，必须抢在它之前）。 */
-        await wait(cdp, "document.readyState!=='loading' && !!document.querySelector('.splash-buttons')", 30000);
+      async 'home-start'() {
+        await enterSite(cdp);
         await ev(cdp, "window.confirm=function(){return true;};window.alert=function(){};true");
-        await sleep(1200);
-        if (await ev(cdp, "!!document.querySelector('#ib-setup.is-open')")) {
-          throw new Error('欢迎页截图前设置向导已经出现，无法记录首启画面');
-        }
+        await ev(cdp, "(async function(){if(window.IBSetup&&window.IBSetup.state().open)await window.IBSetup.close();var n=document.getElementById('ib-setup');if(n)n.classList.remove('is-open');return true})()");
+        await sleep(2600);
+        if (await ev(cdp, "!!document.querySelector('#ib-setup.is-open')")) throw new Error('设置向导无法在主页截图前收起');
       },
       async 'wizard-provider'() {
-        /* 首次打开（没有任何角色）时向导会自动出现 —— 截图记录的正是这个真实行为 */
+        /* 保留自动首启路径；如果上一张欢迎页暂时收起了向导，就通过公开入口重新打开。 */
         await enterSite(cdp);
+        await ev(cdp, "(function(){var a=window.IBSetup;if(a&&!a.state().open&&typeof a.open==='function')a.open();return true})()");
         const opened = await wait(cdp, "!!document.querySelector('#ib-setup.is-open')", 25000);
         if (!opened) throw new Error('设置向导没有自动出现');
         if (!(await wizardNext(cdp))) throw new Error('向导没有进入选择服务步骤');
@@ -400,6 +424,7 @@ async function capture(opts) {
         await ev(cdp, setVal('ib-setup-key', fixtures.DEMO.role.apiKey));
       },
       async 'wizard-test-ok'() {
+        await wireMocks(cdp, { bridgePort, activePort, homeNodePort, restartPort });
         if (!(await wizardNext(cdp))) throw new Error('向导没有进入模型步骤');
         await wait(cdp, "!!document.getElementById('ib-setup-model')", 8000);
         await ev(cdp, setVal('ib-setup-model', 'demo-model'));
@@ -437,8 +462,16 @@ async function capture(opts) {
         await enterSite(cdp);
         await wait(cdp, "typeof navTo==='function' && typeof selectFriend==='function'", 20000);
         await ev(cdp, "navTo('chat');true");
+        let chatActive = await wait(cdp, "!!document.getElementById('page-chat')&&document.getElementById('page-chat').classList.contains('active')", 6000);
+        if (!chatActive) {
+          await ev(cdp, "(function(){var a=document.querySelector('#navbar .nav-links a[data-page=\"chat\"]');if(a)a.click();return !!a})()");
+          chatActive = await wait(cdp, "!!document.getElementById('page-chat')&&document.getElementById('page-chat').classList.contains('active')", 10000);
+        }
+        if (!chatActive) throw new Error('Chat 页面未切换为活动页面');
         await ev(cdp, `selectFriend(${JSON.stringify(roleId)});true`);
-        await wait(cdp, "!!document.querySelector('#chat-full-messages .chat-msg')", 20000);
+        if (!(await wait(cdp, "document.getElementById('page-chat').classList.contains('active')&&!!document.querySelector('#chat-full-messages .chat-msg')", 20000))) {
+          throw new Error('合成对话没有显示在活动 Chat 页面');
+        }
       },
       async 'api-page'() {
         await ev(cdp, "navTo('api');true");
@@ -450,7 +483,7 @@ async function capture(opts) {
       },
       async 'active-page'() {
         await ev(cdp, "navTo('active');true");
-        await wait(cdp, "document.getElementById('page-active').classList.contains('active') && !!document.querySelector('.active-switch-line')", 25000);
+        await wait(cdp, "document.getElementById('page-active').classList.contains('active') && !!document.querySelector('.active-card-title')", 25000);
       },
       async 'moments-page'() {
         await ev(cdp, "navTo('moments');true");
@@ -462,14 +495,14 @@ async function capture(opts) {
         await ev(cdp, `selectFriend(${JSON.stringify(result.roleId || '')});true`);
         await wait(cdp, "!!document.getElementById('voice-call-launch-full')", 20000);
       },
-      async 'diag-normal'() {
+      async 'diag-pending'() {
         await wireMocks(cdp, { bridgePort, activePort, restartPort });
         await ev(cdp, "navTo('diagnostics');true");
         await wait(cdp, "!!document.querySelector('#ib-diag-list .ib-diag-row') && !document.getElementById('ib-diag-recheck').disabled", 30000);
         await ev(cdp, "document.getElementById('ib-diag-recheck').click();true");
         await wait(cdp, "!document.getElementById('ib-diag-recheck').disabled", 30000);
         const headline = await ev(cdp, "(document.getElementById('ib-diag-headline')||{}).textContent||''");
-        if (headline !== '系统运行正常') throw new Error('诊断页在正常状态下标题为「' + headline + '」');
+        if (headline.indexOf('未检查') === -1) throw new Error('诊断页未如实显示尚未验证的只读状态：「' + headline + '」');
       },
       async 'diag-degraded'() {
         await bridge.down();
@@ -534,6 +567,7 @@ async function capture(opts) {
     if (result.profile) result.profileRemoved = !fs.existsSync(result.profile);
     try { await bridge.down(); } catch (e) { }
     try { await active.down(); } catch (e) { }
+    try { await homeNode.down(); } catch (e) { }
     try { await restart.down(); } catch (e) { }
     try { await new Promise(r => { const t = setTimeout(r, 1500); webSrv.close(() => { clearTimeout(t); r(); }); }); } catch (e) { }
     try { provider.server.close(); } catch (e) { }
@@ -542,24 +576,67 @@ async function capture(opts) {
 }
 
 async function wireMocks(cdp, ports) {
-  await ev(cdp, `(function(){
-    try{ localStorage.setItem('ib_bridge_http','http://127.0.0.1:${ports.bridgePort}'); }catch(e){}
-    window.IB_RESTART_PORT=${ports.restartPort};
-    window._activeCompanionRequest=function(path,opts){
-      var ac=new AbortController(),tm=setTimeout(function(){ac.abort();},(opts&&opts.timeout)||2500);
-      return fetch('http://127.0.0.1:${ports.activePort}'+path,{cache:'no-store',signal:ac.signal})
-        .then(function(r){return r.text().then(function(t){
-          if(!r.ok){var e=new Error('后台服务 '+r.status);e.ibSource='local_service';e.ibComponent='active';e.status=r.status;throw e;}
-          return t?JSON.parse(t):{};})})
-        .finally(function(){clearTimeout(tm);});
-    };
-    return true;
-  })()`);
+  const source = [
+    '(function(){',
+    "try{localStorage.setItem('ib_bridge_http','http://127.0.0.1:" + ports.bridgePort + "')}catch(e){}",
+    'window.IB_RESTART_PORT=' + Number(ports.restartPort) + ';',
+    'var credentials=window.__ibGuideCredentialMap||(window.__ibGuideCredentialMap=new Map());',
+    'var host=window.IB&&window.IB.host,resolver=host&&host.credentialResolver;',
+    'if(!resolver)return {ok:false,reason:"credential-resolver-missing"};',
+    'resolver.available=true;',
+    'resolver.resolve=function(bindingId){var row=credentials.get(String(bindingId||""));return Promise.resolve(row?{ok:true,provider:row.provider,apiKey:row.apiKey}:{ok:false})};',
+    'window._activeCompanionRequest=function(path,opts){',
+    '  opts=opts||{};var method=String(opts.method||"GET").toUpperCase();',
+    '  if(path==="/credentials"){',
+    '    var body=opts.body||{};',
+    '    if(method==="POST"){',
+    '      var items=Array.isArray(body.credentials)?body.credentials:[],ids=[];',
+    '      items.forEach(function(item){var id=String(item&&item.credentialRef||item&&item.characterId||"");if(!id)return;ids.push(id);credentials.set(id,{provider:String(item.provider||"openai"),apiKey:String(item.apiKey||"")})});',
+    '      return Promise.resolve({ok:ids.length>0,stored:ids.length,credentialRef:ids[0]||"",credentialRefs:ids});',
+    '    }',
+    '    var refs=Array.isArray(body.credentialRefs)?body.credentialRefs.map(String):[];',
+    '    if(body.all)refs=Array.from(credentials.keys());',
+    '    refs.forEach(function(id){credentials.delete(id)});',
+    '    return Promise.resolve({ok:true,removed:refs.length,credentialRefs:refs});',
+    '  }',
+    '  var ac=new AbortController(),tm=setTimeout(function(){ac.abort()},Number(opts.timeout)||2500);',
+    '  return fetch("http://127.0.0.1:' + ports.activePort + '"+path,{cache:"no-store",signal:ac.signal})',
+    '    .then(function(r){return r.text().then(function(t){if(!r.ok){var e=new Error("后台服务 "+r.status);e.ibSource="local_service";e.ibComponent="active";e.status=r.status;throw e}return t?JSON.parse(t):{}})})',
+    '    .finally(function(){clearTimeout(tm)});',
+    '};',
+    'return {ok:true,credentialResolver:resolver.available===true};',
+    '})()'
+  ].join('\n');
+  const ready = await ev(cdp, source);
+  if (!ready || ready.ok !== true || ready.credentialResolver !== true) {
+    throw new Error('截图用的隔离 Credential Vault mock 未就绪');
+  }
 }
 
 function pngSize(buf) {
   if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return { width: 0, height: 0 };
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+async function writeScreenshot(file, buf) {
+  const tempDir = path.join(ROOT, 'tmp');
+  fs.mkdirSync(tempDir, { recursive: true });
+  const temp = path.join(tempDir, 'ib-guide-shot-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.png');
+  fs.writeFileSync(temp, buf);
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        fs.renameSync(temp, file);
+        return;
+      } catch (error) {
+        const retryable = ['EACCES', 'EPERM', 'EBUSY', 'EEXIST', 'UNKNOWN'].includes(String(error && error.code || '').toUpperCase());
+        if (!retryable || attempt === 7) throw error;
+        await sleep(150 * (attempt + 1));
+      }
+    }
+  } finally {
+    try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch (e) { }
+  }
 }
 
 function parseArgs(argv) {
