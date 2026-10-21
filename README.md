@@ -162,6 +162,8 @@ Anthropic、OpenAI、Grok、DeepSeek、Gemini、GLM、Qwen、豆包、Moonshot�
 
 需要服务器能力的功能（表情包、心语墙、健康 / 定位 / 天气看板、点歌、Bark / ntfy 推送、AI 常驻会话、TTS 语音气泡、多窗口同步，以及关页后的主动消息与朋友圈调度）由一个本机 Node 后端提供，无需云服务器。
 
+从源码运行 Home Node 并使用 QQ Official Bot 时，先在仓库根目录运行 `npm ci --prefix services/home-node`，按锁文件安装固定版本的 QQ SDK。Windows 安装包已包含该 SDK 和对应许可证，普通用户不需要另外安装 npm。
+
 - **统一启动**：运行 `scripts\windows\start-local-services.cmd` 一次启动 Bridge 与 Active；仅需 Bridge 时运行 `scripts\windows\start-bridge-service.cmd`；仅需 Active 时运行 `scripts\windows\start-active-service.cmd`。
 - **统一控制器**：`node runtime\local-services-runner.js --status`（人类可读）/ `--json`（脚本可读）/ `--vision`（一并启动可选视觉助手）；窗口内 `s` 查看状态、`q` 只停止它自己启动的子服务。
 - **状态与日志**：服务日志在 `%LOCALAPPDATA%\InternalBeyond\logs\`；启动记录 `boot-state.json`；启动器日志 `logs\launcher.log`（均不含密钥 / Token）。

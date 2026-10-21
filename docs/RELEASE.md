@@ -22,6 +22,15 @@
 主安装包与版本化 DSH ZIP 由 canonical 构建流程产出；DSH 签名清单由离线签名步骤单独生成。
 `dist\` 不进版本库（`.gitignore`）：
 
+构建前需按锁文件还原 Home Node 的 QQ Official Bot 运行依赖：
+
+```powershell
+npm ci --prefix services\home-node
+```
+
+`scripts\release-manifest.js` 会把固定版本的 QQ SDK、`ws` 和各自许可证加入安装包；
+`services\home-node\node_modules` 保持在本机，不提交到源码仓库。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
