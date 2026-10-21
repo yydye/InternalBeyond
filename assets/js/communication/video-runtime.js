@@ -24,6 +24,7 @@
     var capEvery = 0;
     var targetW = opts.targetWidth || 640;
     var quality = (opts.quality != null ? opts.quality : 0.8);
+    var useCompressor = opts.useCompressor !== false;
 
     var api = { _ownVideo: null, started: false };
 
@@ -90,7 +91,7 @@
             var f;
             try { f = new File([blob], 'frame_' + Date.now() + '.jpg', { type: 'image/jpeg' }); }
             catch (e) { f = blob; }
-            var comp = _compress();
+            var comp = useCompressor ? _compress() : null;
             if (typeof comp === 'function') {
               comp(f).then(function (c) {
                 var out = _createFrame(c.dataUrl || canvas.toDataURL('image/jpeg', quality), dw, dh);

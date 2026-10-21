@@ -1,0 +1,364 @@
+/* Reused-call presentation layer: localized chat cards, video stage controls,
+   and a compact settings drawer. All selectors stay within the call surface. */
+.voice-call-panel{position:relative}
+.voice-call-video{
+  position:relative;flex:none;width:min(76vw,92.44vh);max-height:52vh;aspect-ratio:16/9;
+  margin:0 auto 14px;overflow:hidden;border:1px solid color-mix(in srgb,var(--white) 22%,transparent);
+  border-radius:var(--radius-panel);background:#070b13;box-shadow:0 18px 54px rgba(0,0,0,.34)
+}
+.voice-call-video[hidden]{display:none}
+.voice-call-video video{display:block;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.voice-call-panel.has-video{padding:2vh 22px 2vh}
+.voice-call-panel.has-video .voice-call-avatar{width:74px;height:74px;margin:0 auto 5px;animation:none}
+.voice-call-panel.has-video .voice-call-expression{min-height:0;margin:0 auto}
+.voice-call-panel.has-video .voice-call-name{font-size:20px}
+.voice-call-panel.has-video .voice-call-wave{height:24px;margin:3px auto}
+.voice-call-panel.has-video .voice-call-copy{min-height:58px;max-height:13vh;margin-top:2px;padding:8px 4px}
+.voice-call-panel.has-video .voice-call-controls{padding-top:12px}
+.voice-call-cam,.voice-call-settings-open{
+  display:inline-grid;place-items:center;width:36px;height:36px;margin:8px 4px 0;
+  border:1px solid color-mix(in srgb,var(--white) 26%,transparent);border-radius:50%;
+  color:var(--pale);background:color-mix(in srgb,var(--white) 12%,transparent);cursor:pointer
+}
+.voice-call-cam:hover,.voice-call-settings-open:hover{background:color-mix(in srgb,var(--white) 20%,transparent)}
+.voice-call-cam.on{color:#fff;background:color-mix(in srgb,var(--status-success) 68%,transparent);box-shadow:0 0 0 5px color-mix(in srgb,var(--status-success) 14%,transparent)}
+.voice-call-cam[disabled],.voice-call-capture[disabled]{opacity:.45;cursor:not-allowed}
+.voice-call-cam svg,.voice-call-settings-open svg,.voice-call-capture svg{width:18px;height:18px}
+.voice-call-settings-open{position:absolute;top:12px;right:14px;margin:0;font-size:17px}
+.voice-call-capture{width:48px;height:48px}
+.voice-call-capture svg{width:20px;height:20px}
+.voice-call-shot-preview{
+  position:absolute;right:18px;bottom:98px;z-index:5;display:flex;align-items:center;gap:9px;
+  max-width:min(340px,calc(100% - 36px));padding:7px 10px 7px 7px;border:1px solid var(--glass-border-floating);
+  border-radius:12px;background:var(--glass-bg-modal);color:var(--content-primary);box-shadow:var(--glass-shadow-modal)
+}
+.voice-call-shot-preview[hidden]{display:none}
+.voice-call-shot-preview img{width:52px;height:36px;object-fit:cover;border-radius:7px}
+.voice-call-shot-preview span{font-size:var(--fs-meta)}
+.voice-call-shot-preview button{width:24px;height:24px;border:0;border-radius:50%;color:var(--content-secondary);background:var(--glass-bg-ambient);cursor:pointer}
+.voice-call-danmaku{position:absolute;inset:12px 12px auto;display:flex;flex-direction:column;align-items:flex-start;gap:7px;max-height:72%;overflow:hidden;pointer-events:none}
+.voice-call-danmaku-item{
+  max-width:min(88%,680px);padding:6px 11px;border:1px solid rgba(255,255,255,.15);border-radius:13px;
+  color:#fff;background:rgba(4,9,20,.46);font-size:clamp(12px,1.05vw,15px);line-height:1.45;
+  text-shadow:0 1px 3px rgba(0,0,0,.45);backdrop-filter:blur(6px);animation:ib-call-danmaku 6.4s ease forwards;overflow-wrap:anywhere
+}
+.voice-call-danmaku-item.me{align-self:flex-end;background:rgba(59,105,174,.56);border-color:rgba(180,210,255,.28)}
+.voice-call-gift-effect{position:absolute;inset:0;z-index:3;display:grid;place-content:center;justify-items:center;gap:10px;overflow:hidden;pointer-events:none;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.68)}
+.voice-call-gift-icon{font-size:clamp(64px,10vw,140px);line-height:1;filter:drop-shadow(0 6px 24px rgba(255,220,180,.5));animation:ib-call-gift-pop 3.6s cubic-bezier(.18,.82,.26,1) both}
+.voice-call-gift-title{font:600 clamp(18px,2vw,28px)/1.3 var(--font-display);letter-spacing:.08em;animation:ib-call-gift-title 3.6s ease both}
+.voice-call-gift-effect.fx-fireworks{background:radial-gradient(circle at 50% 43%,rgba(255,194,104,.3),transparent 46%)}
+.voice-call-gift-effect.fx-meteor{background:linear-gradient(145deg,transparent 20%,rgba(125,155,255,.24),transparent 80%)}
+.voice-call-gift-effect.fx-galaxy{background:radial-gradient(ellipse at 50% 28%,rgba(145,120,255,.42),rgba(13,18,51,.25) 46%,transparent 76%)}
+.voice-call-galaxy-train{position:absolute;top:35%;left:-55%;white-space:nowrap;color:#ffe4aa;font-size:clamp(22px,3vw,44px);letter-spacing:.18em;filter:drop-shadow(0 0 14px #ffe6ad);animation:ib-call-galaxy-train 8.2s ease-in-out both}
+.voice-call-settings-launch{
+  display:inline-grid;place-items:center;width:32px;height:32px;margin-left:3px;padding:0;
+  border:1px solid var(--border-soft);border-radius:50%;color:var(--content-secondary);
+  background:var(--glass-bg-ambient);cursor:pointer;vertical-align:middle
+}
+.voice-call-settings-launch:hover{color:var(--accent-light);border-color:var(--accent)}
+.voice-call-settings-launch svg{width:15px;height:15px}
+.ib-call-settings{
+  position:fixed;z-index:13020;top:clamp(18px,5vh,54px);right:clamp(18px,3vw,48px);
+  width:min(380px,calc(100vw - 36px));max-height:calc(100vh - 36px);display:flex;flex-direction:column;
+  overflow:hidden;border:1px solid var(--glass-border-floating);border-radius:var(--radius-panel);
+  color:var(--content-primary);background:var(--glass-bg-modal);box-shadow:var(--glass-shadow-modal)
+}
+.ib-call-settings[hidden]{display:none}
+.ib-call-settings-head,.ib-call-settings-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px}
+.ib-call-settings-head{border-bottom:1px solid var(--border-soft)}
+.ib-call-settings-head strong{font:500 20px/1.2 var(--font-display)}
+.ib-call-settings-head button{width:28px;height:28px;border:0;border-radius:50%;color:var(--content-secondary);background:var(--glass-bg-ambient);font-size:20px;cursor:pointer}
+.ib-call-settings-body{display:grid;gap:4px;padding:10px 16px;overflow:auto}
+.ib-call-setting-field{display:grid;grid-template-columns:minmax(120px,1fr) minmax(130px,1.15fr);align-items:center;gap:10px;padding:8px 0;color:var(--content-secondary);font-size:var(--fs-meta)}
+.ib-call-setting-field input[type=checkbox]{justify-self:end;width:17px;height:17px;accent-color:var(--accent)}
+.ib-call-setting-field select{width:100%;min-width:0;height:34px;padding:0 9px;border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-primary);background:var(--glass-bg-ambient)}
+.ib-call-role-setting{margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)}
+.ib-call-setting-field.procall-field{grid-template-columns:1fr auto;color:var(--content-primary)}
+.ib-call-settings-footer{border-top:1px solid var(--border-soft)}
+.ib-call-settings-status{min-width:0;color:var(--content-muted);font-size:var(--fs-meta);overflow-wrap:anywhere}
+.ib-call-settings-footer button,.ib-call-card-actions button{
+  min-height:34px;padding:7px 12px;border:1px solid var(--border-soft);border-radius:999px;
+  color:var(--content-primary);background:var(--glass-bg-ambient);font:inherit;cursor:pointer
+}
+.ib-call-settings-footer button:hover,.ib-call-card-actions button:hover{border-color:var(--accent);color:var(--accent-light)}
+.ib-call-settings-footer button.primary,.ib-call-card-actions button.primary{border-color:color-mix(in srgb,var(--accent) 60%,transparent);color:var(--content-primary);background:color-mix(in srgb,var(--accent) 20%,var(--glass-bg-modal))}
+
+.ib-call-card-wrap{display:flex;justify-content:center;width:100%;padding:10px 0 6px;box-sizing:border-box}
+.ib-call-card{
+  --ib-call-ink:var(--content-primary);--ib-call-muted:var(--content-muted);
+  position:relative;width:min(560px,calc(100% - 28px));padding:17px 20px;
+  border:1px solid var(--glass-border-floating);border-radius:20px;
+  color:var(--ib-call-ink);background:linear-gradient(155deg,color-mix(in srgb,var(--glass-bg-modal) 88%,white),var(--glass-bg-modal));
+  box-shadow:var(--glass-shadow-floating);overflow:hidden
+}
+body.theme-infernal .ib-call-card{background:linear-gradient(155deg,rgba(48,59,85,.88),rgba(27,35,55,.94))}
+.ib-call-card-head{display:flex;align-items:center;gap:12px;min-width:0}
+.ib-call-card-avatar{display:grid;place-items:center;flex:none;width:42px;height:42px;overflow:hidden;border:1px solid var(--border-soft);border-radius:50%;color:var(--accent-light);background:var(--glass-bg-ambient);font:500 18px/1 var(--font-display)}
+.ib-call-card-avatar img{width:100%;height:100%;object-fit:cover}
+.ib-call-card-info{display:grid;gap:3px;min-width:0}
+.ib-call-card-info strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 17px/1.2 var(--font-display)}
+.ib-call-card-info span{color:var(--ib-call-muted);font-size:var(--fs-meta);line-height:1.4}
+.ib-call-card-say{margin:14px 0 0;padding:11px 13px;border-radius:12px;color:var(--content-secondary);background:var(--glass-bg-ambient);font-size:var(--fs-body);line-height:1.55}
+.ib-call-card-status{margin:12px 0 0;color:var(--ib-call-muted);font-size:var(--fs-meta);line-height:1.45}
+.ib-call-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.ib-call-card-actions button{flex:1 1 auto}
+.ib-call-card-delete{position:absolute;top:6px;right:8px;width:25px;height:25px;border:0;border-radius:50%;color:var(--content-muted);background:transparent;font-size:18px;cursor:pointer;opacity:.45}
+.ib-call-card-delete:hover{opacity:1;background:var(--glass-bg-ambient)}
+.ib-call-card.gift{display:flex;align-items:center;gap:14px;width:min(440px,calc(100% - 28px));padding:15px 20px}
+.ib-call-gift-icon{display:grid;place-items:center;flex:none;width:60px;height:60px;border:1px solid var(--border-soft);border-radius:18px;background:var(--glass-bg-ambient);font-size:34px;filter:drop-shadow(0 4px 12px color-mix(in srgb,var(--accent) 22%,transparent))}
+.ib-call-card.gift.tier-3 .ib-call-gift-icon,.ib-call-card.gift.tier-4 .ib-call-gift-icon,.ib-call-card.gift.tier-5 .ib-call-gift-icon{background:linear-gradient(145deg,#222b58,#463b7c);box-shadow:0 5px 18px rgba(90,110,220,.28)}
+.ib-call-gift-summary{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:11px;color:var(--content-muted);font-size:var(--fs-meta)}
+.ib-call-gift-summary .label{margin-right:3px}
+.ib-call-gift-summary span:not(.label){padding:3px 8px;border:1px solid var(--border-soft);border-radius:99px;background:var(--glass-bg-ambient)}
+.ib-call-card.end{width:min(560px,calc(100% - 28px))}
+.ib-call-card.end .end-actions{margin-top:13px}
+.ib-call-summary-body{margin-top:10px;padding:11px 5px 3px;border-top:1px solid var(--border-soft);color:var(--content-secondary);font-size:var(--fs-body);line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}
+.ib-call-card-error{margin:9px 0 0;color:var(--status-danger);font-size:var(--fs-meta)}
+.ib-call-snapshot-caption{margin:5px 0 0;color:var(--content-muted);font-size:var(--fs-meta);text-align:right}
+@keyframes ib-call-danmaku{0%{opacity:0;transform:translateY(18px)}8%,76%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-16px)}}
+@keyframes ib-call-gift-pop{0%{opacity:0;transform:scale(.35) translateY(28px)}18%{opacity:1;transform:scale(1.08) translateY(0)}32%,72%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(.88) translateY(-22px)}}
+@keyframes ib-call-gift-title{0%,15%{opacity:0;transform:translateY(12px)}28%,70%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-8px)}}
+@keyframes ib-call-galaxy-train{0%{left:-55%;opacity:0;transform:translateY(26px) scale(.75)}18%{opacity:1}70%{opacity:1}100%{left:110%;opacity:0;transform:translateY(-20px) scale(1.05)}}
+@media(max-width:900px){
+  .voice-call-video{width:min(88vw,92.44vh);max-height:52vh}
+  .voice-call-panel.has-video .voice-call-copy{width:min(88vw,760px)}
+}
+@media(max-height:760px){
+  .voice-call-panel.has-video{padding:1vh 16px 1vh}
+  .voice-call-video{width:min(76vw,85.33vh);max-height:48vh;margin-bottom:7px}
+  .voice-call-panel.has-video .voice-call-avatar{width:54px;height:54px}
+  .voice-call-panel.has-video .voice-call-controls{padding-top:6px}
+}
+@media(prefers-reduced-motion:reduce){
+  .voice-call-danmaku-item,.voice-call-gift-icon,.voice-call-gift-title,.voice-call-galaxy-train{animation:none!important}
+}
+
+/* Desktop video call: one immersive stage, with the live call controls as a light HUD. */
+.voice-call-overlay:has(.voice-call-panel.has-video){
+  padding:clamp(10px,1.1vw,22px);
+  background:rgba(5,10,20,.48);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)
+}
+.voice-call-panel.has-video{
+  position:relative;display:block;width:min(100%,1760px);height:min(calc(100vh - 40px),980px);min-height:0;max-width:100%;
+  padding:0;overflow:hidden;border:1px solid rgba(224,235,255,.22);border-radius:24px;
+  color:#f4f6ff;text-align:left;background:#070d19;
+  box-shadow:0 28px 90px rgba(0,0,0,.46),inset 0 0 0 1px rgba(255,255,255,.035)
+}
+.voice-call-video{
+  position:absolute;inset:0;z-index:0;width:100%;height:100%;max-height:none;aspect-ratio:auto;
+  margin:0;overflow:hidden;border:0;border-radius:inherit;background:#050914;box-shadow:none
+}
+.voice-call-video video{
+  display:block;width:100%;height:100%;object-fit:cover;
+  /* Only the camera image is mirrored. Text and effects are separate stage siblings. */
+  transform:scaleX(-1);transform-origin:center;backface-visibility:hidden;direction:ltr
+}
+.voice-call-fx-canvas{
+  position:absolute;inset:0;z-index:2;display:block;width:100%;height:100%;
+  transform:none!important;direction:ltr;pointer-events:none
+}
+.voice-call-panel.has-video .voice-call-avatar{
+  position:absolute;z-index:5;top:24px;left:26px;width:50px;height:50px;margin:0;
+  border:1px solid rgba(235,241,255,.5);box-shadow:0 5px 24px rgba(0,0,0,.32),0 0 0 5px rgba(222,234,255,.08);
+  animation:none
+}
+.voice-call-panel.has-video .voice-call-avatar img{width:100%;height:100%;object-fit:cover;transform:none}
+.voice-call-panel.has-video .voice-call-expression{
+  position:absolute;z-index:5;top:64px;left:88px;display:flex;align-items:center;justify-content:flex-start;
+  min-height:18px;margin:0;transform:none
+}
+.voice-call-panel.has-video .voice-call-name{
+  position:absolute;z-index:5;top:27px;left:90px;max-width:min(38vw,620px);margin:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;
+  font:500 clamp(18px,1.45vw,24px)/1.25 var(--font-display);letter-spacing:.02em;
+  text-shadow:0 2px 14px rgba(0,0,0,.7)
+}
+.voice-call-panel.has-video .voice-call-state{
+  position:absolute;z-index:5;top:26px;right:94px;margin:0;padding:6px 11px;
+  border:1px solid rgba(236,241,255,.16);border-radius:999px;color:#edf2ff;
+  background:rgba(9,15,28,.43);font-size:11px;line-height:1.3;letter-spacing:.08em;text-transform:uppercase
+}
+.voice-call-panel.has-video .voice-call-duration{
+  position:absolute;z-index:5;top:57px;right:100px;margin:0;color:rgba(235,241,255,.78);
+  font-size:12px;text-shadow:0 1px 8px rgba(0,0,0,.7)
+}
+.voice-call-panel.has-video .voice-call-wave{
+  position:absolute;z-index:5;top:81px;right:25px;width:154px;height:17px;margin:0;gap:2px;
+  opacity:.8;mask-image:linear-gradient(90deg,transparent,#000 18%,#000 82%,transparent)
+}
+.voice-call-panel.has-video .voice-call-wave-bar{width:3px;background:#d9e6ff}
+.voice-call-panel.has-video .voice-call-meter{display:none}
+.voice-call-panel.has-video .voice-call-copy{
+  position:absolute;z-index:5;left:28px;bottom:102px;width:min(520px,42%);min-height:0;max-height:19vh;
+  margin:0;padding:8px 14px;border:0;border-left:2px solid rgba(190,211,255,.52);border-radius:0;
+  background:linear-gradient(90deg,rgba(4,9,19,.6),rgba(4,9,19,.14),transparent);
+  color:#f4f6ff;text-align:left;backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)
+}
+.voice-call-panel.has-video .voice-call-line{grid-template-columns:54px 1fr;gap:9px;margin:0 0 6px;font-size:13px;line-height:1.45}
+.voice-call-panel.has-video .voice-call-line:last-child{margin-bottom:0}
+.voice-call-panel.has-video .voice-call-label{color:rgba(222,231,255,.64)}
+.voice-call-panel.has-video .voice-call-value{color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.55)}
+.voice-call-panel.has-video .voice-call-error{position:absolute;z-index:7;left:28px;bottom:184px;max-width:48%;margin:0;padding:8px 12px;border-radius:10px;background:rgba(30,8,18,.74)}
+.voice-call-panel.has-video .voice-call-controls{
+  position:absolute;z-index:7;left:50%;bottom:20px;display:flex;align-items:center;justify-content:center;
+  gap:10px;margin:0;padding:9px 12px;transform:translateX(-50%);
+  border:1px solid rgba(223,233,255,.17);border-radius:999px;
+  background:rgba(7,13,26,.53);box-shadow:0 9px 30px rgba(0,0,0,.24);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)
+}
+.voice-call-panel.has-video .voice-call-controls .voice-call-control{
+  flex:none;width:48px;height:48px;color:#f4f6ff;background:rgba(225,234,255,.13);
+  box-shadow:inset 0 0 0 1px rgba(226,236,255,.12)
+}
+.voice-call-panel.has-video .voice-call-controls .voice-call-control:hover{background:rgba(225,234,255,.22)}
+.voice-call-panel.has-video .voice-call-controls .voice-call-control.danger{width:54px;height:54px;background:rgba(184,70,91,.92);box-shadow:0 5px 18px rgba(111,24,45,.32)}
+.voice-call-panel.has-video .voice-call-controls .voice-call-cam{margin:0;color:#e5edff}
+.voice-call-panel.has-video .voice-call-controls .voice-call-cam.on{color:#fff;background:rgba(58,134,105,.92);box-shadow:0 0 0 4px rgba(111,205,162,.12)}
+.voice-call-panel.has-video .voice-call-controls .voice-call-capture{width:48px;height:48px}
+.voice-call-panel.has-video .voice-call-controls svg{width:20px;height:20px}
+.voice-call-panel.has-video .voice-call-settings-open{
+  z-index:8;top:23px;right:23px;width:38px;height:38px;margin:0;
+  border-color:rgba(232,239,255,.2);color:#eef2ff;background:rgba(8,14,28,.45);font-size:16px
+}
+.voice-call-panel.has-video .voice-call-settings-open:hover{background:rgba(225,234,255,.18)}
+.voice-call-panel.has-video .voice-call-danmaku{position:absolute;z-index:4;inset:0;display:block;overflow:hidden;max-height:none;pointer-events:none}
+.voice-call-panel.has-video .voice-call-danmaku-item{
+  position:absolute;top:var(--danmaku-y,38%);left:100%;max-width:min(48%,680px);overflow:hidden;
+  padding:7px 13px;border:1px solid rgba(242,246,255,.16);border-left:2px solid rgba(217,230,255,.66);
+  border-radius:4px 14px 14px 4px;color:#fff;background:rgba(8,13,25,.42);
+  font-size:clamp(12px,.9vw,15px);line-height:1.45;white-space:nowrap;text-overflow:ellipsis;
+  text-shadow:0 1px 6px rgba(0,0,0,.68);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  transform:none;animation:ib-call-danmaku-drift var(--danmaku-duration,8s) linear both
+}
+.voice-call-panel.has-video .voice-call-danmaku-item.me{border-left-color:rgba(164,201,255,.9);background:rgba(32,68,116,.55)}
+.voice-call-gift-toast{
+  position:absolute;z-index:6;top:16%;left:50%;display:flex;align-items:center;gap:14px;
+  min-width:250px;max-width:min(420px,calc(100% - 40px));padding:11px 20px 11px 12px;
+  overflow:hidden;border:1px solid rgba(236,242,255,.22);border-radius:16px;
+  color:#f7f8ff;background:rgba(8,14,29,.66);box-shadow:0 12px 42px rgba(0,0,0,.25);
+  opacity:0;pointer-events:none;transform:translate(-50%,14px) scale(.97);
+  transition:opacity .38s ease,transform .48s cubic-bezier(.2,.7,.2,1);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)
+}
+.voice-call-gift-toast.show{opacity:1;transform:translate(-50%,0) scale(1)}
+.voice-call-gift-toast-art{display:grid;place-items:center;flex:none;width:70px;height:70px;overflow:hidden;border-radius:13px;background:rgba(226,236,255,.08)}
+.voice-call-gift-toast-art img{display:block;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 4px 12px rgba(0,0,0,.36))}
+.voice-call-gift-toast-art img[hidden],.voice-call-gift-toast-emoji[hidden]{display:none}
+.voice-call-gift-toast-emoji{font-size:42px;line-height:1;filter:drop-shadow(0 3px 9px rgba(255,220,230,.4))}
+.voice-call-gift-toast-copy{display:grid;gap:4px;min-width:0}
+.voice-call-gift-toast-copy small{color:rgba(226,233,255,.62);font-size:11px;letter-spacing:.12em}
+.voice-call-gift-toast-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 clamp(16px,1.3vw,21px)/1.3 var(--font-display);letter-spacing:.04em}
+.voice-call-gift-toast.tier-1{border-color:rgba(250,187,211,.4);box-shadow:0 12px 42px rgba(81,19,53,.2),0 0 36px rgba(244,151,192,.1)}
+.voice-call-gift-toast.tier-2{border-color:rgba(255,222,177,.4)}
+.voice-call-gift-toast.tier-3{border-color:rgba(255,208,132,.46);box-shadow:0 12px 42px rgba(81,47,19,.24),0 0 42px rgba(255,189,91,.14)}
+.voice-call-gift-toast.tier-4{border-color:rgba(177,207,255,.46);box-shadow:0 12px 42px rgba(21,39,87,.25),0 0 44px rgba(113,157,255,.15)}
+.voice-call-gift-toast.tier-5{border-color:rgba(207,199,255,.52);box-shadow:0 12px 52px rgba(19,24,71,.34),0 0 64px rgba(157,151,255,.24)}
+.ib-call-card.gift .ib-call-gift-icon{overflow:hidden}
+.ib-call-card.gift .ib-call-gift-icon img{display:block;width:100%;height:100%;object-fit:contain}
+@keyframes ib-call-danmaku-drift{
+  0%{opacity:0;transform:translateX(0)}5%{opacity:1;transform:translateX(0)}
+  92%{opacity:1;transform:translateX(var(--danmaku-travel,-150vw))}
+  100%{opacity:0;transform:translateX(var(--danmaku-travel,-150vw))}
+}
+@media(max-width:1000px){
+  .voice-call-panel.has-video .voice-call-name{max-width:34vw}
+  .voice-call-panel.has-video .voice-call-copy{width:min(430px,46%)}
+  .voice-call-panel.has-video .voice-call-controls{bottom:14px;gap:7px;padding:7px 9px}
+  .voice-call-panel.has-video .voice-call-controls .voice-call-control{width:44px;height:44px}
+  .voice-call-panel.has-video .voice-call-controls .voice-call-control.danger{width:50px;height:50px}
+}
+@media(max-height:700px){
+  .voice-call-panel.has-video{height:calc(100vh - 20px)}
+  .voice-call-panel.has-video .voice-call-copy{bottom:84px;max-height:16vh}
+  .voice-call-panel.has-video .voice-call-controls{bottom:11px}
+  .voice-call-panel.has-video .voice-call-avatar{top:16px;left:18px;width:42px;height:42px}
+  .voice-call-panel.has-video .voice-call-name{top:17px;left:73px}
+  .voice-call-panel.has-video .voice-call-expression{top:49px;left:73px}
+  .voice-call-panel.has-video .voice-call-settings-open{top:15px;right:15px}
+  .voice-call-panel.has-video .voice-call-state{top:18px;right:76px}
+  .voice-call-panel.has-video .voice-call-duration{top:49px;right:80px}
+}
+@media(prefers-reduced-motion:reduce){
+  .voice-call-panel.has-video .voice-call-danmaku-item{animation:none!important;left:auto;right:20px;opacity:1}
+  .voice-call-gift-toast{transition:none}
+}
+.voice-call-controls .voice-call-cam{width:56px;height:56px;margin:0}
+.voice-call-controls .voice-call-cam svg{width:21px;height:21px}
+.api-live2d-model-field{max-width:760px;margin:12px 0 16px}
+.api-live2d-model-field input{width:100%;box-sizing:border-box}
+.voice-call-panel.has-video:not(.has-role-avatar) .voice-call-avatar{display:none}
+.voice-call-panel.has-video:not(.has-role-avatar) .voice-call-name{left:26px}
+.voice-call-panel.has-video:not(.has-role-avatar) .voice-call-expression{left:26px}
+.voice-call-video.has-role-presentation video{
+  display:none;position:absolute;right:24px;bottom:154px;z-index:2;width:min(25vw,320px);height:auto;max-height:180px;
+  aspect-ratio:16/9;object-fit:cover;border:1px solid rgba(226,235,255,.36);border-radius:16px;
+  box-shadow:0 12px 34px rgba(0,0,0,.38);background:#09111e
+}
+.voice-call-video.has-role-presentation.has-camera-preview video{display:block}
+.voice-call-role-layer{
+  position:absolute;inset:0;z-index:4;display:grid;place-items:center;overflow:hidden;
+  pointer-events:none;background:radial-gradient(ellipse at 52% 42%,rgba(114,145,191,.2),transparent 50%)
+}
+.voice-call-role-portrait{
+  display:block;width:min(58%,680px);height:72%;max-height:72%;object-fit:contain;
+  filter:drop-shadow(0 18px 44px rgba(0,0,0,.34));transform-origin:center bottom
+}
+.voice-call-role-fallback-note{
+  position:absolute;left:50%;top:48%;max-width:min(520px,72%);transform:translate(-50%,-50%);
+  color:rgba(230,237,251,.62);font:400 14px/1.6 var(--font-body);letter-spacing:.04em;text-align:center
+}
+.voice-call-live2d-canvas{
+  position:absolute;inset:0;z-index:2;display:block;width:100%;height:100%;
+  transform:none!important;direction:ltr;pointer-events:none
+}
+.voice-call-puppet-canvas{
+  position:absolute;inset:0;z-index:2;display:block;width:100%;height:100%;
+  transform:none!important;direction:ltr;pointer-events:none
+}
+.voice-call-puppet-actions{
+  position:absolute;z-index:7;left:26px;top:94px;transform:none;
+  display:flex;align-items:center;justify-content:center;gap:8px;max-width:calc(100% - 36px);
+  padding:6px;border:1px solid var(--border-soft);border-radius:999px;
+  background:var(--glass-bg-floating);backdrop-filter:var(--glass-filter-floating);
+  box-shadow:var(--shadow-floating);pointer-events:auto
+}
+.voice-call-puppet-action{
+  min-height:34px;padding:5px 13px;border:1px solid transparent;border-radius:999px;
+  color:var(--content-primary);background:transparent;font:400 var(--fs-meta)/1.25 var(--font-body);cursor:pointer;
+  transition:background-color .2s cubic-bezier(.4,0,.2,1),border-color .2s cubic-bezier(.4,0,.2,1)
+}
+.voice-call-puppet-action:hover,.voice-call-puppet-action:focus-visible{
+  border-color:var(--border-soft);background:var(--glass-bg-elevated);outline:none
+}
+.voice-call-puppet-action:focus-visible{box-shadow:var(--focus-ring)}
+.voice-call-video.has-role-presentation .voice-call-fx-canvas{z-index:3;transform:none!important;direction:ltr}
+.voice-call-video.has-role-presentation .voice-call-danmaku{z-index:5}
+.voice-call-video.has-role-presentation .voice-call-gift-toast{z-index:6;left:auto;right:24px;top:142px;transform:translateY(14px) scale(.97)}
+.voice-call-video.has-role-presentation .voice-call-gift-toast.show{transform:translateY(0) scale(1)}
+@media(max-width:1000px){
+  .voice-call-video.has-role-presentation video{right:16px;bottom:150px;width:min(28vw,280px);max-height:158px}
+  .voice-call-role-portrait{width:min(68%,560px)}
+}
+@media(max-height:700px){
+  .voice-call-video.has-role-presentation video{right:16px;bottom:138px;width:min(24vw,260px);max-height:146px}
+  .voice-call-role-portrait{height:68%;max-height:68%}
+}
+
+/* Character-bound Live2D controls stay collapsed beside the existing portrait editor. */
+.api-live2d-model-field>details{border-top:1px solid var(--border-soft);padding-top:12px}
+.api-live2d-settings,.api-puppet-settings{margin-top:11px;border-top:1px solid var(--border-soft);padding-top:10px}
+.api-live2d-model-field>details>summary,.api-live2d-tuning>summary,.api-live2d-advanced>summary{cursor:pointer;color:var(--content-primary);font-size:var(--fs-body)}
+.api-live2d-model-field>details>.field-hint{margin:9px 0;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.55}
+.api-live2d-model-field>details>label,.api-live2d-tuning>label,.api-live2d-advanced>label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:11px 0 5px;color:var(--content-secondary);font-size:var(--fs-meta)}
+.api-live2d-model-field select,.api-live2d-advanced input{width:100%;min-width:0;height:36px;padding:0 11px;border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-primary);background:var(--glass-bg-ambient)}
+.api-live2d-import-actions{display:flex;gap:8px;margin-top:10px}
+.api-live2d-import-actions button{min-height:34px;padding:6px 12px;border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);background:var(--glass-bg-ambient);cursor:pointer}
+.api-live2d-import-actions button:hover{border-color:var(--accent);color:var(--accent-light)}
+.api-live2d-tuning,.api-live2d-advanced{margin-top:13px;padding-top:10px;border-top:1px solid var(--border-soft)}
+.api-live2d-tuning input[type=range]{display:block;width:100%;accent-color:var(--accent)}
+.api-live2d-tuning output{color:var(--content-muted);font-variant-numeric:tabular-nums}
+.api-live2d-status{min-height:18px;margin-top:11px;color:var(--content-muted);font-size:var(--fs-meta);line-height:1.45;overflow-wrap:anywhere}
+.api-live2d-status.is-success{color:var(--accent-light)}
+.api-live2d-status.is-error{color:var(--danger,#c35c65)}
+@media(max-width:680px){.api-live2d-import-actions{flex-wrap:wrap}.api-live2d-import-actions button{flex:1 1 42%}}

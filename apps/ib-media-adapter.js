@@ -51,9 +51,10 @@
     self.host.innerHTML='';self.host.appendChild(v);
     function onLoaded(){self._emit('loadedmetadata',{duration:v.duration||0});res()}
     function onTime(){self._emit('timeupdate',{time:v.currentTime||0,duration:v.duration||0})}
+    function onPause(){self._emit('paused',{time:v.currentTime||0,duration:v.duration||0})}
     function onEnd(){self._emit('ended',{})}
-    v.addEventListener('loadedmetadata',onLoaded);v.addEventListener('timeupdate',onTime);v.addEventListener('ended',onEnd);
-    self._ls=[['loadedmetadata',onLoaded],['timeupdate',onTime],['ended',onEnd]];
+    v.addEventListener('loadedmetadata',onLoaded);v.addEventListener('timeupdate',onTime);v.addEventListener('pause',onPause);v.addEventListener('ended',onEnd);
+    self._ls=[['loadedmetadata',onLoaded],['timeupdate',onTime],['pause',onPause],['ended',onEnd]];
     v.src=src;v.load();
     // 用户必须触发播放：挂 play 兜底（部分浏览器自动播放被拦）
     v.addEventListener('error',function(){self._emit('error',{message:'视频加载失败'})});
@@ -72,9 +73,10 @@
     var v=document.createElement('video');v.controls=true;v.playsInline=true;v.className='ci-el';self.video=v;
     self.host.innerHTML='';self.host.appendChild(v);
     function onTime(){self._emit('timeupdate',{time:v.currentTime||0,duration:v.duration||0})}
+    function onPause(){self._emit('paused',{time:v.currentTime||0,duration:v.duration||0})}
     function onEnd(){self._emit('ended',{})}
-    v.addEventListener('timeupdate',onTime);v.addEventListener('ended',onEnd);
-    self._ls=[['timeupdate',onTime],['ended',onEnd]];
+    v.addEventListener('timeupdate',onTime);v.addEventListener('pause',onPause);v.addEventListener('ended',onEnd);
+    self._ls=[['timeupdate',onTime],['pause',onPause],['ended',onEnd]];
     if(typeof window.Hls!=='undefined'&&window.Hls.isSupported()){
       var hls=new window.Hls();self.hls=hls;hls.loadSource(self.media.url);hls.attachMedia(v);
       hls.on(window.Hls.Events.MANIFEST_PARSED,function(){self._emit('loadedmetadata',{duration:v.duration||0});res()});

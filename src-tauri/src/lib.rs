@@ -1,5 +1,8 @@
 mod project_knowledge;
 mod tauri_service_supervisor;
+mod live2d_models;
+mod puppet_models;
+mod puppet_ai;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
@@ -7,7 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,7 +21,7 @@ use project_knowledge::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent, State, WindowEvent};
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -30,6 +33,7 @@ const DEFAULT_RESTART_PORT: u16 = 23116;
 const DEFAULT_BRIDGE_PORT: u16 = 23115;
 const DEFAULT_ACTIVE_PORT: u16 = 23114;
 const DEFAULT_HOME_NODE_PORT: u16 = 23118;
+const HOME_NODE_PROTOCOL_VERSION: u64 = 1;
 const TAURI_STARTUP_BUDGET: Duration = Duration::from_secs(30);
 const TAURI_SHUTDOWN_BUDGET: Duration = Duration::from_secs(12);
 const RUNTIME_MODE_ENV: &str = "IB_RUNTIME_MODE";
@@ -1579,23 +1583,58 @@ fn abort_recovery_checkpoint_before_apply_inner(
     }))
 }
 
+fn dev_sandbox_root_for_project(project_root: &Path, synthetic: bool) -> PathBuf {
+    project_root
+        .join(".dev-data")
+        .join(if synthetic { "synthetic" } else { "development" })
+        .join("dev-sandbox")
+}
+
+fn ensure_dev_data_path_has_no_reparse_points(project_root: &Path, sandbox_root: &Path) -> Result<(), String> {
+    let candidates = [
+        project_root.join(".dev-data"),
+        sandbox_root.parent().ok_or_else(|| "DEV_SANDBOX_ROOT_INVALID".to_string())?.to_path_buf(),
+        sandbox_root.to_path_buf(),
+    ];
+    for candidate in candidates {
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => {
+                let mut is_reparse = metadata.file_type().is_symlink();
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                    is_reparse |= metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+                }
+                if is_reparse { return Err("DEV_SANDBOX_REPARSE_POINT_BLOCKED".to_string()); }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("DEV_SANDBOX_PATH_UNAVAILABLE".to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn validated_dev_sandbox_root() -> Result<PathBuf, String> {
+    let project_root = std::env::var_os("IB_DEV_PROJECT_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| "DEV_PROJECT_ROOT_UNAVAILABLE".to_string())?;
+    let synthetic = std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1");
+    let expected = dev_sandbox_root_for_project(&project_root, synthetic);
+    let configured = std::env::var_os("IB_DEV_SANDBOX_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
+    if configured != expected { return Err("DEV_SANDBOX_ROOT_INVALID".to_string()); }
+    ensure_dev_data_path_has_no_reparse_points(&project_root, &expected)?;
+    Ok(expected)
+}
+
 fn recovery_data_root() -> Result<PathBuf, String> {
+    if std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1") {
+        return validated_dev_sandbox_root();
+    }
     let local = std::env::var_os("LOCALAPPDATA")
         .ok_or_else(|| "RECOVERY_DATA_ROOT_UNAVAILABLE".to_string())?;
-    if std::env::var("IB_DEV_MODE").ok().as_deref() == Some("1") {
-        let mut expected = PathBuf::from(&local).join("InternalBeyond");
-        if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") {
-            expected.push("dev-synthetic");
-        }
-        let expected = expected.join("dev-sandbox");
-        let configured = std::env::var_os("IB_DEV_SANDBOX_ROOT")
-            .map(PathBuf::from)
-            .ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
-        if configured != expected {
-            return Err("DEV_SANDBOX_ROOT_INVALID".to_string());
-        }
-        return Ok(expected);
-    }
     Ok(PathBuf::from(local).join("InternalBeyond"))
 }
 
@@ -2664,6 +2703,7 @@ struct TauriRuntimeStatus {
     host_ready: bool,
     launcher_ready: bool,
     home_node_ready: bool,
+    home_node_port: u16,
     home_node_reason_code: Option<String>,
     bridge_ready: Option<bool>,
     active_ready: Option<bool>,
@@ -2693,6 +2733,7 @@ host-owned record is per-Tauri-instance evidence; it never adopts or kills a
 process merely because it uses node.exe or answers a shared port. */
 struct HostLifecycle {
     root: PathBuf,
+    home_node_instance_id: String,
     runtime: RuntimeResolution,
     boot_state: PathBuf,
     supervisor_record: PathBuf,
@@ -2700,7 +2741,7 @@ struct HostLifecycle {
     host_session_id: String,
     previous_host_session_id: Option<String>,
     host_started_at_ms: u64,
-    home_node_port: u16,
+    home_node_port: AtomicU16,
     bridge_port: u16,
     active_port: u16,
     static_port: u16,
@@ -2729,6 +2770,7 @@ impl HostLifecycle {
         host_session_id: String,
     ) -> Self {
         let root = runtime.root.clone();
+        let home_node_instance_id = expected_home_node_instance_id_for(&root).unwrap_or_default();
         let recovery_root = recovery_data_root().ok();
         let boot_state = if let Ok(dir) = std::env::var("IB_BOOT_STATE_DIR") {
             PathBuf::from(dir).join("boot-state.json")
@@ -2746,8 +2788,14 @@ impl HostLifecycle {
         let previous_host_session_id = fs::read_to_string(&supervisor_record).ok()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
             .and_then(|record| record.get("hostSessionId").and_then(serde_json::Value::as_str).map(str::to_string));
+        let preferred_home_node_port = initial_home_node_port(
+            env_port("IB_HOME_NODE_PORT", DEFAULT_HOME_NODE_PORT),
+            &supervisor_record,
+            &home_node_instance_id,
+        );
         Self {
             root,
+            home_node_instance_id,
             runtime,
             boot_state,
             supervisor_record,
@@ -2755,7 +2803,7 @@ impl HostLifecycle {
             host_session_id: host_session_id.clone(),
             previous_host_session_id,
             host_started_at_ms: now,
-            home_node_port: env_port("IB_HOME_NODE_PORT", DEFAULT_HOME_NODE_PORT),
+            home_node_port: AtomicU16::new(preferred_home_node_port),
             bridge_port: env_port("IB_BRIDGE_PORT", DEFAULT_BRIDGE_PORT),
             active_port: env_port("IB_ACTIVE_PORT", DEFAULT_ACTIVE_PORT),
             static_port: env_port("IB_WEB_PORT", DEFAULT_STATIC_WEB_PORT),
@@ -2764,6 +2812,7 @@ impl HostLifecycle {
                 host_ready: false,
                 launcher_ready: false,
                 home_node_ready: false,
+                home_node_port: preferred_home_node_port,
                 home_node_reason_code: Some("startup-pending".to_string()),
                 bridge_ready: None,
                 active_ready: None,
@@ -2831,10 +2880,15 @@ impl HostLifecycle {
     }
 
     fn runtime_status(&self) -> TauriRuntimeStatus {
-        self.readiness.lock().map(|status| status.clone()).unwrap_or_else(|_| TauriRuntimeStatus {
+        self.readiness.lock().map(|status| {
+            let mut status = status.clone();
+            status.home_node_port = self.home_node_port.load(Ordering::Acquire);
+            status
+        }).unwrap_or_else(|_| TauriRuntimeStatus {
             host_ready: true,
             launcher_ready: false,
             home_node_ready: false,
+            home_node_port: self.home_node_port.load(Ordering::Acquire),
             home_node_reason_code: Some("status-unavailable".to_string()),
             bridge_ready: None,
             active_ready: None,
@@ -2946,17 +3000,22 @@ fn service_environment_matches(value: &serde_json::Value) -> bool {
 
 fn dev_sandbox_root() -> Result<PathBuf, String> {
     if !dev_mode_enabled() { return Err("DEV_MODE_REQUIRED".to_string()); }
-    let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
-    let mut expected = PathBuf::from(local).join("InternalBeyond");
-    if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") {
-        expected.push("dev-synthetic");
+    validated_dev_sandbox_root()
+}
+
+#[cfg(test)]
+mod dev_sandbox_path_tests {
+    use super::*;
+
+    #[test]
+    fn dev_and_synthetic_sandboxes_are_project_local_and_distinct() {
+        let project = Path::new(r"E:\InternalBeyond-main");
+        let dev = dev_sandbox_root_for_project(project, false);
+        let synthetic = dev_sandbox_root_for_project(project, true);
+        assert_eq!(dev, project.join(".dev-data").join("development").join("dev-sandbox"));
+        assert_eq!(synthetic, project.join(".dev-data").join("synthetic").join("dev-sandbox"));
+        assert_ne!(dev, synthetic);
     }
-    let expected = expected.join("dev-sandbox");
-    let configured = std::env::var_os("IB_DEV_SANDBOX_ROOT")
-        .map(PathBuf::from)
-        .ok_or_else(|| "DEV_SANDBOX_ROOT_UNAVAILABLE".to_string())?;
-    if configured != expected { return Err("DEV_SANDBOX_ROOT_INVALID".to_string()); }
-    Ok(expected)
 }
 
 fn host_supervisor_data_root(app: &tauri::AppHandle) -> PathBuf {
@@ -4675,10 +4734,31 @@ fn credential_ipc_target_allowed(
     }
     #[cfg(debug_assertions)]
     {
-        return matches!(host.as_str(), "127.0.0.1" | "localhost") && port == Some(23120);
+        if dev_mode_enabled() {
+            // The unpackaged Dev WebView is served from its private launcher port
+            // (23130 by default), not the production debug origin (23120). Keep
+            // the IPC grant bound to the validated Dev instance and exact origin.
+            if dev_service_environment_valid().is_err() {
+                return false;
+            }
+            let dev_web_port = std::env::var("IB_WEB_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok());
+            return credential_dev_loopback_origin_allowed(&host, port, dev_web_port);
+        }
+        return credential_dev_loopback_origin_allowed(&host, port, Some(23120));
     }
     #[cfg(not(debug_assertions))]
     false
+}
+
+#[cfg(debug_assertions)]
+fn credential_dev_loopback_origin_allowed(host: &str, port: Option<u16>, expected_port: Option<u16>) -> bool {
+    let expected_port = match expected_port {
+        Some(value) if value > 0 => value,
+        _ => return false,
+    };
+    matches!(host, "127.0.0.1" | "localhost") && port == Some(expected_port)
 }
 
 fn credential_ipc_window_allowed(window: &tauri::WebviewWindow) -> bool {
@@ -4722,17 +4802,39 @@ fn read_home_node_desktop_credential(data_root: &Path) -> Result<String, String>
 }
 
 #[tauri::command]
-fn home_node_desktop_credential(webview: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+fn home_node_desktop_credential(
+    webview: tauri::WebviewWindow,
+    state: State<'_, Arc<HostLifecycle>>,
+) -> Result<serde_json::Value, String> {
     if !credential_ipc_window_allowed(&webview) {
         return Err("HOME_NODE_CREDENTIAL_UNAVAILABLE".to_string());
     }
+    refresh_or_wait_for_home_node_port(state.inner().as_ref());
     let data_root = recovery_data_root()?;
     let credential = read_home_node_desktop_credential(&data_root)?;
+    let home_node_port = state.home_node_port.load(Ordering::Acquire);
     Ok(serde_json::json!({
         "ok": true,
         "credential": credential,
-        "source": "tauri-host-bridge"
+        "source": "tauri-host-bridge",
+        "homeNodeUrl": format!("http://127.0.0.1:{home_node_port}")
     }))
+}
+
+/* Endpoint discovery is a separate least-privilege seam for explicitly
+   configured desktop credentials. It returns only the loopback URL; it never
+   reads or discloses the Home Node credential. */
+#[tauri::command]
+fn home_node_endpoint(
+    webview: tauri::WebviewWindow,
+    state: State<'_, Arc<HostLifecycle>>,
+) -> Result<serde_json::Value, String> {
+    if !credential_ipc_window_allowed(&webview) {
+        return Err("HOME_NODE_ENDPOINT_UNAVAILABLE".to_string());
+    }
+    refresh_or_wait_for_home_node_port(state.inner().as_ref());
+    let port = state.home_node_port.load(Ordering::Acquire);
+    Ok(serde_json::json!({ "homeNodeUrl": format!("http://127.0.0.1:{port}") }))
 }
 
 #[cfg(debug_assertions)]
@@ -5090,6 +5192,7 @@ fn required_runtime_files() -> &'static [&'static str] {
         "runtime/launch-internal-beyond.js",
         "runtime/local-services-runner.js",
         "runtime/dev-service-contract.js",
+        "runtime/home-node-identity.js",
         "runtime/dev-snapshot.js",
         "runtime/component-registry.js",
         "runtime/component-lifecycle.js",
@@ -5541,8 +5644,10 @@ fn append_host_startup_log(state: &HostLifecycle, message: &str) {
 fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
     let candidates = launcher_candidates(state);
     write_bootstrap_trace(state, &candidates);
+    refresh_home_node_port_from_runner(state);
     let mut home_start_gate = tauri_service_supervisor::HomeNodeStartGate::default();
-    let (home_probe, _, home_reason) = probe_home_node(state.home_node_port);
+    let initial_home_node_port = state.home_node_port.load(Ordering::Acquire);
+    let (home_probe, _, _) = probe_home_node(initial_home_node_port, &state.home_node_instance_id);
     match home_start_gate.plan(home_probe) {
         tauri_service_supervisor::StartAction::Reuse => {
             state.update_readiness(|runtime| {
@@ -5550,9 +5655,14 @@ fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
                 runtime.message = "正在复用已通过身份与 serving 检查的 Home Node".to_string();
             });
         }
-        tauri_service_supervisor::StartAction::FailClosed => {
+        tauri_service_supervisor::StartAction::Recover => {
             state.update_readiness(|runtime| {
-                runtime.message = format!("Home Node 端口未通过身份检查：{home_reason}");
+                runtime.message = "Home Node 未通过 serving 检查；Runner 将按现有生命周期恢复该实例".to_string();
+            });
+        }
+        tauri_service_supervisor::StartAction::Relocate => {
+            state.update_readiness(|runtime| {
+                runtime.message = "Home Node 首选端口不兼容；Runner 将选择空闲回环端口".to_string();
             });
         }
         tauri_service_supervisor::StartAction::Spawn | tauri_service_supervisor::StartAction::Wait => {}
@@ -5587,6 +5697,7 @@ fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
         node.display(), launcher.display(), root.display(), state.runtime.mode.as_str(), state.runtime.root_class
     ));
     let mut command = Command::new(&node);
+    let home_node_port = state.home_node_port.load(Ordering::Acquire).to_string();
     command
         .arg(&launcher)
         .current_dir(&root)
@@ -5594,6 +5705,7 @@ fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
         .env("IB_TAURI_HOST", "1")
         .env("IB_HOME_NODE_AUTOSTART", "1")
         .env("IB_TAURI_HOST_INSTANCE_ID", &state.host_session_id)
+        .env("IB_HOME_NODE_PORT", &home_node_port)
         .env(RUNTIME_MODE_ENV, state.runtime.mode.as_str())
         .env(RUNTIME_ROOT_CLASS_ENV, state.runtime.root_class)
         .env("IB_RUNTIME_PRODUCT_VERSION", &state.runtime.product_version)
@@ -5706,7 +5818,8 @@ fn spawn_existing_launcher(state: &Arc<HostLifecycle>) {
 }
 
 fn mark_startup_degraded(state: &HostLifecycle, message: &str) {
-    let (home_probe, _, _) = probe_home_node(state.home_node_port);
+    refresh_home_node_port_from_runner(state);
+    let (home_probe, _, _) = probe_home_node(state.home_node_port.load(Ordering::Acquire), &state.home_node_instance_id);
     let home_ready = home_probe == tauri_service_supervisor::EndpointProbe::Healthy;
     state.update_readiness(|runtime| {
         runtime.host_ready = true;
@@ -5832,19 +5945,200 @@ fn local_json_request_with_headers(
     }
 }
 
-fn probe_home_node(port: u16) -> (tauri_service_supervisor::EndpointProbe, Option<serde_json::Value>, String) {
+fn home_node_data_directory_id_for(path: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let normalized = absolute.to_string_lossy().trim_end_matches(std::path::MAIN_SEPARATOR)
+        .to_lowercase();
+    if normalized.is_empty() { return None; }
+    let digest = Sha256::digest(normalized.as_bytes());
+    Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn expected_home_node_data_directory_id() -> Option<String> {
+    let directory = if dev_mode_enabled() {
+        dev_sandbox_root().ok()?.join("home-node")
+    } else if let Some(configured) = std::env::var_os("IB_HOME_NODE_DATA_DIR") {
+        PathBuf::from(configured)
+    } else if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        PathBuf::from(local).join("InternalBeyond").join("home-node")
+    } else {
+        PathBuf::from(std::env::var_os("HOME")?).join(".internal-beyond").join("home-node")
+    };
+    home_node_data_directory_id_for(&directory)
+}
+
+fn expected_home_node_environment() -> &'static str {
+    if !dev_mode_enabled() { return "production"; }
+    if std::env::var("IB_DEV_SYNTHETIC").ok().as_deref() == Some("1") { "synthetic" } else { "dev" }
+}
+
+fn expected_home_node_instance_id_for(root: &Path) -> Option<String> {
+    let mode = expected_home_node_environment();
+    let dev_id = if mode == "production" {
+        None
+    } else {
+        Some(std::env::var("IB_DEV_INSTANCE_ID").ok()?)
+    };
+    home_node_instance_id_for(root, mode, dev_id.as_deref())
+}
+
+fn home_node_instance_id_for(root: &Path, mode: &str, dev_instance_id: Option<&str>) -> Option<String> {
+    if !matches!(mode, "production" | "dev" | "synthetic") { return None; }
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(root)
+    };
+    let mut normalized = absolute.to_string_lossy().to_lowercase();
+    while normalized.ends_with('\\') || normalized.ends_with('/') { normalized.pop(); }
+    if normalized.is_empty() { return None; }
+    let dev_id = if mode == "production" {
+        String::new()
+    } else {
+        let id = dev_instance_id?.trim().to_lowercase();
+        if id.is_empty() { return None; }
+        id
+    };
+    let identity = format!("internalbeyond-home-node-instance-v1\n{mode}\n{normalized}\n{dev_id}");
+    let digest = Sha256::digest(identity.as_bytes());
+    Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn home_node_environment_identity_matches(value: &serde_json::Value) -> bool {
+    let mode = expected_home_node_environment();
+    let instance = if mode == "production" { None } else { std::env::var("IB_DEV_INSTANCE_ID").ok() };
+    home_node_environment_identity_matches_with(value, mode, instance.as_deref())
+}
+
+fn home_node_environment_identity_matches_with(value: &serde_json::Value, expected_mode: &str, expected_dev_id: Option<&str>) -> bool {
+    if value.get("environment").and_then(serde_json::Value::as_str) != Some(expected_mode) {
+        return false;
+    }
+    if expected_mode == "production" {
+        return value.get("devInstanceId").map(serde_json::Value::is_null).unwrap_or(false);
+    }
+    expected_dev_id.map(|expected| value.get("devInstanceId").and_then(serde_json::Value::as_str) == Some(expected)).unwrap_or(false)
+}
+
+fn home_node_instance_matches_with(value: &serde_json::Value, expected: &str) -> bool {
+    !expected.is_empty() && value.get("instanceId").and_then(serde_json::Value::as_str) == Some(expected)
+}
+
+fn home_node_data_identity_matches(value: &serde_json::Value) -> bool {
+    let Some(expected) = expected_home_node_data_directory_id() else { return false; };
+    home_node_data_identity_matches_with(value, &expected)
+}
+
+fn home_node_data_identity_matches_with(value: &serde_json::Value, expected: &str) -> bool {
+    value.get("dataDirectoryId").and_then(serde_json::Value::as_str) == Some(expected)
+}
+
+fn home_node_protocol_matches(value: &serde_json::Value) -> bool {
+    value.get("protocolVersion").and_then(serde_json::Value::as_u64)
+        == Some(HOME_NODE_PROTOCOL_VERSION)
+}
+
+fn initial_home_node_port(preferred: u16, supervisor_record: &Path, instance_id: &str) -> u16 {
+    let preferred_probe = probe_home_node(preferred, instance_id).0;
+    if matches!(preferred_probe,
+        tauri_service_supervisor::EndpointProbe::Healthy |
+        tauri_service_supervisor::EndpointProbe::UnhealthyIdentity) {
+        return preferred;
+    }
+    let previous = fs::read_to_string(supervisor_record).ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|record| record.get("status").cloned())
+        .and_then(|status| status.get("homeNodePort").and_then(serde_json::Value::as_u64))
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0 && *port != preferred);
+    if let Some(port) = previous {
+        let probe = probe_home_node(port, instance_id).0;
+        if matches!(probe,
+            tauri_service_supervisor::EndpointProbe::Healthy |
+            tauri_service_supervisor::EndpointProbe::UnhealthyIdentity) {
+            return port;
+        }
+    }
+    preferred
+}
+
+fn runner_home_node_port(state: &HostLifecycle) -> Option<(u16, bool)> {
+    let port = state.restart_port;
+    let LocalHttpResult::Response(200, value) = local_json_request(port, "GET", "/status", None) else {
+        return None;
+    };
+    if value.get("service").and_then(serde_json::Value::as_str) != Some("InternalBeyond Restart")
+        || !home_node_environment_identity_matches(&value)
+        || value.get("homeNodePortResolved").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let candidate = value.get("ports")?.get("homeNode")?.as_u64()
+        .and_then(|port| u16::try_from(port).ok())?;
+    if candidate == 0 || [
+        state.bridge_port, state.active_port, state.static_port, state.restart_port
+    ].contains(&candidate) {
+        return None;
+    }
+    let owned_by_this_host = value.get("tauriHostSessionId").and_then(serde_json::Value::as_str)
+        == Some(state.host_session_id.as_str());
+    Some((candidate, owned_by_this_host))
+}
+
+fn refresh_home_node_port_from_runner(state: &HostLifecycle) {
+    let Some((candidate, _owned_by_this_host)) = runner_home_node_port(state) else { return; };
+    if candidate == state.home_node_port.load(Ordering::Acquire) { return; }
+    let (probe, _, _) = probe_home_node(candidate, &state.home_node_instance_id);
+    if !matches!(probe,
+        tauri_service_supervisor::EndpointProbe::Healthy |
+        tauri_service_supervisor::EndpointProbe::UnhealthyIdentity) {
+        /* The Runner's session proves who published the port map; it does not
+           replace Home Node's environment/instance/protocol/data identity. */
+        return;
+    }
+    let previous = state.home_node_port.swap(candidate, Ordering::AcqRel);
+    state.update_readiness(|runtime| runtime.home_node_port = candidate);
+    append_host_startup_log(state, &format!(
+        "Home Node endpoint updated from Runner port map: {previous} → {candidate}"
+    ));
+}
+
+fn refresh_or_wait_for_home_node_port(state: &HostLifecycle) {
+    let deadline = Instant::now() + Duration::from_millis(1800);
+    loop {
+        refresh_home_node_port_from_runner(state);
+        let port = state.home_node_port.load(Ordering::Acquire);
+        let (probe, _, _) = probe_home_node(port, &state.home_node_instance_id);
+        if probe != tauri_service_supervisor::EndpointProbe::OccupiedUnknown || Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn probe_home_node(port: u16, instance_id: &str) -> (tauri_service_supervisor::EndpointProbe, Option<serde_json::Value>, String) {
     match local_json_request(port, "GET", "/health", None) {
         LocalHttpResult::Response(200, value)
-            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
-                && value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node")
-                && service_environment_matches(&value)
+            if value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node")
+                && home_node_environment_identity_matches(&value)
+                && home_node_protocol_matches(&value)
+                && home_node_data_identity_matches(&value)
+                && home_node_instance_matches_with(&value, instance_id)
+                && value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
                 && value.get("serving").and_then(serde_json::Value::as_bool) == Some(true) =>
                 (tauri_service_supervisor::EndpointProbe::Healthy, Some(value), String::new()),
         LocalHttpResult::ConnectionRefused => (
             tauri_service_supervisor::EndpointProbe::Offline, None, "home-node-offline".to_string()
         ),
         LocalHttpResult::Response(_, value)
-            if value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node") =>
+            if value.get("service").and_then(serde_json::Value::as_str) == Some("internal-beyond-home-node")
+                && home_node_environment_identity_matches(&value)
+                && home_node_protocol_matches(&value)
+                && home_node_data_identity_matches(&value)
+                && home_node_instance_matches_with(&value, instance_id) =>
                 (tauri_service_supervisor::EndpointProbe::UnhealthyIdentity, Some(value.clone()), value.get("failure")
                     .and_then(|failure| failure.get("message"))
                     .and_then(serde_json::Value::as_str)
@@ -5852,7 +6146,7 @@ fn probe_home_node(port: u16) -> (tauri_service_supervisor::EndpointProbe, Optio
         LocalHttpResult::Response(_, value) => (
             tauri_service_supervisor::EndpointProbe::OccupiedUnknown,
             Some(value),
-            "Home Node port answers with an unexpected service identity".to_string(),
+            "Home Node port answers with an incompatible service, data directory, or protocol".to_string(),
         ),
         LocalHttpResult::Unavailable => (
             tauri_service_supervisor::EndpointProbe::OccupiedUnknown,
@@ -5862,8 +6156,8 @@ fn probe_home_node(port: u16) -> (tauri_service_supervisor::EndpointProbe, Optio
     }
 }
 
-fn home_node_health(port: u16) -> Result<serde_json::Value, String> {
-    let (probe, value, reason) = probe_home_node(port);
+fn home_node_health(port: u16, instance_id: &str) -> Result<serde_json::Value, String> {
+    let (probe, value, reason) = probe_home_node(port, instance_id);
     if probe == tauri_service_supervisor::EndpointProbe::Healthy {
         if let Some(value) = value { return Ok(value); }
     }
@@ -5896,13 +6190,14 @@ fn refresh_owned_services(state: &HostLifecycle) {
         });
     }
 
-    if let Ok(home) = home_node_health(state.home_node_port) {
+    let home_node_port = state.home_node_port.load(Ordering::Acquire);
+    if let Ok(home) = home_node_health(home_node_port, &state.home_node_instance_id) {
         let pid = home.get("pid").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
         if pid > 0 {
             let session = home.get("tauriHostSessionId").and_then(serde_json::Value::as_str).unwrap_or("");
             records.push(HostOwnedService {
                 service_kind: "homeNode".to_string(),
-                port: state.home_node_port,
+                port: home_node_port,
                 pid,
                 spawned_by_host: tauri_service_supervisor::owned_by_current_host(
                     pid, session == state.host_session_id, session, &state.host_session_id
@@ -6017,7 +6312,9 @@ fn runtime_readiness_loop(state: Arc<HostLifecycle>) {
     let started = Instant::now();
     loop {
         if state.shutdown_requested.load(Ordering::Acquire) { return; }
-        let (home_probe, _, _) = probe_home_node(state.home_node_port);
+        refresh_home_node_port_from_runner(&state);
+        let home_node_port = state.home_node_port.load(Ordering::Acquire);
+        let (home_probe, _, _) = probe_home_node(home_node_port, &state.home_node_instance_id);
         let home_ready = home_probe == tauri_service_supervisor::EndpointProbe::Healthy;
         let home_reason = tauri_service_supervisor::probe_reason_code(home_probe).map(str::to_string);
         let bridge_ready = Some(endpoint_health(state.bridge_port, "/health", "server", "IB Bridge"));
@@ -6031,7 +6328,7 @@ fn runtime_readiness_loop(state: Arc<HostLifecycle>) {
             host_ready, launcher_ready, home_ready, optional_failed
         );
         let message = if home_probe == tauri_service_supervisor::EndpointProbe::OccupiedUnknown {
-            "Home Node 端口被未知服务占用；未启动重复进程，canonical Memory 写入保持关闭".to_string()
+            "Home Node 首选端口不兼容；Runner 正在协调空闲端口，canonical Memory 写入暂缓".to_string()
         } else if home_probe == tauri_service_supervisor::EndpointProbe::UnhealthyIdentity {
             "Home Node 已响应但未通过 serving 检查；canonical Memory 写入保持关闭".to_string()
         } else if !host_ready {
@@ -6359,6 +6656,9 @@ pub fn run() {
     let restricted_recovery_page = recovery_only || recovery_policy.blocked();
     let suppress_page_load_side_effects = restricted_recovery_page || recovery_policy.suppress_services();
     let mut builder = tauri::Builder::default();
+    if !restricted_recovery_page {
+        builder = builder.plugin(tauri_plugin_dialog::init());
+    }
     let acceptance_document_seq = Arc::new(AtomicU32::new(0));
     let document_seq_for_events = Arc::clone(&acceptance_document_seq);
     builder = builder.on_page_load(move |webview, payload| {
@@ -6505,6 +6805,34 @@ pub fn run() {
 
     let recovery_policy_for_setup = recovery_policy.clone();
     builder = builder.setup(move |app| {
+            #[cfg(debug_assertions)]
+            if dev_mode {
+                let sandbox = validated_dev_sandbox_root()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))?;
+                let live2d_data = sandbox.join("tauri-app-data").join("live2d");
+                fs::create_dir_all(&live2d_data)?;
+                app.asset_protocol_scope().allow_directory(&live2d_data, true)?;
+            }
+            #[cfg(debug_assertions)]
+            if !dev_mode && !restricted_recovery_page {
+                let live2d_data = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?
+                    .join("live2d");
+                fs::create_dir_all(&live2d_data)?;
+                app.asset_protocol_scope().allow_directory(&live2d_data, true)?;
+            }
+            #[cfg(not(debug_assertions))]
+            if !restricted_recovery_page && !recovery_only {
+                let live2d_data = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?
+                    .join("live2d");
+                fs::create_dir_all(&live2d_data)?;
+                app.asset_protocol_scope().allow_directory(&live2d_data, true)?;
+            }
             let runtime = resolve_runtime_root(app.handle())
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             if restricted_recovery_page {
@@ -6721,9 +7049,36 @@ pub fn run() {
             acknowledge_recovery_first_boot,
             finalize_recovery,
             home_node_desktop_credential,
+            home_node_endpoint,
             tauri_runtime_status,
             ib_dev_snapshot_load,
-            ib_dev_snapshot_mark_imported
+            ib_dev_snapshot_mark_imported,
+            live2d_models::ib_live2d_import_begin,
+            live2d_models::ib_live2d_import_chunk,
+            live2d_models::ib_live2d_import_finish,
+            live2d_models::ib_live2d_import_abort,
+            live2d_models::ib_live2d_models_list,
+            live2d_models::ib_live2d_model_resolve,
+            live2d_models::ib_live2d_runtime_resolve,
+            puppet_models::ib_puppet_import_begin,
+            puppet_models::ib_puppet_import_chunk,
+            puppet_models::ib_puppet_import_finish,
+            puppet_models::ib_puppet_import_abort,
+            puppet_models::ib_puppet_bundles_list,
+            puppet_models::ib_puppet_bundle_resolve,
+            puppet_models::ib_puppet_bundle_export,
+            puppet_models::ib_puppet_projects_list,
+            puppet_models::ib_puppet_project_save,
+            puppet_models::ib_puppet_project_load,
+            puppet_models::ib_puppet_project_export,
+            puppet_models::ib_puppet_project_compile,
+            puppet_ai::ib_puppet_ai_pick_path,
+            puppet_ai::ib_puppet_ai_status,
+            puppet_ai::ib_puppet_ai_install,
+            puppet_ai::ib_puppet_ai_uninstall,
+            puppet_ai::ib_puppet_ai_clear_cache,
+            puppet_ai::ib_puppet_ai_run,
+            puppet_ai::ib_puppet_ai_result_read_chunk
         ]);
         #[cfg(not(debug_assertions))]
         let builder = builder.invoke_handler(tauri::generate_handler![
@@ -6736,7 +7091,34 @@ pub fn run() {
             acknowledge_recovery_first_boot,
             finalize_recovery,
             home_node_desktop_credential,
-            tauri_runtime_status
+            home_node_endpoint,
+            tauri_runtime_status,
+            live2d_models::ib_live2d_import_begin,
+            live2d_models::ib_live2d_import_chunk,
+            live2d_models::ib_live2d_import_finish,
+            live2d_models::ib_live2d_import_abort,
+            live2d_models::ib_live2d_models_list,
+            live2d_models::ib_live2d_model_resolve,
+            live2d_models::ib_live2d_runtime_resolve,
+            puppet_models::ib_puppet_import_begin,
+            puppet_models::ib_puppet_import_chunk,
+            puppet_models::ib_puppet_import_finish,
+            puppet_models::ib_puppet_import_abort,
+            puppet_models::ib_puppet_bundles_list,
+            puppet_models::ib_puppet_bundle_resolve,
+            puppet_models::ib_puppet_bundle_export,
+            puppet_models::ib_puppet_projects_list,
+            puppet_models::ib_puppet_project_save,
+            puppet_models::ib_puppet_project_load,
+            puppet_models::ib_puppet_project_export,
+            puppet_models::ib_puppet_project_compile,
+            puppet_ai::ib_puppet_ai_pick_path,
+            puppet_ai::ib_puppet_ai_status,
+            puppet_ai::ib_puppet_ai_install,
+            puppet_ai::ib_puppet_ai_uninstall,
+            puppet_ai::ib_puppet_ai_clear_cache,
+            puppet_ai::ib_puppet_ai_run,
+            puppet_ai::ib_puppet_ai_result_read_chunk
         ]);
         builder
     };
@@ -7636,6 +8018,71 @@ mod runtime_authority_tests {
     }
 
     #[test]
+    fn home_node_data_directory_identity_is_stable_and_path_bound() {
+        let first = home_node_data_directory_id_for(Path::new(r"C:\InternalBeyondFixture\path-44875640be")).unwrap();
+        let same = home_node_data_directory_id_for(Path::new(r"C:\InternalBeyondFixture\path-44875640be")).unwrap();
+        let different = home_node_data_directory_id_for(Path::new(r"C:\InternalBeyondFixture\path-d1ec6605fb")).unwrap();
+        assert_eq!(first.len(), 64);
+        assert_eq!(first, same);
+        assert_ne!(first, different);
+    }
+
+    #[test]
+    fn dev_sandbox_roots_are_project_local_and_mode_separated() {
+        let project = Path::new(r"E:\InternalBeyond-main");
+        let dev = dev_sandbox_root_for_project(project, false);
+        let synthetic = dev_sandbox_root_for_project(project, true);
+        assert_eq!(dev, project.join(".dev-data").join("development").join("dev-sandbox"));
+        assert_eq!(synthetic, project.join(".dev-data").join("synthetic").join("dev-sandbox"));
+        assert_ne!(dev, synthetic);
+    }
+
+    #[test]
+    fn home_node_health_contract_requires_protocol_and_matching_data_directory() {
+        let expected = home_node_data_directory_id_for(Path::new(r"C:\InternalBeyondFixture\path-44875640be")).unwrap();
+        let instance_id = home_node_instance_id_for(Path::new(r"C:\InternalBeyondFixture\path-22c9f01d8e"), "production", None).unwrap();
+        let mut health = serde_json::json!({
+            "service": "internal-beyond-home-node",
+            "environment": "production",
+            "devInstanceId": null,
+            "instanceId": instance_id,
+            "protocolVersion": HOME_NODE_PROTOCOL_VERSION,
+            "dataDirectoryId": expected
+        });
+        assert!(home_node_protocol_matches(&health));
+        assert!(home_node_data_identity_matches_with(&health, &expected));
+        assert!(home_node_environment_identity_matches_with(&health, "production", None));
+        assert!(home_node_instance_matches_with(&health, &instance_id));
+        health["instanceId"] = serde_json::json!("missing-or-mismatched");
+        assert!(!home_node_instance_matches_with(&health, &instance_id));
+        health["instanceId"] = serde_json::json!(instance_id);
+        health["environment"] = serde_json::json!("dev");
+        assert!(!home_node_environment_identity_matches_with(&health, "production", None));
+        health["environment"] = serde_json::json!("production");
+        health["protocolVersion"] = serde_json::json!(HOME_NODE_PROTOCOL_VERSION + 1);
+        assert!(!home_node_protocol_matches(&health));
+        health["protocolVersion"] = serde_json::json!(HOME_NODE_PROTOCOL_VERSION);
+        health["dataDirectoryId"] = serde_json::json!("incompatible-data-directory");
+        assert!(!home_node_data_identity_matches_with(&health, &expected));
+    }
+
+    #[test]
+    fn home_node_instance_identity_is_bound_to_environment_root_and_dev_instance() {
+        let root = Path::new(r"C:\InternalBeyondFixture\path-22c9f01d8e");
+        let production = home_node_instance_id_for(root, "production", None).unwrap();
+        let production_case_variant = home_node_instance_id_for(Path::new(r"C:\InternalBeyondFixture\path-3892b3ec67"), "production", None).unwrap();
+        let dev_one = home_node_instance_id_for(root, "dev", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).unwrap();
+        let dev_two = home_node_instance_id_for(root, "dev", Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).unwrap();
+        assert_eq!(production.len(), 64);
+        assert_eq!(production, "57652429e052fbff0b1cdc5398a8ce1dd8385a5ce1c5f57215e37899844ced80");
+        assert_eq!(production, production_case_variant);
+        assert_ne!(production, dev_one);
+        assert_eq!(dev_one, "2618c9ab96c394f7c6fff1c66565819943fbf7b7fb31270ba7bd777413dbbd56");
+        assert_ne!(dev_one, dev_two);
+        assert!(home_node_instance_id_for(root, "dev", None).is_none());
+    }
+
+    #[test]
     fn credential_ipc_is_limited_to_the_main_webcore_document() {
         assert!(credential_ipc_target_allowed(
             "main", "http", Some("tauri.localhost"), None, "/InternalBeyond.html"
@@ -7665,6 +8112,14 @@ mod runtime_authority_tests {
         assert!(!credential_ipc_target_allowed(
             "main", "http", Some("127.0.0.1"), Some(23130), "/InternalBeyond.html"
         ));
+        #[cfg(debug_assertions)]
+        {
+            assert!(credential_dev_loopback_origin_allowed("127.0.0.1", Some(23130), Some(23130)));
+            assert!(credential_dev_loopback_origin_allowed("localhost", Some(23130), Some(23130)));
+            assert!(!credential_dev_loopback_origin_allowed("evil.example", Some(23130), Some(23130)));
+            assert!(!credential_dev_loopback_origin_allowed("127.0.0.1", Some(23131), Some(23130)));
+            assert!(!credential_dev_loopback_origin_allowed("127.0.0.1", Some(23130), None));
+        }
     }
 
     fn synthetic_apply_window_approval(

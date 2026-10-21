@@ -41,7 +41,10 @@ function VoiceCall(opts){
   this._pendingEvent=null;
   this.connectedAt=0;this.durationTimer=null;this._wave=[];
   this.ws=null;this.stream=null;this.ctx=null;this.node=null;
-  this.state='idle';this.callSessionId='';this.generationId=0;this.asrGeneration=0;this.turnEpoch=0;
+  this.state='idle';this.callSessionId=String(opts.callSessionId||('ibcall_'+Date.now()+'_'+Math.floor(Math.random()*100000)));this.generationId=0;this.asrGeneration=0;this.turnEpoch=0;
+  this._callStartStatus=null;this._callStartWaiter=null;this._callStartTimer=null;
+  this.kind=opts.video?'video':'voice';this.videoMode=!!opts.video;this.transcriptTurns=0;this.giftCounts={};this.giftTotal=0;this.snapshotCount=0;
+  this.pendingSnapshot=null;this._lastVisionFrameAt=0;this._endRecordPromise=null;this._callRecordFinished=false;
   this._interruptAwaitingAck=false;
   this.speaking=false;this.playing=false;
   this.audioQueue=[];this.currentAudio=null;this.audioUrl='';this.replyDone=false;this.replyEnded=false;
@@ -60,6 +63,7 @@ function VoiceCall(opts){
   /* P2 · Video Runtime 编排：外部 attachVideo(runtime) 注入；仅在有可用帧且模型可看时
      把帧交给 Communication Runtime（visionReference, request-local）。 */
   this.videoRuntime=null;
+  this._live2dAudioContext=null;this._live2dAudioAnalyser=null;this._live2dAudioSource=null;this._live2dAudioElement=null;this._live2dAudioFrame=0;this._live2dAudioData=null;this._live2dAudioLevel=0;this._voiceTtsAudioLevel=0;
 }
 
 VoiceCall.prototype.setState=function(state){
@@ -73,6 +77,7 @@ VoiceCall.prototype.setState=function(state){
   var root=byId('voice-call-modal');if(root){root.dataset.state=next;root.dataset.voiceStatus=presented;}
   var status=byId('voice-call-state');if(status){status.dataset.voiceStatus=presented;text(status,labels[next]||next);}
   this._syncExpression(presented);
+  try{if(window.IBCallLive2D&&typeof window.IBCallLive2D.syncState==='function')window.IBCallLive2D.syncState(this,next)}catch(e){}
   /* 通话一旦进入语音活动状态即开始计时；挂断/结束停止。 */
   if(next==='listening'||next==='speaking'||next==='thinking'||next==='connected'){
     if(!this.connectedAt)this.connectedAt=Date.now();
@@ -143,6 +148,18 @@ VoiceCall.prototype.start=async function(){
   this.node.port.onmessage=this.onCapture.bind(this);
   source.connect(this.node);
   await this.connect(false);
+  var self=this,startResult=await new Promise(function(resolve){
+    if(self._callStartStatus){resolve(self._callStartStatus);return}
+    self._callStartWaiter=resolve;
+    self._callStartTimer=setTimeout(function(){self._resolveCallStart({ok:false,error:'语音服务未确认通话已建立'})},8000);
+  });
+  if(!startResult||startResult.ok!==true)throw new Error(String(startResult&&startResult.error||'语音通话没有建立'));
+};
+VoiceCall.prototype._resolveCallStart=function(result){
+  this._callStartStatus=result||{ok:false,error:'语音服务未确认通话已建立'};
+  if(this._callStartTimer){clearTimeout(this._callStartTimer);this._callStartTimer=null}
+  var resolve=this._callStartWaiter;this._callStartWaiter=null;
+  if(resolve)try{resolve(this._callStartStatus)}catch(e){}
 };
 
 /* 连接 Promise 的三种终止语义（调用方据 e.voiceKind / e.voiceCancelled 决定后续动作）：
@@ -315,6 +332,7 @@ VoiceCall.prototype.interrupt=function(reason){
 /* Freeze playback: stop the playing element, empty the sentence queue, release
    MSE source buffers and revoke blob urls so stale audio can never resume. */
 VoiceCall.prototype.stopAudio=function(){
+  this._live2dStopAudioMeter();
   for(var i=0;i<this.aEntries.length;i++){
     var e=this.aEntries[i];
     e.cancelled=true;
@@ -327,6 +345,53 @@ VoiceCall.prototype.stopAudio=function(){
   if(this.audioUrl){try{URL.revokeObjectURL(this.audioUrl)}catch(e){}this.audioUrl=''}
   this.audioQueue=[];this.playing=false;this.replyDone=false;this.replyEnded=false;
   var meter=byId('voice-call-meter-fill');if(meter)meter.style.transform='scaleX(0)';
+};
+
+/* Measure only the active TTS output. VoiceCall remains the audio authority;
+   the analyser forwards a transient amplitude value to the role renderer. */
+VoiceCall.prototype._live2dStartAudioMeter=function(audio){
+  if(!audio||this.destroyed)return false;
+  this._live2dStopAudioMeter();
+  var ctx=null,analyser=null,source=null;
+  try{
+    var Context=window.AudioContext||window.webkitAudioContext;if(!Context)return false;
+    ctx=this._live2dAudioContext||(this._live2dAudioContext=new Context());
+    analyser=ctx.createAnalyser();analyser.fftSize=512;analyser.smoothingTimeConstant=.58;
+    source=ctx.createMediaElementSource(audio);source.connect(analyser);analyser.connect(ctx.destination);
+    this._live2dAudioAnalyser=analyser;this._live2dAudioSource=source;this._live2dAudioElement=audio;this._live2dAudioData=new Uint8Array(analyser.fftSize);
+    if(ctx.state==='suspended')ctx.resume().catch(function(){});
+    var self=this;
+    function sample(){
+      if(self.destroyed||self._live2dAudioElement!==audio||!self._live2dAudioAnalyser)return;
+      if(audio.paused||audio.ended){self._live2dAudioLevel=0;self._voiceTtsAudioLevel=0;self._live2dAudioFrame=0;try{if(window.IBCallLive2D)window.IBCallLive2D.syncAudioLevel(self,0)}catch(e){};return}
+      try{
+        analyser.getByteTimeDomainData(self._live2dAudioData);var sum=0;
+        for(var i=0;i<self._live2dAudioData.length;i++){var sampleValue=(self._live2dAudioData[i]-128)/128;sum+=sampleValue*sampleValue}
+        var rms=Math.sqrt(sum/self._live2dAudioData.length),level=Math.max(0,Math.min(1,(rms-.012)/.17));
+        self._live2dAudioLevel=(self._live2dAudioLevel*.32)+(level*.68);self._voiceTtsAudioLevel=self._live2dAudioLevel;
+        if(window.IBCallLive2D&&typeof window.IBCallLive2D.syncAudioLevel==='function')window.IBCallLive2D.syncAudioLevel(self,self._live2dAudioLevel);
+      }catch(e){self._live2dAudioLevel=0;self._voiceTtsAudioLevel=0}
+      self._live2dAudioFrame=requestAnimationFrame(sample);
+    }
+    this._live2dAudioFrame=requestAnimationFrame(sample);
+    return true;
+  }catch(error){
+    /* If analyser routing fails after the element was attached, restore a direct
+       destination path so the existing VoiceCall audio remains audible. */
+    try{if(source){source.disconnect();source.connect(ctx.destination)}}catch(e){}
+    try{if(analyser)analyser.disconnect()}catch(e){}
+    this._live2dAudioSource=null;this._live2dAudioAnalyser=null;this._live2dAudioElement=null;this._live2dAudioData=null;this._live2dAudioLevel=0;this._voiceTtsAudioLevel=0;
+    try{console.warn('[Live2D] TTS level meter unavailable',String(error&&error.message||error))}catch(e){};return false
+  }
+};
+VoiceCall.prototype._live2dStopAudioMeter=function(targetAudio,closeContext){
+  if(targetAudio&&this._live2dAudioElement!==targetAudio)return;
+  if(this._live2dAudioFrame){try{cancelAnimationFrame(this._live2dAudioFrame)}catch(e){};this._live2dAudioFrame=0}
+  try{if(this._live2dAudioSource)this._live2dAudioSource.disconnect()}catch(e){}
+  try{if(this._live2dAudioAnalyser)this._live2dAudioAnalyser.disconnect()}catch(e){}
+  this._live2dAudioSource=null;this._live2dAudioAnalyser=null;this._live2dAudioElement=null;this._live2dAudioData=null;this._live2dAudioLevel=0;this._voiceTtsAudioLevel=0;
+  try{if(window.IBCallLive2D&&typeof window.IBCallLive2D.syncAudioLevel==='function')window.IBCallLive2D.syncAudioLevel(this,0)}catch(e){}
+  if(closeContext&&this._live2dAudioContext){try{this._live2dAudioContext.close()}catch(e){};this._live2dAudioContext=null}
 };
 
 function b64ToBuf(data){
@@ -400,6 +465,7 @@ VoiceCall.prototype._assemble=function(entry){
 
 VoiceCall.prototype._onEntryEnded=function(entry){
   if(!entry||entry.cancelled||this.destroyed||this.aEntries.indexOf(entry)<0||entry.settled)return;
+  this._live2dStopAudioMeter(entry.el);
   entry.settled=true;
   if(this.playingEntry===entry)this.playingEntry=null;
   this.aPlaying=false;
@@ -422,11 +488,13 @@ VoiceCall.prototype._maybePlay=function(){
   if(this._playFirstMs==null&&this._t0)this._playFirstMs=performance.now()-this._t0;
   if(entry.mse){
     if(!entry.started){entry.started=true}
+    this._live2dStartAudioMeter(entry.el);
     entry.mse.play();
   }else{
     var audio=new Audio(entry.url);entry.el=audio;
     audio.addEventListener('ended',function(){self._onEntryEnded(entry)});
     audio.addEventListener('error',function(){entry.error=true;self._onEntryEnded(entry)});
+    this._live2dStartAudioMeter(audio);
     audio.play().catch(function(){entry.error=true;self._onEntryEnded(entry)});
   }
 };
@@ -475,22 +543,45 @@ VoiceCall.prototype.onTranscript=async function(msg){
   var epoch=++this.turnEpoch;
   this._t0=performance.now();
   this.turnId=msg.turn_id||this.turnId;
+  if(String(msg.text||'').trim())this.transcriptTurns=(Number(this.transcriptTurns)||0)+1;
   this.replyText='';text(byId('voice-call-reply'),'');
   text(byId('voice-call-transcript'),msg.text||'');
   /* 声学语气参考：对本次 turn 分析一次，立即释放；acousticReference 只用于本次 request */
   var _acref=_acousticReferenceFor(this.role,this._acTurn,String(msg.text||''));
   this._acTurn=[];
-  /* P2 · Vision 帧：若挂载了 Video Runtime 且正在运行，抓一帧转成 request-local visionReference；
-     无可用帧时为空（不影响）。帧只进本次 request，绝不持久化。 */
+  /* Video frames are request-local by default. A manual snapshot is attached to this
+     transcript and persisted by Communication; an AI snapshot uses the chat record path. */
   var _visionRef=null;
+  var _manualSnapshot=false,_features=window.IBCallFeatures||null,_videoPrefs=null;
+  if(_features&&typeof _features.videoSettings==='function')try{_videoPrefs=_features.videoSettings()}catch(e){}
   if(this.videoRuntime&&typeof this.videoRuntime.captureFrame==='function'&&this.videoRuntime.started){
-    try{_visionRef=await this.videoRuntime.captureFrame({targetWidth:512});}catch(e){_visionRef=null;}
+    if(this.pendingSnapshot&&this.pendingSnapshot.dataUrl){
+      _visionRef=this.pendingSnapshot;_manualSnapshot=true;
+    }else if(this.videoMode&&(!_videoPrefs||_videoPrefs.interval==='turn')){
+      try{_visionRef=await this.videoRuntime.captureFrame({targetWidth:(_videoPrefs&&_videoPrefs.width)||512});}catch(e){_visionRef=null;}
+    }else if(this.videoMode&&_videoPrefs&&_videoPrefs.interval!=='off'){
+      try{
+        var _latest=this.videoRuntime.getLastFrame&&this.videoRuntime.getLastFrame();
+        var _age=_latest?Date.now()-Number(_latest.timestamp||0):Infinity;
+        if(_latest&&_latest.dataUrl&&_age>=0&&_age<=Math.max(15000,Number(_videoPrefs.interval)*1600)&&Number(_latest.timestamp||0)>this._lastVisionFrameAt){
+          _visionRef=_latest;this._lastVisionFrameAt=Number(_latest.timestamp||0);
+        }
+      }catch(e){_visionRef=null}
+    }
   }
   try{
-    var result=await sendChatMessage({voiceCall:true,transcript:String(msg.text||''),acousticReference:_acref,visionReference:_visionRef,callSessionId:this.callSessionId,turnId:this.turnId,roleId:this.roleId,conversationId:this.conversationId});
+    var _plain=String(msg.text||'').trim(),_prefix=this.videoMode?'[视频通话] ':'[语音通话] ';
+    if(_features&&typeof _features.addDanmaku==='function')_features.addDanmaku(this,'me',_plain);
+    var result=await sendChatMessage({voiceCall:true,transcript:_prefix+_plain,acousticReference:_acref,visionReference:_visionRef,manualSnapshot:_manualSnapshot,videoCall:!!this.videoMode,videoAvailable:!!(this.videoRuntime&&this.videoRuntime.started),callSessionId:this.callSessionId,turnId:this.turnId,roleId:this.roleId,conversationId:this.conversationId});
+    if(result&&result.userMessageId&&_manualSnapshot){
+      this.snapshotCount=(Number(this.snapshotCount)||0)+1;
+      if(this.pendingSnapshot===_visionRef)this.pendingSnapshot=null;
+      if(_features&&typeof _features.setManualPreview==='function')_features.setManualPreview(null);
+    }
     if(epoch!==this.turnEpoch||this.state==='ended')return;
     if(!result||!result.ok)throw new Error(result&&result.error||'The character did not return a reply');
     if(result.voiceStreamed)return;/* 语句已随流式推送，避免二次提交 */
+    if(_features&&typeof _features.addDanmaku==='function')_features.addDanmaku(this,'ai',result.replyText||'');
     this.send({type:'adapter_reply',turn_id:this.turnId,text:result.replyText});
   }catch(error){if(epoch===this.turnEpoch){this.showError(String(error&&error.message||error));this.send({type:'adapter_reply',turn_id:this.turnId,text:''})}}
 };
@@ -498,7 +589,8 @@ VoiceCall.prototype.onTranscript=async function(msg){
 /* Streaming model tap target: called by communication.js as clean sentences arrive. */
 VoiceCall.prototype.pushSentence=function(text,done){
   if(this.destroyed||this.state==='ended'||!this.turnId)return;
-  var t=String(text||'').trim();
+  var t=String(text||'').replace(/<ws_(?:call|vsnap|vgift)\b[^>]*\/?>/gi,'').replace(/<\/ws_(?:call|vsnap|vgift)\s*>/gi,'').trim();
+  if(t&&window.IBCallFeatures&&typeof window.IBCallFeatures.addDanmaku==='function')window.IBCallFeatures.addDanmaku(this,'ai',t);
   if(this._modelFirstMs==null&&this._t0)this._modelFirstMs=performance.now()-this._t0;
   if(t){this.sinkActive=true;this.replyText+=t;text(byId('voice-call-reply'),this.replyText)}
   this.send({type:'adapter_reply_sentence',turn_id:this.turnId,text:t,done:!!done});
@@ -522,11 +614,11 @@ VoiceCall.prototype._renderWave=function(){
 
 VoiceCall.prototype.onMessage=function(msg){
   if(msg.type==='call_started'){
-    this.callSessionId=msg.call_session_id||msg.callSessionId||'';
+    this.callSessionId=msg.call_session_id||msg.callSessionId||this.callSessionId;
     if(!this.connectedAt)this.connectedAt=Date.now();
     this._startDuration();
-    if(msg.asr&&msg.asr.configured===false){this.showError('Bridge ASR is not configured');this.setState('error');}
-    else {this.showError('');this.setState('listening');}
+    if(msg.asr&&msg.asr.configured===false){this.showError('Bridge ASR is not configured');this.setState('error');this._resolveCallStart({ok:false,error:'语音转写服务尚未配置'});}
+    else {this.showError('');this.setState('listening');this._resolveCallStart({ok:true});}
     if(this.openingMessage){this.send({type:'greeting',turn_id:'greeting',text:this.openingMessage});this.openingMessage='';}
     return
   }
@@ -560,7 +652,7 @@ VoiceCall.prototype.onMessage=function(msg){
   }
   if(msg.type==='generation_end'){if(Number(msg.generation_id)===Number(this.generationId)){this.sinkActive=false;this._sendMetrics();if(!this.playing){if(this.state!=='error'&&this.state!=='interrupted')this.setState('listening')}else{this.replyEnded=true}}return}
   if(msg.type==='nothing_heard'){this.sinkActive=false;text(byId('voice-call-transcript'),'No speech detected');this.showError('');this.setState('listening');return}
-  if(msg.type==='hangup'){this.finish();return}
+  if(msg.type==='hangup'){this.finish('remote');return}
   if(msg.type==='error'){this.showError(msg.error||'Voice call failed');if(msg.stage==='asr'||msg.stage==='tts')this.setState('error')}
 };
 VoiceCall.prototype.showError=function(message){var el=byId('voice-call-error');if(el)el.textContent=message||'';if(el)el.hidden=!message};
@@ -578,17 +670,80 @@ VoiceCall.prototype.toggleSpeaker=function(){
   else if(this.aIndex<this.aEntries.length)this._maybePlay();
   else this.setState('listening');
 };
-VoiceCall.prototype.hangup=function(){this.send({type:'hangup'});this.finish()};
+VoiceCall.prototype.hangup=function(){this.send({type:'hangup'});this.finish('local')};
+VoiceCall.prototype.enableVideo=async function(){
+  var modal=byId('voice-call-modal'),stage=modal&&modal.querySelector('#voice-call-video'),cam=modal&&modal.querySelector('#voice-call-cam');
+  var video=modal&&modal.querySelector('#voice-call-video-el');
+  if(!modal||!stage||!video||!window.IBVideoRuntime||!window.IBVideoRuntime.createVideoRuntime)return false;
+  if(this.videoRuntime&&this.videoRuntime.started)return true;
+  var prefs=window.IBCallFeatures&&typeof window.IBCallFeatures.videoSettings==='function'?window.IBCallFeatures.videoSettings():{width:512,quality:0.78,interval:'turn'};
+  if(!this.videoRuntime)this.videoRuntime=window.IBVideoRuntime.createVideoRuntime({videoHost:video,targetWidth:prefs.width||512,quality:prefs.quality||0.78,useCompressor:false});
+  try{
+    await this.videoRuntime.start({width:prefs.width||512,quality:prefs.quality||0.78});
+    if(this.destroyed||this.state==='ended'){this.videoRuntime.free();this.videoRuntime=null;return false}
+    this.videoMode=true;this.kind='video';
+    var every=/^\d+$/.test(String(prefs.interval||''))?Number(prefs.interval)*1000:0;
+    this.videoRuntime.setLoop(every);
+    stage.hidden=false;stage.classList.add('has-camera-preview');var panel=modal.querySelector('.voice-call-panel');if(panel)panel.classList.add('has-video');
+    if(cam){cam.classList.add('on');cam.title='关闭视频';cam.setAttribute('aria-label','关闭视频')}
+    var shot=byId('voice-call-capture');if(shot)shot.hidden=false;
+    try{if(window.IBCallLive2D&&typeof window.IBCallLive2D.attach==='function')window.IBCallLive2D.attach(stage,this.role,this)}catch(e){}
+    return true;
+  }catch(error){
+    try{if(this.videoRuntime)this.videoRuntime.free()}catch(e){}
+    this.videoRuntime=null;this.videoMode=true;this.kind='video';
+    try{if(window.IBCallLive2D&&typeof window.IBCallLive2D.destroy==='function')window.IBCallLive2D.destroy(this)}catch(e){}
+    stage.hidden=true;stage.classList.remove('has-camera-preview');var panel2=modal.querySelector('.voice-call-panel');if(panel2)panel2.classList.remove('has-video');
+    if(cam){cam.classList.remove('on');cam.title='开启视频';cam.setAttribute('aria-label','开启视频')}
+    var shot2=byId('voice-call-capture');if(shot2)shot2.hidden=true;
+    try{toast('没有开启摄像头，通话将继续使用语音：'+String(error&&error.message||error).slice(0,80))}catch(e){}
+    return false;
+  }
+};
+VoiceCall.prototype.disableVideo=function(){
+  if(this.videoRuntime&&typeof this.videoRuntime.free==='function'){try{this.videoRuntime.free()}catch(e){}}
+  this.videoRuntime=null;
+  var modal=byId('voice-call-modal'),stage=modal&&modal.querySelector('#voice-call-video'),cam=modal&&modal.querySelector('#voice-call-cam');
+  try{if(window.IBCallLive2D&&typeof window.IBCallLive2D.destroy==='function')window.IBCallLive2D.destroy(this)}catch(e){}
+  if(stage){stage.hidden=true;stage.classList.remove('has-camera-preview')}
+  var panel=modal&&modal.querySelector('.voice-call-panel');if(panel)panel.classList.remove('has-video');
+  if(cam){cam.classList.remove('on');cam.title='开启视频';cam.setAttribute('aria-label','开启视频')}
+  this.pendingSnapshot=null;
+  var shot=byId('voice-call-capture');if(shot)shot.hidden=true;
+  if(window.IBCallFeatures&&typeof window.IBCallFeatures.setManualPreview==='function')window.IBCallFeatures.setManualPreview(null);
+};
+VoiceCall.prototype.captureSnapshot=async function(manual){
+  if(!this.videoRuntime||!this.videoRuntime.started)return {ok:false,error:'摄像头画面不可用'};
+  if(manual){
+    var prefs=window.IBCallFeatures&&typeof window.IBCallFeatures.videoSettings==='function'?window.IBCallFeatures.videoSettings():{width:512};
+    try{
+      var frame=await this.videoRuntime.captureFrame({targetWidth:prefs.width||512});
+      if(!frame||!frame.dataUrl){try{toast('没有抓到画面，请稍等片刻再试')}catch(e){};return {ok:false,error:'无法读取当前画面'}}
+      this.pendingSnapshot=frame;
+      if(window.IBCallFeatures&&typeof window.IBCallFeatures.setManualPreview==='function')window.IBCallFeatures.setManualPreview(frame);
+      try{toast('已夹入下一句，发送后会一起保存')}catch(e){}
+      return {ok:true,frame:frame};
+    }catch(error){try{toast('留影失败：'+String(error&&error.message||error).slice(0,80))}catch(e){};return {ok:false,error:String(error&&error.message||error)}}
+  }
+  if(window.IBCallFeatures&&typeof window.IBCallFeatures.captureAndStoreAiSnapshot==='function')return window.IBCallFeatures.captureAndStoreAiSnapshot(this);
+  return {ok:false,error:'留影功能未就绪'};
+};
 VoiceCall.prototype.release=function(){
   this.turnEpoch++;this.stopAudio();this.speaking=false;this._stopDuration();
+  if(this._callStartTimer){clearTimeout(this._callStartTimer);this._callStartTimer=null}
+  if(this._callStartWaiter){var _startWaiter=this._callStartWaiter;this._callStartWaiter=null;try{_startWaiter({ok:false,error:'通话已取消'})}catch(e){}}
   if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}
   if(this.node){try{this.node.disconnect()}catch(e){}this.node=null}
   if(this.stream){this.stream.getTracks().forEach(function(track){track.stop()});this.stream=null}
   if(this.ctx){try{this.ctx.close()}catch(e){}this.ctx=null}
   if(this.ws){try{this.ws.close(1000,'hangup')}catch(e){}this.ws=null}
-  if(this.videoRuntime&&typeof this.videoRuntime.free==='function'){try{this.videoRuntime.free()}catch(e){}this.videoRuntime=null}
+  this._live2dStopAudioMeter(null,true);
+  this.disableVideo();
 };
 VoiceCall.prototype.finish=function(){
+  if(this.connectedAt&&window.IBCallFeatures&&typeof window.IBCallFeatures.finishCall==='function'&&!this._callRecordFinished){
+    try{this._endRecordPromise=window.IBCallFeatures.finishCall(this)}catch(e){}
+  }
   this.destroyed=true;
   this.release();
   this.setState('ended');
@@ -603,47 +758,51 @@ var _voiceCallOpener=null;  /* Focus restoration anchor: the element that opened
 var _incomingCallOpener=null;  /* Focus anchor for the incoming call overlay */
 /* ── P2 · Call modal 视频面 UI：注入相机开关 + 视频预览（不碰 .voice-call-controls）── */
 function _toggleVideoSurface(call){
-  var modal=byId('voice-call-modal');if(!modal)return;
-  var stage=modal.querySelector('#voice-call-video');
-  var cam=modal.querySelector('#voice-call-cam');
-  if(call&&call.videoRuntime&&call.videoRuntime.started){
-    if(call.videoRuntime.free){try{call.videoRuntime.free()}catch(e){}}
-    call.videoRuntime=null;
-    if(stage)stage.hidden=true;
-    if(cam)cam.classList.remove('on');
-    return;
-  }
-  var vid=modal.querySelector('#voice-call-video-el');
-  if(!vid){vid=document.createElement('video');vid.id='voice-call-video-el';vid.muted=true;vid.playsInline=true;vid.autoplay=true;}
-  if(!call.videoRuntime){try{call.videoRuntime=window.IBVideoRuntime.createVideoRuntime({videoHost:vid,targetWidth:512});}catch(e){try{toast('视频运行时不可用')}catch(x){};return}}
-  try{call.videoRuntime.start().then(function(){if(stage){stage.hidden=false;}if(cam){cam.classList.add('on');}}).catch(function(e){if(call&&call.videoRuntime){try{call.videoRuntime.free()}catch(x){}}call.videoRuntime=null;try{toast('无法开启相机：'+String(e&&e.message||e).slice(0,80))}catch(x){}});}catch(e){if(call&&call.videoRuntime){try{call.videoRuntime.free()}catch(x){}}call.videoRuntime=null;try{toast('无法开启相机')}catch(x){}}
+  if(!call)return;
+  if(call.videoRuntime&&call.videoRuntime.started)call.disableVideo();
+  else call.enableVideo();
 }
 function _mountCallVideoSurface(call){
   try{
     var modal=byId('voice-call-modal');if(!modal)return;
-    if(modal.querySelector('#voice-call-video'))return;/* 幂等 */
+    var existing=modal.querySelector('#voice-call-video');
+    if(existing){
+      var existingCam=modal.querySelector('#voice-call-cam');
+      if(existingCam)existingCam.onclick=function(){_toggleVideoSurface(call);return false};
+      existing.hidden=true;var existingPanel=modal.querySelector('.voice-call-panel');if(existingPanel)existingPanel.classList.remove('has-video');
+      try{if(window.IBCallFeatures&&typeof window.IBCallFeatures.mountModalControls==='function')window.IBCallFeatures.mountModalControls()}catch(e){}
+      return;
+    }/* 幂等；重拨时更新相机按钮闭包 */
     var panel=modal.querySelector('.voice-call-panel')||modal;
     var stage=document.createElement('div');stage.className='voice-call-video';stage.id='voice-call-video';stage.hidden=true;
     var vid=document.createElement('video');vid.id='voice-call-video-el';vid.muted=true;vid.playsInline=true;vid.autoplay=true;
     stage.appendChild(vid);
-    var controls=modal.querySelector('.voice-call-controls');
-    if(controls){panel.insertBefore(stage,controls);}else{panel.appendChild(stage);}
-    var cam=document.createElement('button');cam.type='button';cam.className='voice-call-cam';cam.id='voice-call-cam';cam.textContent='\u25c9';cam.title='开启/关闭视频';cam.setAttribute('aria-label','开启或关闭视频');
-    var nameEl=byId('voice-call-role-name');if(nameEl){nameEl.parentNode.insertBefore(cam,nameEl);}else{panel.appendChild(cam);}
+    var controls=modal.querySelector('.voice-call-controls'),avatar=modal.querySelector('#voice-call-avatar');
+    if(avatar&&avatar.parentNode===panel){panel.insertBefore(stage,avatar);}else if(controls){panel.insertBefore(stage,controls);}else{panel.appendChild(stage);}
+    var cam=document.createElement('button');cam.type='button';cam.className='voice-call-control voice-call-cam';cam.id='voice-call-cam';cam.title='开启视频';cam.setAttribute('aria-label','开启视频');
+    cam.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 10l5-3v10l-5-3"/><rect x="3" y="6" width="12" height="12" rx="2"/><circle cx="9" cy="12" r="2.2"/></svg>';
+    if(controls)controls.insertBefore(cam,controls.firstChild);else panel.appendChild(cam);
     cam.onclick=function(){_toggleVideoSurface(call);return false;};
+    try{if(window.IBCallFeatures&&typeof window.IBCallFeatures.mountModalControls==='function')window.IBCallFeatures.mountModalControls()}catch(e){}
   }catch(e){}
 }
 /* 以指定角色开一次语音通话（outgoing，或由主动呼入 accept 后进入）。 */
 async function startVoiceCallFor(roleId,opts){
   opts=opts||{};
+  try{
+    if(window.IBCallFeatures&&typeof window.IBCallFeatures.loadSettings==='function'){
+      await window.IBCallFeatures.loadSettings(true);
+      if(window.IBCallFeatures.peekSettings&&window.IBCallFeatures.peekSettings().on===false){toast('通话功能已关闭');return {ok:false,error:'通话功能已关闭'}}
+    }
+  }catch(e){}
   if(current){
-    if(String(current.roleId||'')===String(roleId||'')){if(opts.incoming)toast('已有一通通话进行中');return}
+    if(String(current.roleId||'')===String(roleId||'')){if(opts.incoming)toast('已有一通通话进行中');return {ok:false,error:'已有一通通话进行中'}}
     current.hangup();current=null;
   }
-  if(String(roleId).indexOf('group_')===0){toast('Voice calls currently support one character at a time');return}
+  if(String(roleId).indexOf('group_')===0){toast('Voice calls currently support one character at a time');return {ok:false,error:'群聊暂不支持通话'}}
   var role=(apiConfigs||[]).find(function(item){return String(item.id)===String(roleId)})||(typeof archivedConfigs!=='undefined'?(archivedConfigs||[]).find(function(item){return String(item.id)===String(roleId)}):null);
-  if(!role){toast('The selected character is unavailable');return}
-  var modal=byId('voice-call-modal');if(!modal)return;
+  if(!role){toast('The selected character is unavailable');return {ok:false,error:'来电角色配置不可用'}}
+  var modal=byId('voice-call-modal');if(!modal)return {ok:false,error:'通话界面不可用'};
   if(_voiceCallCloseTimer){clearTimeout(_voiceCallCloseTimer);_voiceCallCloseTimer=null;}
   /* Capture the element that triggered the modal for focus restoration on close. */
   if(!_voiceCallOpener&&document.activeElement&&document.activeElement!==document.body)_voiceCallOpener=document.activeElement;
@@ -657,12 +816,18 @@ async function startVoiceCallFor(roleId,opts){
   /* Move focus to the first control (mute button) after the modal opens, so keyboard
      navigation works and screen readers announce the modal's purpose. */
   window.setTimeout(function(){var btn=byId('voice-call-mute');if(btn)try{btn.focus()}catch(e){}},0);
-  var call=new VoiceCall({roleId:String(roleId),conversationId:conversationId,role:role,incoming:!!opts.incoming,openingMessage:opts.openingMessage||''});
+  var call=new VoiceCall({roleId:String(roleId),conversationId:conversationId,role:role,incoming:!!opts.incoming,openingMessage:opts.openingMessage||'',video:!!opts.video});
   current=call;
   _mountCallVideoSurface(call);/* P2 · 视频面 UI（可切换预览 + 相机开关；不碰 .voice-call-controls 计数） */
-  try{await call.start()}catch(error){
+  try{
+    await call.start();
+    var videoStarted=false;
+    if(opts.video)videoStarted=await call.enableVideo();
+    return {ok:true,call:call,videoStarted:!!videoStarted};
+  }catch(error){
     call.destroyed=true;call.release();
     if(current===call){call.showError(String(error&&error.message||error));call.setState('error');current=null;}
+    return {ok:false,error:String(error&&error.message||error)};
   }
 }
 async function startVoiceCall(){
@@ -672,7 +837,13 @@ async function startVoiceCall(){
 }
 /* ── 主动语音呼入：来电卡片（参考「AI 主动发起联系」）── */
 function _findInteractionEvent(eventId){
-  try{if(typeof window._activeInteractionList==='function')return (window._activeInteractionList()).find(function(e){return e.eventId===eventId})||null}catch(e){}
+  try{if(typeof window._activeInteractionList==='function'){var found=(window._activeInteractionList()).find(function(e){return e.eventId===eventId})||null;if(found)return found}}catch(e){}
+  try{
+    if(window.IBCallFeatures&&typeof window.IBCallFeatures.findInviteSync==='function'){
+      var row=window.IBCallFeatures.findInviteSync(eventId);
+      if(row&&row.callInvite)return Object.assign({},row.callInvite,{eventId:String(row.id||eventId),messageId:String(row.id||''),roleId:String(row.friendId||''),roleName:safeName((apiConfigs||[]).find(function(item){return String(item.id)===String(row.friendId)})),conversationId:row.threadId?'thread:'+row.threadId:'main:'+String(row.friendId||''),openingMessage:row.callInvite.say||'',avatar:(apiConfigs||[]).find(function(item){return String(item.id)===String(row.friendId)})?.avatar||''})
+    }
+  }catch(e){}
   return null
 }
 function _markInteraction(eventId,status){
@@ -690,6 +861,7 @@ function offerIncoming(event){
     /* Capture focus anchor for restoration when the overlay closes. */
     if(!_incomingCallOpener&&document.activeElement&&document.activeElement!==document.body)_incomingCallOpener=document.activeElement;
     text(byId('incoming-call-role-name'),ev.roleName||'AI');
+    text(byId('incoming-call-state'),ev.kind==='video'?'视频来电':'语音来电');
     text(byId('incoming-call-msg'),ev.openingMessage||'');
     text(byId('incoming-call-reason'),ev.reason||'');
     var avatar=byId('incoming-call-avatar');
@@ -713,22 +885,31 @@ function _hideIncoming(){
     overlay.hidden=true;overlay.setAttribute('aria-hidden','true');
   }
 }
-function acceptIncoming(eventId){
+async function acceptIncoming(eventId){
   var ev=_findInteractionEvent(eventId)||{eventId:eventId};
-  if(ev.eventId)_markInteraction(ev.eventId,'accepted');
-  if(ev.planId)_resolvePlan(ev.planId,'accepted');
   _hideIncoming();
   var roleId=ev.roleId;if(!roleId){toast('来电角色信息缺失');return}
-  startVoiceCallFor(String(roleId),{incoming:true,openingMessage:ev.openingMessage||ev.openingLine||'',conversationId:(ev.callMeta&&ev.callMeta.conversationId)||('main:'+roleId),avatar:ev.avatar||''})
+  if(ev.messageId&&window.IBCallFeatures&&typeof window.IBCallFeatures.acceptInviteByMessageId==='function')return window.IBCallFeatures.acceptInviteByMessageId(ev.messageId);
+  var result=await startVoiceCallFor(String(roleId),{incoming:true,video:ev.kind==='video',openingMessage:ev.openingMessage||ev.openingLine||'',conversationId:ev.conversationId||(ev.callMeta&&ev.callMeta.conversationId)||('main:'+roleId),avatar:ev.avatar||''});
+  if(result&&result.ok){
+    if(ev.eventId)_markInteraction(ev.eventId,'accepted');
+    if(ev.planId)_resolvePlan(ev.planId,'accepted');
+  }else{
+    if(ev.eventId)_markInteraction(ev.eventId,'failed');
+    if(ev.planId)_resolvePlan(ev.planId,'failed');
+  }
+  return result;
 }
 function declineIncoming(eventId){
   var ev=_findInteractionEvent(eventId)||{eventId:eventId};
+  if(ev.messageId&&window.IBCallFeatures&&typeof window.IBCallFeatures.declineInviteByMessageId==='function'){window.IBCallFeatures.declineInviteByMessageId(ev.messageId);_hideIncoming();return}
   if(ev.eventId)_markInteraction(ev.eventId,'declined');
   if(ev.planId)_resolvePlan(ev.planId,'declined');
-  _hideIncoming();toast('已拒绝本次来电')
+  _hideIncoming();toast('已暂不接听本次来电')
 }
 function dismissIncoming(eventId){
   var ev=_findInteractionEvent(eventId)||{eventId:eventId};
+  if(ev.messageId&&window.IBCallFeatures&&typeof window.IBCallFeatures.dismissInviteByMessageId==='function'){window.IBCallFeatures.dismissInviteByMessageId(ev.messageId);_hideIncoming();return}
   if(ev.eventId)_markInteraction(ev.eventId,'dismissed');
   if(ev.planId)_resolvePlan(ev.planId,'dismissed');
   _hideIncoming()

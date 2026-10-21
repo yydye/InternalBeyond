@@ -69,6 +69,8 @@ async function main(){
     const a1=await evaluate(cdp,"(function(){var host=document.createElement('div');var a=IBMedia.createAdapter({type:'unknown',provider:'unknown',url:'',caps:{canFrame:false,canSeek:false}},host);a.load();var msg=host.querySelector('.ci-no-source');return{hasMsg:!!msg,text:(msg&&msg.textContent||'').slice(0,12)}})()");
     check('media.unknownFallback',a1&&a1.hasMsg===true&&/暂不支持/.test(a1.text||''),JSON.stringify(a1));
     check('media.destroyNoThrow',await evaluate(cdp,"(function(){try{var h=document.createElement('div');IBMedia.createAdapter({type:'remote',provider:'direct',id:'x',url:'https://x/v.mp4',caps:{canFrame:true,canSeek:true}},h).destroy();IBMedia.createAdapter({type:'remote',provider:'hls',id:'x',url:'https://x/s.m3u8',caps:{}},h).destroy();IBMedia.createAdapter({type:'remote',provider:'youtube',id:'x',url:'https://youtu.be/aBcD',caps:{}},h).destroy();IBMedia.createAdapter({type:'remote',provider:'bilibili',id:'x',url:'https://b23.tv/BV1xx',caps:{}},h).destroy();return true}catch(e){return String(e&&e.message||e)}})()"));
+    const pauseEvent = await evaluate(cdp,"(function(){var host=document.createElement('div');document.body.appendChild(host);var a=IBMedia.createAdapter({type:'video',provider:'direct',id:'pause-test',url:'blob:ib-cinema-pause-test',caps:{canFrame:true,canSeek:true,remote:false}},host),seen=0;a.on('paused',function(){seen++});a.load();var v=host.querySelector('video');if(v)v.dispatchEvent(new Event('pause'));var count=seen;a.destroy();host.remove();return{video:!!v,pauseEvents:count}})()");
+    check('media.nativePauseEvent',pauseEvent&&pauseEvent.video===true&&pauseEvent.pauseEvents>0,JSON.stringify(pauseEvent));
 
     /* Cinema Exit（header 按钮）→ zero residue */
     await evaluate(cdp,"IBApps.open('cinema')");await new Promise(r=>setTimeout(r,200));
@@ -80,6 +82,9 @@ async function main(){
     await evaluate(cdp,"document.querySelector('#ci-exit').click()");await new Promise(r=>setTimeout(r,300));
     const resid1=await evaluate(cdp,"(function(){var ov=document.getElementById('ib-app-overlay');return JSON.stringify({overlay:!!ov,video:!!document.querySelector('#ib-app-overlay video'),iframe:!!document.querySelector('#ib-app-overlay iframe'),bodyOpen:(document.body.className.indexOf('ibapp-open')>=0)})})()");
     check('cinema.exitResidue',resid1&&resid1.indexOf('"overlay":false')>=0&&resid1.indexOf('"video":false')>=0&&resid1.indexOf('"bodyOpen":false')>=0,resid1);
+    const exitPaused=await waitFor(cdp,"IB.activity.listActivities({type:'cinema'}).then(function(l){var a=l.find(function(x){return x.title==='a'});return !!a&&a.status==='paused'})",3000);
+    const exitStatus=await evaluate(cdp,"IB.activity.listActivities({type:'cinema'}).then(function(l){var a=l.find(function(x){return x.title==='a'});return a&&{id:a.id,status:a.status,updatedAt:a.updatedAt,progress:a.progress}})");
+    check('cinema.exitPausesActivity',exitPaused,JSON.stringify(exitStatus));
 
     /* Cinema → Apps / Chat → zero residue */
     await evaluate(cdp,"IBApps.open('cinema')");await new Promise(r=>setTimeout(r,220));

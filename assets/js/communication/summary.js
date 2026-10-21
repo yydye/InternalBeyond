@@ -6,25 +6,31 @@ function _summarySafeJsArg(value){var guard=window.IBSafeImage;return guard&&typ
 function _getSummaryTriggerCount(){try{var k=parseInt(document.getElementById('api-read-chat')&&document.getElementById('api-read-chat').value);if(k&&k>=5)return Math.max(8,k);return 10}catch(e){return 10}}
 const SUMMARY_TRIGGER_COUNT=10;/* 兜底默认值，实际运行时用 _getSummaryTriggerCount() */
 async function getSummarySettings(){
-  try{const s=await dbGet('apiSettings','summarySettings');return s||{enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60}}catch(e){return{enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60}}
+  try{const s=await dbGet('apiSettings','summarySettings');return s||{enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,presenceGreetingEnabled:false,musicEnabled:false,summaryApiId:'',summaryWindow:60}}catch(e){return{enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,presenceGreetingEnabled:false,musicEnabled:false,summaryApiId:'',summaryWindow:60}}
 }
 async function saveSummarySettings(){
-  const s={id:'summarySettings',
+  let previous={};try{previous=await dbGet('apiSettings','summarySettings')||{}}catch(e){}
+  const s=Object.assign({},previous,{id:'summarySettings',
     enabled:!!document.getElementById('api-summary-toggle')?.checked,
     keepCount:parseInt(document.getElementById('api-summary-keep')?.value)||6,
     welcomeEnabled:!!document.getElementById('api-welcome-toggle')?.checked,
     welcomeInterval:parseInt(document.getElementById('api-welcome-interval')?.value)||2,
+    presenceGreetingEnabled:!!document.getElementById('api-presence-greeting-toggle')?.checked,
     musicEnabled:!!document.getElementById('api-music-toggle')?.checked,
     summaryApiId:document.getElementById('api-summary-api')?.value||'',
-    summaryWindow:parseInt(document.getElementById('api-summary-window')?.value)||60};
+    summaryWindow:parseInt(document.getElementById('api-summary-window')?.value)||60});
   await dbPut('apiSettings',s);toast('设置已保存');
+  if(window.IBPresenceRuntime&&typeof window.IBPresenceRuntime.configure==='function')window.IBPresenceRuntime.configure(s);
+  if(!s.welcomeEnabled&&window.IBPresenceRuntime&&typeof window.IBPresenceRuntime.clearPendingContext==='function')window.IBPresenceRuntime.clearPendingContext();
 }
 async function loadSummarySettingsUI(){
   const s=await getSummarySettings();
+  if(window.IBPresenceRuntime&&typeof window.IBPresenceRuntime.configure==='function')window.IBPresenceRuntime.configure(s);
   const t=document.getElementById('api-summary-toggle');if(t)t.checked=!!s.enabled;
   const k=document.getElementById('api-summary-keep');if(k)k.value=String(s.keepCount||6);
   const w=document.getElementById('api-welcome-toggle');if(w)w.checked=!!s.welcomeEnabled;
   const wi=document.getElementById('api-welcome-interval');if(wi)wi.value=String(s.welcomeInterval||2);
+  const pg=document.getElementById('api-presence-greeting-toggle');if(pg)pg.checked=s.presenceGreetingEnabled===true;
   const mu=document.getElementById('api-music-toggle');if(mu)mu.checked=!!s.musicEnabled;
   const sw=document.getElementById('api-summary-window');if(sw)sw.value=String(s.summaryWindow||60);
   /* Populate summary API dropdown */

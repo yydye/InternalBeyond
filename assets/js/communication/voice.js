@@ -39,7 +39,7 @@ function _voiceApiLine(v,withTone){var d=Math.max(1,Math.round((v&&v.duration)||
    3) 语气：录音结束后本地计算语速/音量/停顿/基频等声学特征（不联网、确定性），
       定格存入消息（voice.tone），仅拼进「听不到原声的模型」的语音等效文本供其自行判断情绪；
       能听原声的模型不附加任何语气标签；界面不显示；不动 system、不改旧消息文本，升级零缓存重建。 */
-async function getVoiceTransSettings(){try{const s=await dbGet('apiSettings','voiceTrans');return s||{endpoint:'',apiKey:'',credentialRef:'',model:'',direct:true}}catch(e){return{endpoint:'',apiKey:'',credentialRef:'',model:'',direct:true}}}
+async function getVoiceTransSettings(){try{const s=await dbGet('apiSettings','voiceTrans');return s||{endpoint:'',apiKey:'',credentialRef:'',provider:'openai',model:'',direct:true}}catch(e){return{endpoint:'',apiKey:'',credentialRef:'',provider:'openai',model:'',direct:true}}}
 async function _vtGet(){return await getVoiceTransSettings()}
 function _vtOn(s){return !!(s&&s.endpoint&&(s.credentialRef||s.apiKey)&&s.model)}
 async function _voiceboxAsrSelected(){
@@ -66,19 +66,27 @@ function _vtUrl(u){u=String(u||'').trim().replace(/\/+$/,'');if(!u)return '';if(
 async function saveVoiceTransSettings(){
   try{
     const existing=await getVoiceTransSettings();
+    const selector=document.getElementById('api-vt-credential');
+    const selectedOption=selector&&selector.options[selector.selectedIndex];
+    const selectedRef=String(selector&&selector.value||'').trim();
+    const inputKey=(document.getElementById('api-vt-key')?.value||'').trim();
+    const legacyKey=String(existing.apiKey||'');
     const s={id:'voiceTrans',
       endpoint:(document.getElementById('api-vt-endpoint')?.value||'').trim(),
-      apiKey:(document.getElementById('api-vt-key')?.value||'').trim(),
-      credentialRef:String(existing.credentialRef||''),
+      apiKey:'',
+      credentialRef:selectedRef||String(existing.credentialRef||''),
+      provider:String(selectedOption&&selectedOption.dataset.provider||existing.provider||'openai'),
       model:(document.getElementById('api-vt-model')?.value||'').trim(),
       direct:!!document.getElementById('api-vt-direct')?.checked};
-    if(s.apiKey){
+    const secret=inputKey||(!s.credentialRef?legacyKey:'');
+    if(secret){
       if(typeof window._ibWriteVaultCredential!=='function')throw new Error('credentials-service-unavailable');
-      s.credentialRef=await window._ibWriteVaultCredential(s.credentialRef||'voice_transcription',{provider:'openai',endpoint:s.endpoint,model:s.model},s.apiKey);
-      s.apiKey='';
+      s.credentialRef=await window._ibWriteVaultCredential(s.credentialRef||'voice_transcription',{provider:s.provider,endpoint:s.endpoint,model:s.model},secret);
     }
+    if(s.apiKey)s.apiKey='';
     await dbPut('apiSettings',s);
     const key=document.getElementById('api-vt-key');if(key)key.value='';
+    var hint=document.getElementById('api-vt-vault-hint');if(hint)hint.textContent=s.credentialRef?'已绑定 Credential Vault · '+s.provider:'未选择 Vault 凭据；语音转写将保持关闭。';
     toast('设置已保存');
     return true;
   }catch(e){
@@ -89,9 +97,15 @@ async function saveVoiceTransSettings(){
 async function loadVoiceTransUI(){
   const s=await getVoiceTransSettings();
   const e=document.getElementById('api-vt-endpoint');if(e)e.value=s.endpoint||'';
-  const k=document.getElementById('api-vt-key');if(k)k.value=s.apiKey||'';
+  /* Legacy plaintext keys are never echoed into a visible password field. A user-initiated save migrates them to Vault. */
+  const k=document.getElementById('api-vt-key');if(k)k.value='';
   const m=document.getElementById('api-vt-model');if(m)m.value=s.model||'';
   const d=document.getElementById('api-vt-direct');if(d)d.checked=s.direct!==false;
+  var selector=document.getElementById('api-vt-credential');
+  if(typeof window._ibRefreshVaultCredentialCatalog==='function')await window._ibRefreshVaultCredentialCatalog(false);
+  if(typeof window._ibRenderVoiceTransCredentialOptions==='function')await window._ibRenderVoiceTransCredentialOptions(s.credentialRef||'',s.provider||'openai');
+  if(selector)selector.value=String(s.credentialRef||'');
+  var hint=document.getElementById('api-vt-vault-hint');if(hint)hint.textContent=s.apiKey&&!s.credentialRef?'检测到旧版凭据；在保存时会迁移到 Credential Vault，Key 不会显示在此处。':(s.credentialRef?'已绑定 Credential Vault · '+String(s.provider||'openai'):'未选择 Vault 凭据；语音转写保持关闭。');
 }
 /* 能否直接听音频：Gemini 原生通道恒可；OpenAI 兼容通道按模型名判断（gemini 系经兼容层/中转、GPT-Audio、Qwen-Omni 等）；Anthropic 文本接口不支持 */
 function _vmAudioNative(cfg){
@@ -126,9 +140,9 @@ async function _vtTranscribe(vt,blob,mime,signal){
   const ref=String(vt&&vt.credentialRef||'').trim();
   if(ref){
     if(typeof window._ibWithRuntimeApiCredential!=='function')throw new Error('CREDENTIAL_UNAVAILABLE');
-    return window._ibWithRuntimeApiCredential({id:ref,credentialRef:ref,provider:'openai',endpoint:vt.endpoint},function(runtimeCfg){
+    return window._ibWithRuntimeApiCredential({id:ref,credentialRef:ref,provider:String(vt.provider||'openai'),endpoint:vt.endpoint},function(runtimeCfg){
       return _vtTranscribeWithKey(vt,runtimeCfg.apiKey,blob,mime,signal);
-    });
+    },{endpoint:vt.endpoint,expectedProvider:String(vt.provider||'openai')});
   }
   /* Pre-ref data remains usable only as migration compatibility; saving the form moves it into Vault. */
   const legacyKey=String(vt&&vt.apiKey||'');
