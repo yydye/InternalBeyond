@@ -13,7 +13,8 @@ pub enum StartAction {
     Reuse,
     Spawn,
     Wait,
-    FailClosed,
+    Recover,
+    Relocate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,9 +65,8 @@ impl HomeNodeStartGate {
                 StartAction::Spawn
             }
             EndpointProbe::Offline => StartAction::Wait,
-            EndpointProbe::OccupiedUnknown | EndpointProbe::UnhealthyIdentity => {
-                StartAction::FailClosed
-            }
+            EndpointProbe::UnhealthyIdentity => StartAction::Recover,
+            EndpointProbe::OccupiedUnknown => StartAction::Relocate,
         }
     }
 
@@ -152,11 +152,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_listener_fails_closed_without_spawn_or_kill() {
+    fn unknown_listener_requests_a_port_relocation_without_spawn_or_kill() {
         let mut gate = HomeNodeStartGate::default();
         assert_eq!(
             gate.plan(EndpointProbe::OccupiedUnknown),
-            StartAction::FailClosed
+            StartAction::Relocate
         );
         assert_eq!(
             probe_reason_code(EndpointProbe::OccupiedUnknown),
@@ -164,6 +164,13 @@ mod tests {
         );
         assert!(!gate.spawn_attempted());
         assert!(!safe_fallback_pid(7, 7, false, true));
+    }
+
+    #[test]
+    fn same_identity_but_unhealthy_home_node_uses_existing_recovery() {
+        let mut gate = HomeNodeStartGate::default();
+        assert_eq!(gate.plan(EndpointProbe::UnhealthyIdentity), StartAction::Recover);
+        assert!(!gate.spawn_attempted());
     }
 
     #[test]

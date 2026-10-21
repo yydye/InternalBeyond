@@ -51,7 +51,7 @@ const devServiceContract = require('../../runtime/dev-service-contract.js');
    应用来源，不应被误判成一个 LAN/公网 Origin。 */
 const { isTauriOrigin, blocksDevWebOrigin } = require('../../runtime/host-origin.js');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = require('../../runtime/home-node-identity.js').HOME_NODE_PROTOCOL_VERSION;
 const WORK_RUNS_PATH = '/internal/work/runs';
 const APP_DRAFTS_PATH = WORK_RUNS_PATH + '/app-drafts';
 const AGENT_MEMORY_PATH = '/internal/agent-memory';
@@ -71,6 +71,10 @@ const DESKTOP_CREDENTIAL_PATH = '/internal/desktop-credential';
    ★ 它落在 `/internal/` 前缀下 ⇒ 自动继承 isDesktopOnlyPath（远端未配置桌面
      token → 403）、桌面 token 判定与 loopback 语义，一行豁免都不加。 */
 const COGNITIVE_POLICY_PATH = '/internal/runtime/cognitive-policy';
+const QQ_ONEBOT_INTERNAL_PATH = '/internal/qq-onebot/v1';
+const QQ_OFFICIAL_INTERNAL_PATH = '/internal/qq-official/v1';
+const QQ_ONEBOT_WEBHOOK_RE = /^\/qq\/onebot\/v11\/(\d{5,12})$/;
+const MAX_QQ_ONEBOT_EVENT_BYTES = 256 * 1024;
 const DESKTOP_CREDENTIAL_HEADER = 'x-ib-bootstrap';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;       /* 单条消息可能内联 base64 图片（IMG_MAX_BYTES=20MiB × 压缩前） */
 const MAX_AGENT_MEMORY_BACKUP_BYTES = 128 * 1024 * 1024;
@@ -176,6 +180,9 @@ function createHomeNodeHttp(deps) {
      ★ 它与解释边界同级：同样在桌面凭据判定**之后**，同样没有
        isEconomyCommandPath 式豁免。 */
   const runtimeRecall = deps.runtimeRecall || null;
+  const qqOnebot = deps.qqOnebot || null;
+  const qqNapcat = deps.qqNapcat || null;
+  const qqOfficial = deps.qqOfficial || null;
   /* P21-R4-PROD-1 · 认知控制面（产品级读写边界）。
      ★ 它**不是**第二份 policy 权威：持久化仍然只有 runtime-policy.js 一份
        （见 home-node-service.js 的装配）。本层只做状态矩阵与窄投影。
@@ -195,6 +202,8 @@ function createHomeNodeHttp(deps) {
   const clock = deps.clock || (() => Date.now());
   const token = String(deps.token || '');
   const version = String(deps.version || '0.0.0');
+  const dataDirectoryId = String(deps.dataDirectoryId || '');
+  const instanceId = String(deps.instanceId || '');
   const allowedOrigins = Array.isArray(deps.allowedOrigins) ? deps.allowedOrigins.map(String) : [];
   const devMode = deps.devMode === true || String(process.env.IB_DEV_MODE || '') === '1';
   const devIdentity = deps.devIdentity || devServiceContract.identityFromEnvironment(process.env);
@@ -492,6 +501,8 @@ function createHomeNodeHttp(deps) {
       service: 'internal-beyond-home-node',
       environment: devIdentity.mode,
       devInstanceId: devIdentity.instanceId || null,
+      instanceId: instanceId,
+      dataDirectoryId: dataDirectoryId,
       version: version,
       role: 'canonical-chat-authority',
       open: open,
@@ -557,6 +568,39 @@ function createHomeNodeHttp(deps) {
       });
       req.on('error', error => reject(Object.assign(error, { code: 'read-error' })));
     });
+  }
+
+  /* OneBot media payloads are out of scope for V1. Drain oversized local events
+     without retaining them or resetting NapCat's HTTP connection. */
+  function readBoundedEvent(req, limit) {
+    return new Promise(resolve => {
+      let size = 0;
+      let tooLarge = false;
+      const chunks = [];
+      req.on('data', chunk => {
+        if (tooLarge) return;
+        size += chunk.length;
+        if (size > limit) { tooLarge = true; chunks.length = 0; return; }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (tooLarge) { resolve({ ok: false, error: 'too-large' }); return; }
+        const rawBody = Buffer.concat(chunks);
+        if (!rawBody.length) { resolve({ ok: false, error: 'empty-event' }); return; }
+        resolve({ ok: true, rawBody });
+      });
+      req.on('error', () => resolve({ ok: false, error: 'read-error' }));
+    });
+  }
+
+  function parseBoundedEvent(rawBody) {
+    const raw = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody || '');
+    if (!raw.trim()) return { ok: false, error: 'empty-event' };
+    try {
+      const event = JSON.parse(raw);
+      if (!event || typeof event !== 'object' || Array.isArray(event)) return { ok: false, error: 'bad-event' };
+      return { ok: true, event };
+    } catch (_) { return { ok: false, error: 'bad-event' }; }
   }
 
   function workRunStatusFor(code) {
@@ -2511,9 +2555,13 @@ function createHomeNodeHttp(deps) {
 
   async function route(req, res, url, method, remote) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
+    /* NapCat is a separate local process and cannot carry the Dev Host identity.
+       Its exact callback POST is admitted to the dedicated route below, which
+       still requires loopback, the per-account URL capability and OneBot HMAC. */
+    const isQQOneBotCallbackPost = method === 'POST' && QQ_ONEBOT_WEBHOOK_RE.test(path);
 
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method || '').toUpperCase())
-      && !authorizeRequestIdentity(req)) {
+      && !isQQOneBotCallbackPost && !authorizeRequestIdentity(req)) {
       bad(res, 403, 'environment-identity-mismatch', { hint: 'the Dev service identity did not match this Home Node' }, req);
       return;
     }
@@ -2569,7 +2617,99 @@ function createHomeNodeHttp(deps) {
     const rawOrigin = String(req.headers.origin || '').trim();
     if (rawOrigin && rawOrigin !== 'null' && path.indexOf('/mobile/') !== 0 && !originAllowed(rawOrigin)) {
       record('warn', 'rejected-origin', { path: path, origin: rawOrigin, loopback: isLoopback(req) });
+      const rejectedQQWebhook = QQ_ONEBOT_WEBHOOK_RE.exec(path);
+      if (rejectedQQWebhook) {
+        if (qqOnebot && typeof qqOnebot.reportCallbackAuthFailure === 'function') {
+          qqOnebot.reportCallbackAuthFailure(rejectedQQWebhook[1], 'origin-rejected');
+        }
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId: rejectedQQWebhook[1], reason: 'origin-rejected' });
+      }
       bad(res, 403, 'origin-denied', { hint: 'a browser page on a foreign origin may not reach the Home Node' }, req);
+      return;
+    }
+
+    /* NapCat OneBot 11 HTTP Client callback. This is deliberately separate from
+       the desktop API credential: the per-account callback token is derived by
+       the QQ seam, and this route is always loopback-only and rejects browser
+       Origins. It never exposes the OneBot credential in logs. */
+    const qqWebhookMatch = QQ_ONEBOT_WEBHOOK_RE.exec(path);
+    if (qqWebhookMatch) {
+      if (method !== 'POST') { bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req); return; }
+      const accountId = qqWebhookMatch[1];
+      if (!qqOnebot || remote || !isLoopback(req) || rawOrigin) {
+        if (qqOnebot && typeof qqOnebot.reportCallbackAuthFailure === 'function') {
+          qqOnebot.reportCallbackAuthFailure(accountId, 'local-only-rejected');
+        }
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason: 'local-only-rejected' });
+        bad(res, 403, 'qq-onebot-local-only', null, req);
+        return;
+      }
+      const callbackToken = String(url.searchParams.get('token') || '');
+      if (typeof qqOnebot.isCallbackToken !== 'function' || !qqOnebot.isCallbackToken(accountId, callbackToken)) {
+        req.resume();
+        if (typeof qqOnebot.reportCallbackAuthFailure === 'function') {
+          qqOnebot.reportCallbackAuthFailure(accountId, 'callback-token-invalid');
+        }
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason: 'callback-token-invalid' });
+        bad(res, 403, 'qq-onebot-unauthorized', null, req);
+        return;
+      }
+      const parsedEvent = await readBoundedEvent(req, MAX_QQ_ONEBOT_EVENT_BYTES);
+      if (!parsedEvent.ok) { res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return; }
+      const signature = String(req.headers['x-signature'] || '');
+      if (typeof qqOnebot.isCallbackSignature !== 'function'
+        || !qqOnebot.isCallbackSignature(accountId, parsedEvent.rawBody, signature)) {
+        const reason = signature ? 'signature-invalid' : 'signature-missing';
+        if (typeof qqOnebot.reportCallbackAuthFailure === 'function') qqOnebot.reportCallbackAuthFailure(accountId, reason);
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason });
+        bad(res, 403, 'qq-onebot-signature-invalid', null, req);
+        return;
+      }
+      const selfIdHeader = String(req.headers['x-self-id'] || '').trim();
+      if (!selfIdHeader) {
+        if (typeof qqOnebot.reportCallbackAuthFailure === 'function') qqOnebot.reportCallbackAuthFailure(accountId, 'self-id-missing');
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason: 'self-id-missing' });
+        bad(res, 403, 'qq-onebot-self-id-invalid', null, req);
+        return;
+      }
+      if (selfIdHeader !== accountId) {
+        if (typeof qqOnebot.reportCallbackAuthFailure === 'function') qqOnebot.reportCallbackAuthFailure(accountId, 'self-id-mismatch');
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason: 'self-id-mismatch' });
+        bad(res, 403, 'qq-onebot-self-id-invalid', null, req);
+        return;
+      }
+      if (typeof qqOnebot.reportCallbackAuthenticated === 'function') qqOnebot.reportCallbackAuthenticated(accountId);
+      if (typeof qqOnebot.isReceivingEnabled !== 'function' || !qqOnebot.isReceivingEnabled(accountId)) {
+        /* Validate the signed raw request, but do not parse or expose event
+           contents while an account is manual or takeover is paused. */
+        res.writeHead(204, { 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      const decodedEvent = parseBoundedEvent(parsedEvent.rawBody);
+      if (!decodedEvent.ok) { res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return; }
+      if (String(decodedEvent.event.self_id == null ? '' : decodedEvent.event.self_id) !== accountId) {
+        if (typeof qqOnebot.reportCallbackAuthFailure === 'function') qqOnebot.reportCallbackAuthFailure(accountId, 'self-id-mismatch');
+        record('warn', 'qq-onebot-callback-auth-rejected', { accountId, reason: 'self-id-mismatch' });
+        bad(res, 403, 'qq-onebot-self-id-invalid', null, req);
+        return;
+      }
+      let result;
+      try { result = await qqOnebot.receive(accountId, callbackToken, decodedEvent.event); }
+      catch (_) { result = null; }
+      const quickOperation = result && result.ok === true ? result.quickOperation : null;
+      if (quickOperation && typeof quickOperation.reply === 'string' && quickOperation.reply.trim()) {
+        const body = JSON.stringify(quickOperation);
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': Buffer.byteLength(body),
+          'Cache-Control': 'no-store'
+        });
+        res.end(body);
+      } else {
+        res.writeHead(204, { 'Cache-Control': 'no-store' });
+        res.end();
+      }
       return;
     }
 
@@ -2681,6 +2821,250 @@ function createHomeNodeHttp(deps) {
         return;
       }
       return gateway.dispatch(path, req, res, url);
+    }
+
+    if (path.indexOf(QQ_ONEBOT_INTERNAL_PATH) === 0) {
+      if (!qqOnebot) { bad(res, 501, 'qq-onebot-unavailable', null, req); return; }
+      if (remote || !isLoopback(req)) { bad(res, 403, 'qq-onebot-local-only', null, req); return; }
+      if (!token) { bad(res, 403, 'desktop-token-required', null, req); return; }
+      if (!authorized(req, url)) { bad(res, 401, 'unauthenticated', null, req); return; }
+      const suffix = path.slice(QQ_ONEBOT_INTERNAL_PATH.length).replace(/^\/+/, '');
+      if (suffix === 'status' && method === 'GET') { ok(res, qqOnebot.status(), req); return; }
+      if (suffix === 'heartbeat' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+          bad(res, 400, 'invalid-request', null, req); return;
+        }
+        ok(res, qqOnebot.heartbeat(), req); return;
+      }
+      if (suffix === 'setup' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 16 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const accountId = body && body.accountId;
+        const baseUrl = body && body.baseUrl;
+        const result = qqOnebot.setup(accountId, baseUrl);
+        if (!result.ok) { bad(res, 400, result.error, null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'config' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 128 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = qqOnebot.configure(body);
+        if (!result.ok) { bad(res, 400, result.error, null, req); return; }
+        ok(res, { paused: result.paused, accounts: result.accounts }, req); return;
+      }
+      if (suffix === 'poll' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const waitMs = Math.max(0, Math.min(1000, Number(body && body.waitMs) || 0));
+        if (waitMs) await new Promise(resolve => setTimeout(resolve, waitMs));
+        ok(res, qqOnebot.poll(), req); return;
+      }
+      if (suffix === 'complete' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 16 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = qqOnebot.complete(body);
+        if (!result.ok) { bad(res, 409, result.error, null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/environment' && method === 'GET') {
+        if (!qqNapcat || typeof qqNapcat.environment !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        ok(res, qqNapcat.environment(), req); return;
+      }
+      if (suffix === 'napcat/release' && method === 'GET') {
+        if (!qqNapcat || typeof qqNapcat.latestRelease !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        const result = await qqNapcat.latestRelease();
+        if (!result || result.ok !== true) { bad(res, 502, result && result.error || 'qq-napcat-release-unavailable', { releasesUrl: result && result.releasesUrl || null }, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/download/status' && method === 'GET') {
+        if (!qqNapcat || typeof qqNapcat.downloadStatus !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        ok(res, qqNapcat.downloadStatus(), req); return;
+      }
+      if (suffix === 'napcat/download' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.startDownload !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqNapcat.startDownload(body);
+        if (!result || result.ok !== true) { bad(res, 400, result && result.error || 'qq-napcat-download-rejected', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/download/cancel' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.cancelDownload !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) { bad(res, 400, 'invalid-request', null, req); return; }
+        const result = qqNapcat.cancelDownload();
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-cancel-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/open-folder' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.openDownloadFolder !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) { bad(res, 400, 'invalid-request', null, req); return; }
+        const result = await qqNapcat.openDownloadFolder();
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-open-folder-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/download/remove' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.removeVerifiedArchive !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqNapcat.removeVerifiedArchive(body);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-remove-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/account/status' && method === 'GET') {
+        if (!qqNapcat || typeof qqNapcat.statusAccount !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        const result = await qqNapcat.statusAccount(String(url.searchParams.get('accountId') || ''));
+        if (!result || result.ok !== true) { bad(res, 400, result && result.error || 'qq-napcat-account-status-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/account/start' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.startAccount !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 16 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqNapcat.startAccount(body);
+        if (!result || result.ok !== true) { bad(res, 400, result && result.error || 'qq-napcat-start-rejected', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/account/cancel' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.cancelAccountStart !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = qqNapcat.cancelAccountStart(body && body.accountId);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-install-cancel-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/account/stop' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.stopAccount !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = qqNapcat.stopAccount(body && body.accountId);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-stop-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'napcat/account/open-webui' && method === 'POST') {
+        if (!qqNapcat || typeof qqNapcat.openWebUi !== 'function') { bad(res, 501, 'qq-napcat-manager-unavailable', null, req); return; }
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqNapcat.openWebUi(body && body.accountId);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-napcat-webui-open-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      bad(res, 404, 'qq-onebot-route-not-found', null, req);
+      return;
+    }
+
+    /* Tencent QQ Bot's outbound WebSocket connection is a separate identity
+       and queue from NapCat/OneBot. It inherits the same local-only desktop
+       authentication gate; its routes never accept an AppSecret. */
+    if (path.indexOf(QQ_OFFICIAL_INTERNAL_PATH) === 0) {
+      if (!qqOfficial) { bad(res, 501, 'qq-official-unavailable', null, req); return; }
+      if (remote || !isLoopback(req)) { bad(res, 403, 'qq-official-local-only', null, req); return; }
+      if (!token) { bad(res, 403, 'desktop-token-required', null, req); return; }
+      if (!authorized(req, url)) { bad(res, 401, 'unauthenticated', null, req); return; }
+      const suffix = path.slice(QQ_OFFICIAL_INTERNAL_PATH.length).replace(/^\/+/, '');
+      if (suffix === 'status' && method === 'GET') { ok(res, qqOfficial.status(), req); return; }
+      if (suffix === 'heartbeat' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+          bad(res, 400, 'invalid-request', null, req); return;
+        }
+        ok(res, qqOfficial.heartbeat(), req); return;
+      }
+      if (suffix === 'config' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 128 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqOfficial.configure(body);
+        if (!result || result.ok !== true) { bad(res, 400, result && result.error || 'qq-official-config-rejected', null, req); return; }
+        ok(res, { paused: result.paused, accounts: result.accounts }, req); return;
+      }
+      if (suffix === 'connect' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqOfficial.connect(body);
+        if (!result || result.ok !== true) { bad(res, 400, result && result.error || 'qq-official-connect-rejected', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'disconnect' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const result = await qqOfficial.disconnect(body && body.appId);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-official-disconnect-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'poll' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const waitMs = Math.max(0, Math.min(1000, Number(body && body.waitMs) || 0));
+        if (waitMs) await new Promise(resolve => setTimeout(resolve, waitMs));
+        ok(res, qqOfficial.poll(), req); return;
+      }
+      if (suffix === 'progress' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 4 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).some(key => !['requestId', 'stage', 'errorCode'].includes(key))
+          || typeof body.requestId !== 'string' || body.requestId.length > 80
+          || typeof body.stage !== 'string' || body.stage.length > 40
+          || (body.errorCode != null && (typeof body.errorCode !== 'string' || body.errorCode.length > 64
+            || body.stage !== 'provider-failed'))) {
+          bad(res, 400, 'invalid-request', null, req); return;
+        }
+        if (!qqOfficial || typeof qqOfficial.progress !== 'function') {
+          bad(res, 501, 'qq-official-diagnostics-unavailable', null, req); return;
+        }
+        const result = qqOfficial.progress(body);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-official-progress-rejected', null, req); return; }
+        ok(res, result, req); return;
+      }
+      if (suffix === 'complete' && method === 'POST') {
+        let body;
+        try { body = await readBody(req, 7 * 1024 * 1024); }
+        catch (error) { bad(res, error.code === 'too-large' ? 413 : 400, error.code || 'bad-body', null, req); return; }
+        const maxImageBase64Chars = Math.ceil(4 * 1024 * 1024 * 4 / 3) + 4;
+        const validImages = body && body.images == null || (body && Array.isArray(body.images)
+          && body.images.length === 1 && body.images.every(image => image && typeof image === 'object'
+            && !Array.isArray(image) && Object.keys(image).length === 2
+            && ['mime', 'base64'].every(key => Object.prototype.hasOwnProperty.call(image, key))
+            && ['image/jpeg', 'image/png', 'image/webp'].includes(image.mime)
+            && typeof image.base64 === 'string' && image.base64.length <= maxImageBase64Chars
+            && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(image.base64)));
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).some(key => !['requestId', 'reply', 'images'].includes(key))
+          || typeof body.requestId !== 'string' || body.requestId.length > 80
+          || typeof body.reply !== 'string' || body.reply.length > 1800 || !validImages) {
+          bad(res, 400, 'invalid-request', null, req); return;
+        }
+        const result = await qqOfficial.complete(body);
+        if (!result || result.ok !== true) { bad(res, 409, result && result.error || 'qq-official-send-failed', null, req); return; }
+        ok(res, result, req); return;
+      }
+      bad(res, 404, 'qq-official-route-not-found', null, req);
+      return;
     }
 
     /* ── 只读探针（不需要 token，但也绝不返回任何世界数据）──
@@ -4422,6 +4806,10 @@ function createHomeNodeHttp(deps) {
   server.on('clientError', (error, socket) => {
     record('warn', 'client-error', { code: String((error && error.code) || '') });
     try { socket.destroy(); } catch (_) { /* 已销毁 */ }
+  });
+  server.on('close', () => {
+    try { if (qqOnebot && typeof qqOnebot.close === 'function') qqOnebot.close(); } catch (_) { /* close is best effort */ }
+    try { if (qqOfficial && typeof qqOfficial.close === 'function') qqOfficial.close(); } catch (_) { /* close is best effort */ }
   });
 
   return {

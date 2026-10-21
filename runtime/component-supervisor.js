@@ -78,6 +78,9 @@ const EVENT = {
   RESTART_SUCCESS: 'restart_success',
   RESTART_FAILED: 'restart_failed',
   BUDGET_EXHAUSTED: 'budget_exhausted',
+  /* A recovery preflight found a non-owned port holder. No child was spawned;
+     automatic retries stay closed until a later health probe proves recovery. */
+  PORT_CONFLICT: 'port_conflict',
   /* Emitted by the runner, never by an operator: an intent to stop (graceful
      shutdown, control-plane restart, operator stop) is not a crash, and must
      not be recovered. Kept in this vocabulary so "not recovered" is an explicit
@@ -216,6 +219,7 @@ class Supervisor {
     this._now = typeof o.now === 'function' ? o.now : function () { return Date.now(); };
     this._records = new Map();
     this._history = [];
+    this._recoveryInFlight = new Set();
   }
 
   /* Register a component. Registration is NOT eligibility: the caller still has
@@ -231,6 +235,26 @@ class Supervisor {
   }
 
   has(componentId) { return this._records.has(String(componentId)); }
+
+  /* The runner may receive an exit event and a health-failure event for the
+     same component while one recovery is still waiting for its new child. Keep
+     that execution lock here so those signals cannot launch overlapping copies
+     that race for the same port. This is separate from the bounded attempt
+     budget: a lock prevents concurrency; authorizeAttempt still controls retries. */
+  claimRecovery(componentId) {
+    const id = String(componentId || '');
+    if (!id || !this._records.has(id) || this._recoveryInFlight.has(id)) return false;
+    this._recoveryInFlight.add(id);
+    return true;
+  }
+
+  recoveryInFlight(componentId) {
+    return this._recoveryInFlight.has(String(componentId || ''));
+  }
+
+  releaseRecovery(componentId) {
+    return this._recoveryInFlight.delete(String(componentId || ''));
+  }
 
   policySnapshot() {
     return {
@@ -378,6 +402,14 @@ class Supervisor {
       return { state: rec.state, event: event, action: 'none', reason: 'stop-failed', previous: wasState };
     }
 
+    if (event === EVENT.PORT_CONFLICT) {
+      rec.lastFailureReason = sanitize(p.reason || 'port owner could not be safely restarted', 200);
+      rec.lastFailureAt = at;
+      return this._lockOut(rec, at,
+        sanitize('automatic recovery stopped because of port conflict: ' + rec.lastFailureReason, 200),
+        wasState, event);
+    }
+
     if (event === EVENT.BUDGET_EXHAUSTED) {
       return this._lockOut(rec, at, sanitize(p.reason || 'restart budget exhausted', 200), wasState, event);
     }
@@ -397,7 +429,7 @@ class Supervisor {
         return this._lockOut(rec, at,
           authorization.reason === 'not-restartable'
             ? (rec.label + ' is not restartable; no recovery attempted')
-            : ('restart budget exhausted for ' + rec.label + ' (' + authorization.reason + ')'),
+            : ('restart budget exhausted for ' + rec.label + ' (' + authorization.reason + '); last failure: ' + rec.lastFailureReason),
           wasState, authorization.reason === 'not-restartable' ? EVENT.RESTART_FAILED : EVENT.BUDGET_EXHAUSTED);
       }
       const delay = this.backoffFor(id, at);

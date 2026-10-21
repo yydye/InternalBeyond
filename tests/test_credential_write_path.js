@@ -200,6 +200,8 @@ async function main() {
     const writerStart = SOCIAL.indexOf('let _ibCredModalCtx=null;');
     const writerEnd = SOCIAL.indexOf('\nvar _dragApiIdx=null;', writerStart);
     assert.ok(writerStart >= 0 && writerEnd > writerStart, 'credential UI helper source exists');
+    const credentialReferenceCounter = sourceBetween(SOCIAL, 'async function _ibCountCredentialReferences(ref,excludeChatConfigId,excludeConfigId,excludePresetConfigId){', '\nfunction _ibCredentialDisplayName');
+    assert.ok(credentialReferenceCounter.includes('async function _ibCountCredentialReferences'), 'credential reference guard exists');
     const persistSource = sourceBetween(SOCIAL, 'async function _persistApiConfig(cfg){', '\n/* 保存提示语');
     const coreSanitizer = sourceBetween(CORE, 'function _ibEndpointHasInlineCredential(value){', '\nasync function dbPut(');
 
@@ -279,7 +281,7 @@ async function main() {
     vm.runInContext(coreSanitizer, ctx, { filename: 'core-credential-sanitizer.js' });
     ctx.window._ibCredentialFreeApiConfig = ctx._ibCredentialFreeApiConfig;
     ctx._ibApiConfigStorageCopy = value => ctx._ibCredentialFreeApiConfig(value);
-    vm.runInContext(persistSource + '\n' + SOCIAL.slice(writerStart, writerEnd), ctx, { filename: 'credential-ui-write-seam.js' });
+    vm.runInContext(persistSource + "\nconst API_PROFILE_PRESET_STORAGE_ID='api_profile_presets_v1';\n" + credentialReferenceCounter + '\n' + SOCIAL.slice(writerStart, writerEnd), ctx, { filename: 'credential-ui-write-seam.js' });
 
     const runtimeStart = COMMUNICATION.indexOf('function _ibCredentialUnavailable(){');
     const runtimeEnd = COMMUNICATION.indexOf('\nasync function callApi(cfg,userMsg,opts){', runtimeStart);

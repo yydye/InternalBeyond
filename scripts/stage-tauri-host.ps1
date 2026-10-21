@@ -13,7 +13,8 @@ param(
   [Parameter(Mandatory = $true)][string]$RepositoryRoot,
   [Parameter(Mandatory = $true)][string]$OutputPath,
   [Parameter(Mandatory = $true)][string]$Version,
-  [Parameter(Mandatory = $true)][string]$BuildRoot
+  [Parameter(Mandatory = $true)][string]$BuildRoot,
+  [switch]$TestMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,6 +71,18 @@ try {
   foreach ($file in @('Cargo.toml', 'Cargo.lock', 'build.rs', 'tauri.conf.json')) {
     Copy-Item -LiteralPath (Join-Path $repo ('src-tauri\' + $file)) -Destination (Join-Path $srcTauri $file) -Force
   }
+  $hostIdentifier = 'com.internalbeyond.desktop'
+  if ($TestMode) {
+    # The real application may be open during the isolated installer smoke.
+    # Tauri's single-instance plugin is keyed by this identifier, so a test Host
+    # must not forward its launch to the production window or reuse its WebView.
+    $hostIdentifier = 'com.internalbeyond.installer-smoke'
+    $tauriConfigPath = Join-Path $srcTauri 'tauri.conf.json'
+    $tauriConfig = Get-Content -LiteralPath $tauriConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tauriConfig.identifier = $hostIdentifier
+    $tauriConfigJson = $tauriConfig | ConvertTo-Json -Depth 100
+    [System.IO.File]::WriteAllText($tauriConfigPath, $tauriConfigJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  }
   foreach ($dir in @('src', 'icons', 'capabilities')) {
     Copy-Item -LiteralPath (Join-Path $repo ('src-tauri\' + $dir)) -Destination (Join-Path $srcTauri $dir) -Recurse -Force
   }
@@ -111,6 +124,8 @@ try {
     version = $peVersion.Value
     bytes = [int64]$staged.Length
     sha256 = $sha
+    identifier = $hostIdentifier
+    testMode = ($TestMode -eq $true)
     build = 'cargo build --release --features custom-protocol --locked --manifest-path src-tauri/Cargo.toml'
     buildMirror = $mirror
     targetInternalsInstalled = $false

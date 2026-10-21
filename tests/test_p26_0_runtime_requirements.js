@@ -65,8 +65,9 @@ const FROZEN = {
   /* P27-C：activity-runtime.js 的**整文件哈希**已移除（HASH_COUPLING_DEBT 结构性修复）——
      改用 tests/activity-partitions.js 的**语义分区**断言（见本文件下方的 activityRuntimeLegacyPartitionsUnchanged）。 */
   'assets/js/activity/coread.js': ['C3DCBD8D', '1D0ACAAD'],
-  'apps/ib-app-cinema.js': ['CE581CF2', '65B97B58'],
-  'apps/ib-media-adapter.js': ['E993B133', '80DC3060'],
+  /* Reviewed Cinema v1.2 source snapshot: 3A574786. */
+  'apps/ib-app-cinema.js': ['3A574786', 'C1817BCD'],
+  'apps/ib-media-adapter.js': ['D044541C', '0D0A5DDA'],
   'assets/js/communication.js': ['DEB568A2', 'AC29184F'],
   'active/scheduler.js': ['8C4CE10C', 'C1695F75'],
   'active/plan-domain.js': ['55BEE8AA', '796BDAD6'],

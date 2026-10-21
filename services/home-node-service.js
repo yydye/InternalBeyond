@@ -72,6 +72,10 @@ const createRuntimeExplicitPreferenceReport = require('../services/home-node/run
 const createExplicitPreferenceReportRealitySource = require('../services/home-node/explicit-preference-report-reality-source.js').createExplicitPreferenceReportRealitySource;
 const createExplicitPreferenceReportSeam = require('../services/home-node/explicit-preference-report-seam.js').createExplicitPreferenceReportSeam;
 const createMobileGateway = require('../services/home-node/mobile-gateway.js');
+const homeNodeIdentity = require('../runtime/home-node-identity.js');
+const createQQOneBot = require('../services/home-node/qq-onebot.js');
+const createQQNapCatManager = require('../services/home-node/qq-napcat-manager.js');
+const createQQOfficialManager = require('../services/home-node/qq-official-manager.js');
 /* P22-2：Agent Economy 的第一块 canonical runtime（SQLite Ledger + 派生
    Wallet 余额）。**唯一** require 点是这里 —— Economy 自己不 require
    本文件、不 require 网关、不 require 设备注册表，方向是单向的。 */
@@ -132,6 +136,7 @@ const createRuntimePolicy = require('../services/home-node/runtime-policy.js').c
    ★ 它不带 modelPort、不带 credentialAccess：这条边界不出网、不读 Vault，
      因此"召回顺手调一次 provider"在依赖闭包上就不可能。 */
 const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
+const createMemoryFathomHistory = require('../services/home-node/memory-fathom-history.js');
 const createRuntimeMemoryAssociation = require('../services/home-node/runtime-memory-association.js').createRuntimeMemoryAssociation;
 const createRuntimeCounterfactualMemory = require('../services/home-node/runtime-counterfactual-memory.js').createRuntimeCounterfactualMemory;
 /* ── P21-R4-LIVE-5 · L5 期望运行时（**兄弟**模块，不是解释的一部分）──────
@@ -200,6 +205,12 @@ const DATA_DIR = DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic
   : (process.env.IB_HOME_NODE_DATA_DIR || (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'home-node')
     : path.join(os.homedir(), '.internal-beyond', 'home-node')));
+const DATA_DIRECTORY_ID = homeNodeIdentity.dataDirectoryId(DATA_DIR);
+const HOME_NODE_INSTANCE_ID = homeNodeIdentity.instanceId(
+  DEV_IDENTITY.mode,
+  path.resolve(__dirname, '..'),
+  DEV_IDENTITY.instanceId
+);
 function isDevMode() {
   return DEV_IDENTITY.mode === 'dev' || DEV_IDENTITY.mode === 'synthetic';
 }
@@ -342,6 +353,21 @@ const CREDENTIAL_DATA_DIR = isDevMode()
 const CREDENTIAL = desktopCredential.resolveDesktopCredential({ dataDir: DATA_DIR });
 const TOKEN = CREDENTIAL.ok ? CREDENTIAL.token : '';
 const TOKEN_SOURCE = CREDENTIAL.ok ? CREDENTIAL.source : null;
+/* QQ OneBot only uses this credential to derive a per-account local callback capability.
+   It does not receive provider credentials or run model calls. */
+const productionQQOneBot = createQQOneBot({
+  desktopCredential: TOKEN,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+const productionQQNapCatManager = createQQNapCatManager({
+  rootDir: path.join(path.dirname(DATA_DIR), 'components', 'qq-napcat-node-p1-2'),
+  allowedParent: path.dirname(DATA_DIR),
+  logger: (level, event, fields) => log(level, event, fields)
+});
+const productionQQOfficialManager = createQQOfficialManager({
+  dataDir: CREDENTIAL_DATA_DIR,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 /* P34.3-B · Home Node credential access (ADR P34.3-A.1 Decision 1 = Option A).
    Least-privilege allowlist = the Node's own published characters. The predicate
    is lazy because the production registry is created later in this module; it is
@@ -1098,6 +1124,7 @@ function gatewayAssembly(options) {
     registry: options.registry,
     executor: options.executor,
     runtimeRecall: options.runtimeRecall,
+    fathomHistory: options.fathomHistory,
     version: options.version || productVersion(),
     allowedOrigins: options.mobileOrigins || MOBILE_ORIGINS,
     lanMode: !options.loopbackBind,
@@ -1167,6 +1194,26 @@ function buildHomeNode(options) {
   const dataDir = homeNodeDataDir(options.dataDir || DATA_DIR);
   const credentialDataDir = options.credentialDataDir || (isDevMode() ? CREDENTIAL_DATA_DIR : (options.dataDir ? dataDir : CREDENTIAL_DATA_DIR));
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
+  const instanceQQOneBot = options.qqOnebot || createQQOneBot({
+    desktopCredential: options.token === undefined ? TOKEN : String(options.token || ''),
+    clock: options.clock,
+    randomId: options.qqOnebotRandomId,
+    logger: serviceLog
+  });
+  const instanceQQNapCatManager = options.qqNapcat || createQQNapCatManager({
+    rootDir: path.join(path.dirname(dataDir), 'components', 'qq-napcat-node-p1-2'),
+    allowedParent: path.dirname(dataDir),
+    logger: serviceLog,
+    platform: options.qqNapcatPlatform,
+    arch: options.qqNapcatArch,
+    requestJson: options.qqNapcatRequestJson,
+    downloadToFile: options.qqNapcatDownloadToFile,
+    openFolder: options.qqNapcatOpenFolder,
+    extractZipArchive: options.qqNapcatExtractZipArchive,
+    spawnProcess: options.qqNapcatSpawnProcess,
+    allocatePort: options.qqNapcatAllocatePort,
+    openUrl: options.qqNapcatOpenUrl
+  });
   let instanceLinguisticEvidenceProducer = null;
   const instanceStore = options.store || createStore({
     dataDir: dataDir,
@@ -1217,6 +1264,14 @@ function buildHomeNode(options) {
   const instanceCredentialAccess = options.credentialAccess || createCredentialAccess({
     dataDir: credentialDataDir,
     isAllowed: (id) => registryAllowsCredentialRef(instanceRegistry, id)
+  });
+  const instanceQQOfficialManager = options.qqOfficial || createQQOfficialManager({
+    dataDir: credentialDataDir,
+    logger: serviceLog,
+    clock: options.clock,
+    randomId: options.qqOfficialRandomId,
+    createBot: options.qqOfficialCreateBot,
+    credentialResolver: options.qqOfficialCredentialResolver
   });
   /* H2 · DSH is an explicitly injected, default-off execution service. Its
      Workspace calls are relayed to the existing desktop Project Tool through
@@ -1617,9 +1672,16 @@ function buildHomeNode(options) {
        绝不动它：它只用于读 cooldown 的 exposure，且**不推进**任何回合。
      ★ glossary 条目来源只从这里进（options.*，默认 undefined）—— 请求侧
        出现 glossary* 一律被逐名拒绝，因此"浏览器提交词表"这条路不存在。 */
-  const instanceRuntimeRecall = options.runtimeRecall || createRuntimeRecall({
+   const instanceFathomHistory = options.fathomHistory || createMemoryFathomHistory({
+     memoryStore: instanceMemoryStore,
+     dbFile: instanceMemoryStore && instanceMemoryStore.file,
+     clock: options.clock,
+     logger: serviceLog
+   });
+   const instanceRuntimeRecall = options.runtimeRecall || createRuntimeRecall({
     memoryRetrieval: instanceMemoryRetrieval,
     memoryStore: instanceMemoryStore,
+     fathomHistory: instanceFathomHistory,
     registry: instanceRegistry,
     sessionState: recallSessionState,
     associationRuntime: instanceRuntimeMemoryAssociation,
@@ -1652,6 +1714,7 @@ function buildHomeNode(options) {
     registry: instanceRegistry,
     executor: instanceExecutor,
     runtimeRecall: instanceRuntimeRecall,
+    fathomHistory: instanceFathomHistory,
     memoryStore: instanceMemoryStore,
     memoryRetrieval: instanceMemoryRetrieval,
     understandingStore: instanceUnderstanding.understandingStore,
@@ -1676,6 +1739,8 @@ function buildHomeNode(options) {
   });
   const instanceHttp = createHttp({
     store: instanceStore,
+    devIdentity: options.devIdentity,
+    authorizeRequestIdentity: options.authorizeRequestIdentity,
     workRunStore: instanceWorkRunStore,
     appDraftStore: instanceAppDraftStore,
     dshHost: instanceDshHost,
@@ -1685,6 +1750,9 @@ function buildHomeNode(options) {
     agentMemoryStore: instanceAgentMemoryStore,
     executor: instanceExecutor,
     gateway: instanceGateway,
+    qqOnebot: instanceQQOneBot,
+    qqNapcat: instanceQQNapCatManager,
+    qqOfficial: instanceQQOfficialManager,
     token: options.token === undefined ? TOKEN : options.token,
     /* P22-23 · 凭据**来源**（不是凭据本体）交给传输层，因为它要回答两个
        只有它才能回答的问题：
@@ -1701,6 +1769,9 @@ function buildHomeNode(options) {
       ? (options.token === undefined && TOKEN_SOURCE === desktopCredential.SOURCE.GENERATED)
       : options.desktopCredentialAutoProvision === true,
     version: options.version || productVersion(),
+    instanceId: HOME_NODE_INSTANCE_ID,
+    dataDirectoryId: homeNodeIdentity.dataDirectoryId(instanceStore.file
+      ? path.dirname(instanceStore.file) : (options.dataDir || DATA_DIR)),
     allowedOrigins: options.allowedOrigins || ALLOWED_ORIGINS,
     /* P11-3E：canonical store 的失败分类只有一份（http.js 的 resolveStoreFailure），
        这里把分类器与"最后一次开库是怎么失败的"探针一起交上去 ——
@@ -1829,6 +1900,9 @@ function buildHomeNode(options) {
   function closeStores() {
     try { instanceDshWorkspaceBridge.close(); } catch (_) { /* ephemeral bridge */ }
     try { instanceGateway.stop(); } catch (_) { /* 已停止 */ }
+    try { instanceQQOneBot.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceQQNapCatManager.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceQQOfficialManager.close(); } catch (_) { /* 已关闭 */ }
     /* 关掉监听并**主动断开**所有还在的 keep-alive 连接。
        只调 server.close() 是不够的：它只是停止接受新连接，已建立的空闲
        keep-alive socket 会让事件循环一直活着（测试进程表现为"跑完不退出"，
@@ -1908,6 +1982,9 @@ function buildHomeNode(options) {
        ★ 与 http.js 从 deps 里拿到的是**同一个对象**（identity）：这正是
          "两条装配路径不得漂移"这句断言的载体。 */
     runtimeRecall: instanceRuntimeRecall,
+    qqOnebot: instanceQQOneBot,
+    qqNapcat: instanceQQNapCatManager,
+    qqOfficial: instanceQQOfficialManager,
     /* P5-B3-E-R1 · 结构化显式偏好报告（producer + reality source + seam）。
        ★ 与 http.js 从 deps 里拿到的是**同一个** seam 对象（identity）。 */
     runtimePreferenceReport: instancePreferenceReport,
@@ -2224,9 +2301,16 @@ const runtimeCounterfactualMemory = createRuntimeCounterfactualMemory({
   clock: function () { return Date.now(); },
   logger: (event, fields) => log('info', event, fields)
 });
+const fathomHistory = createMemoryFathomHistory({
+  memoryStore: memory.memoryStore,
+  dbFile: memory.memoryStore && memory.memoryStore.file,
+  clock: function () { return Date.now(); },
+  logger: (event, fields) => log('info', event, fields)
+});
 const runtimeRecall = createRuntimeRecall({
   memoryRetrieval: memory.memoryRetrieval,
   memoryStore: memory.memoryStore,
+  fathomHistory: fathomHistory,
   registry,
   sessionState: recallSessionState,
   associationRuntime: runtimeMemoryAssociation,
@@ -2260,6 +2344,7 @@ const gateway = gatewayAssembly({
   registry,
   executor,
   runtimeRecall: runtimeRecall,
+  fathomHistory: fathomHistory,
   memoryStore: memory.memoryStore,
   memoryRetrieval: memory.memoryRetrieval,
   understandingStore: understanding.understandingStore,
@@ -2289,6 +2374,9 @@ const httpLayer = createHttp({
   agentMemoryStore,
   executor,
   gateway,
+  qqOnebot: productionQQOneBot,
+  qqNapcat: productionQQNapCatManager,
+  qqOfficial: productionQQOfficialManager,
   token: TOKEN,
   /* P22-23：凭据的来源与自动 provisioning 事实上交给传输层 —— 只有它才能
      回答"bootstrap 交付面该不该开"。**生产路径与 buildHomeNode 必须写同一份
@@ -2297,6 +2385,8 @@ const httpLayer = createHttp({
   desktopCredentialSource: TOKEN_SOURCE,
   desktopCredentialAutoProvision: TOKEN_SOURCE === desktopCredential.SOURCE.GENERATED,
   version: productVersion(),
+  instanceId: HOME_NODE_INSTANCE_ID,
+  dataDirectoryId: DATA_DIRECTORY_ID,
   allowedOrigins: ALLOWED_ORIGINS,
   /* P11-3H · 合作停止面。装在 http 层**内部**（而不是在 server 上再挂一个
      request listener）：http 层才是这条请求的最后一站，挂在外面会让两层都尝试
@@ -2597,8 +2687,10 @@ if (require.main === module) {
     const result = await serviceControl.runStop('homeNode', {
       entering: () => { /* shuttingDown 已置位；重复停止是 no-op */ },
       stopWork: () => {
-        return Promise.resolve(dshHost.close()).then(() => {
+        return Promise.resolve(dshHost.close()).then(() => productionQQOfficialManager.close()).then(() => {
           dshWorkspaceBridge.close();
+          try { productionQQOneBot.close(); } catch (_) { /* 已关闭 */ }
+          try { productionQQNapCatManager.close(); } catch (_) { /* 已关闭 */ }
           try { server.close(); } catch (_) { /* 已关闭 */ }
           try { gateway.stop(); } catch (_) { /* 已停止 */ }
         });
@@ -2654,6 +2746,9 @@ module.exports = {
   agentMemoryStore,
   registry,
   gateway,
+  qqOnebot: productionQQOneBot,
+  qqNapcat: productionQQNapCatManager,
+  qqOfficial: productionQQOfficialManager,
   executor,
   server,
   httpLayer,

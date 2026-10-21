@@ -54,6 +54,7 @@ const createMomentsRetrieval = require('./moments-retrieval.js');
 /* M1-C.2i：Middle Brain **执行配置**的投影语义（唯一实现，与桌面共用同一份）。
    只用到它的入站校验与构造式投影，**不含任何判定** —— 判定在 canonical 层。 */
 const MB_CONFIG_CORE = require('../../assets/js/middle-brain-config-core.js');
+const { isTauriOrigin } = require('../../runtime/host-origin.js');
 
 /* 协议版本。**真的会被校验**（Phase 9）—— 不是 Bridge 那种"存在但没人读"的字段。 */
 const PROTOCOL_VERSION = 1;
@@ -94,7 +95,7 @@ const ADMIN_PATHS = [
   /* M1-C.2d Wave 2 · canonical memory（桌面/运行时面，**不是**设备面）：
      记忆的存储与召回属于 runtime authority，不属于 Android 协议。
      Android 侧没有任何 memory verb，也不知道这里存在。 */
-  '/memory/list', '/memory/changes', '/memory/records', '/memory/record',
+   '/memory/list', '/memory/changes', '/memory/fathom', '/memory/records', '/memory/record',
   '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate',
   /* M1-C.2m · canonical Understanding（同样是**桌面/运行时面**，不是设备面）：
      理解的存储、修订链、用户更正与派生触发都属于 runtime authority。
@@ -268,6 +269,7 @@ function createMobileGateway(deps) {
   /* M1-C.2d Wave 2：canonical memory store（可选）。
      缺席时 memory 召回返回空块 —— 回合照常进行，绝不因为记忆不可用而失败。 */
   const memoryStore = deps.memoryStore || null;
+  const fathomHistory = deps.fathomHistory || null;
   const memoryRetrieval = deps.memoryRetrieval || (memoryStore ? createMemoryRetrieval({
     store: memoryStore,
     clock: clock,
@@ -402,18 +404,26 @@ function createMobileGateway(deps) {
        · Origin: null（file:// 或沙箱 iframe）→ 回显（真实防护是设备 token）；
        · 其它 → 不回显。
      回显一个 Origin 不会给攻击者任何东西：没有 token 就什么都拿不到。 */
-  function originAllowed(origin) {
+  function originAllowed(origin, pathname) {
     const value = origin == null ? '' : String(origin);
     if (!value) return false;
     if (allowedOrigins.indexOf(value) >= 0) return true;
     if (value === 'null') return true;
     if (/^(capacitor|ionic):\/\/localhost$/i.test(value)) return true;
     if (/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(value)) return true;
+    /* Tauri desktop calls the allowlisted desktop-admin paths through this
+       gateway, but those paths are not part of the Mobile Gateway surface.
+       Keep the bundled Tauri origin scoped to that desktop path allowlist; do
+       not grant it CORS access to /mobile/v1 device APIs. */
+    if (ADMIN_PATHS.indexOf(String(pathname || '')) >= 0 && isTauriOrigin(value)) return true;
     return false;
   }
   function applyCors(headers, req) {
     const origin = req && req.headers ? req.headers.origin : null;
-    if (originAllowed(origin)) {
+    let pathname = '';
+    try { pathname = new URL(String(req && req.url || ''), 'http://127.0.0.1').pathname.replace(/\/+$/, '') || '/'; }
+    catch (_) { /* malformed URL has no CORS allowlist path */ }
+    if (originAllowed(origin, pathname)) {
       headers['Access-Control-Allow-Origin'] = String(origin);
       headers['Vary'] = 'Origin';
     }
@@ -1726,6 +1736,21 @@ function createMobileGateway(deps) {
         } : null
       }), req);
     }
+    if (action === 'memory/fathom' && req.method === 'GET') {
+      if (!fathomHistory || typeof fathomHistory.snapshot !== 'function') return fail(res, 'UNSUPPORTED', req, 501);
+      const viewerPresent = !!(url && url.searchParams && typeof url.searchParams.has === 'function' && url.searchParams.has('viewer'));
+      if (!viewerPresent) return fail(res, 'FORBIDDEN', req, 403, null, { reason: 'no-principal' });
+      const viewer = String(url.searchParams.get('viewer') == null ? '' : url.searchParams.get('viewer'));
+      const limit = Number(url.searchParams.get('limit'));
+      const snapshot = fathomHistory.snapshot({ viewer: viewer, limit: limit });
+      if (!snapshot || snapshot.ok !== true) {
+        const reason = String(snapshot && snapshot.error || 'fathom-unavailable');
+        if (reason === 'no-principal') return fail(res, 'FORBIDDEN', req, 403, null, { reason: reason });
+        if (reason === 'fathom-history-unavailable') return fail(res, 'UNSUPPORTED', req, 501, null, { reason: reason });
+        return fail(res, 'INTERNAL', req, 503, null, { reason: reason });
+      }
+      return sendJson(res, 200, okBody('memory.fathom', null, snapshot), req);
+    }
     if (action === 'memory/changes' && req.method === 'GET') {
       if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
       const cursor = url && url.searchParams.get('cursor');
@@ -2829,7 +2854,7 @@ function createMobileGateway(deps) {
     if (String(req.method || '').toUpperCase() === 'OPTIONS') {
       const origin = String(req.headers.origin || '');
       const headers = { Vary: 'Origin' };
-      if (originAllowed(origin)) {
+      if (originAllowed(origin, path)) {
         headers['Access-Control-Allow-Origin'] = origin;
         headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
         headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-IB-Mobile-Token, X-IB-Home-Token, X-IB-Protocol, Last-Event-ID';

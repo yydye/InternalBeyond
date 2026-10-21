@@ -105,7 +105,7 @@ async function main() {
   const sanitizeContext = {};
   vm.runInNewContext(core.slice(sanitizeStart, sanitizeEnd), sanitizeContext, { filename: 'core-api-config-sanitizer.js' });
   const sanitized = sanitizeContext._ibCredentialFreeApiConfig({
-    id: 'synthetic-config', provider: 'openai', apiKey: 'synthetic-only-credential',
+    id: 'synthetic-config', provider: 'openai', apiKey: 'synthetic-only-credential', imageGenCredentialRef: 'synthetic-image-ref',
     endpoint: 'https://provider.invalid/v1?token=synthetic-inline-secret',
     nested: { imageGenApiKey: 'synthetic-secondary-value', bearer: 'synthetic-bearer', safeOption: true }
   });
@@ -113,6 +113,7 @@ async function main() {
   check(!Object.prototype.hasOwnProperty.call(sanitized, 'endpoint'), 'credential-bearing-endpoint-not-persistable');
   check(!Object.prototype.hasOwnProperty.call(sanitized.nested, 'imageGenApiKey'), 'image-key-not-persistable');
   check(!Object.prototype.hasOwnProperty.call(sanitized.nested, 'bearer'), 'bearer-not-persistable');
+  check(sanitized.imageGenCredentialRef === 'synthetic-image-ref', 'image-vault-reference-remains-persistable');
   check(sanitized.nested.safeOption === true, 'non-secret-option-preserved');
 
   const hostModule = require(path.join(__dirname, '..', 'assets', 'js', 'host-capability.js'));
@@ -144,17 +145,20 @@ async function main() {
   const imageEnd = workspace.indexOf('\nasync function _wsExecImageGenWithRuntimeCredential(', imageStart);
   check(imageStart >= 0 && imageEnd > imageStart, 'image-request-bridge-boundary');
   let imageProviderBuilderCalls = 0;
+  let expectedImageBinding = 'synthetic-image-ref';
   const imageWindow = {
     _ibWithRuntimeApiCredential: async function (cfg, run, options) {
       check(options && options.rejectImageGenSecret === true, 'image-bridge-rejects-separate-secret');
-      const runtime = Object.assign({}, cfg, { apiKey: 'synthetic-only-credential' });
-      delete runtime.imageGenApiKey;
-      try { return await run(runtime); } finally { runtime.apiKey = ''; }
+      check(cfg.credentialRef === expectedImageBinding, 'image-bridge-selects-configured-vault-reference');
+      check(cfg.provider === 'openai' && options.expectedProvider === 'openai', 'image-provider-check-is-independent-of-chat-provider');
+      check(options.endpoint === 'https://images.invalid/v1/images/generations', 'image-endpoint-is-independent-of-chat-endpoint');
+      return window._ibWithRuntimeApiCredential(cfg, run, options);
     }
   };
   const imageContext = {
     window: imageWindow,
-    _imgResolveProvider: function () { return 'openai'; },
+    _imgResolveProvider: function (cfg) { return cfg.imageGenProvider || 'openai'; },
+    _imgDefaultEndpoint: function () { return 'https://api.openai.com/v1/images/generations'; },
     _wsExecImageGenWithRuntimeCredential: async function (runtime) {
       imageProviderBuilderCalls++;
       check(runtime.apiKey === 'synthetic-only-credential', 'image-builder-receives-runtime-secret');
@@ -163,12 +167,24 @@ async function main() {
     }
   };
   vm.runInNewContext(workspace.slice(imageStart, imageEnd), imageContext, { filename: 'workspace-image-credential-wrapper.js' });
-  const imageResult = await imageContext._wsExecImageGen({ id: 'synthetic-config', provider: 'openai', imageGenProvider: 'openai' }, 'synthetic prompt', '1024x1024', {});
-  check(imageResult && imageResult.ok === true && imageProviderBuilderCalls === 1, 'image-request-bridge-reaches-builder-without-network');
+  const imageResult = await imageContext._wsExecImageGen({
+    id: 'synthetic-chat-config', provider: 'deepseek', endpoint: 'https://chat.invalid/v1/chat/completions',
+    credentialRef: 'synthetic-chat-ref', imageGenProvider: 'openai', imageGenModel: 'gpt-image-1',
+    imageGenEndpoint: 'https://images.invalid/v1/images/generations', imageGenCredentialRef: 'synthetic-image-ref'
+  }, 'synthetic prompt', '1024x1024', {});
+  check(imageResult && imageResult.ok === true && imageProviderBuilderCalls === 1, 'independent-image-vault-reference-reaches-builder');
+  expectedImageBinding = 'synthetic-chat-ref';
+  const followResult = await imageContext._wsExecImageGen({
+    id: 'synthetic-chat-config', provider: 'openai', endpoint: 'https://chat.invalid/v1/chat/completions',
+    credentialRef: 'synthetic-chat-ref', imageGenProvider: 'openai', imageGenEndpoint: 'https://images.invalid/v1/images/generations',
+    imageGenCredentialRef: ''
+  }, 'follow chat prompt', '1024x1024', {});
+  check(followResult && followResult.ok === true && imageProviderBuilderCalls === 2, 'empty-image-reference-follows-chat-credential');
 
   const imageFailureContext = {
     window: { _ibWithRuntimeApiCredential: async function () { const error = new Error('CREDENTIAL_UNAVAILABLE'); error.code = 'CREDENTIAL_UNAVAILABLE'; throw error; } },
     _imgResolveProvider: function () { return 'openai'; },
+    _imgDefaultEndpoint: function () { return 'https://api.openai.com/v1/images/generations'; },
     _wsExecImageGenWithRuntimeCredential: async function () { throw new Error('must-not-reach-provider-builder'); }
   };
   vm.runInNewContext(workspace.slice(imageStart, imageEnd), imageFailureContext, { filename: 'workspace-image-credential-failure.js' });

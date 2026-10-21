@@ -93,7 +93,19 @@ const ENTRIES = [
      入过发行包 —— 安装后的产品里那一步必然 spawn 一个不存在的脚本。注册表把
      Home Node 变成注册表里的正式组件之后，这个缺口必须在同一步补上。 */
   { from: 'services/home-node-service.js', why: 'Home Node 聊天权威服务（canonical chatMessages）' },
-  { from: 'services/home-node', dir: true, why: 'Home Node 模块（chat store / memory / understanding / moments / 设备注册表 / mobile 网关 / HTTP）' },
+  { from: 'services/home-node', dir: true,
+    exclude: ['node_modules/@tencent-connect/qqbot-nodejs/**', 'node_modules/ws/**', 'node_modules/.package-lock.json'],
+    why: 'Home Node 模块（chat store / memory / understanding / moments / 设备注册表 / mobile 网关 / HTTP）' },
+  { from: 'services/home-node/node_modules/@tencent-connect/qqbot-nodejs', dir: true,
+    exclude: ['src/**', 'README*.md', 'USAGE.md', 'CHANGELOG.md', 'LICENSE', 'dist/*.map', 'dist/*.d.ts'],
+    why: '固定版本的腾讯官方 QQ Bot Node.js SDK（MIT；Home Node 官方 WebSocket 适配器）' },
+  { from: 'services/home-node/node_modules/ws', dir: true,
+    exclude: ['README.md', 'CONTRIBUTING.md', 'LICENSE', '.github/**'],
+    why: '腾讯官方 QQ Bot SDK 的 WebSocket 运行依赖（MIT）' },
+  { from: 'services/home-node/node_modules/@tencent-connect/qqbot-nodejs/LICENSE', to: 'LICENSES/TENCENT_QQBOT_NODEJS_MIT.txt',
+    why: '腾讯官方 QQ Bot Node.js SDK MIT 许可原文' },
+  { from: 'services/home-node/node_modules/ws/LICENSE', to: 'LICENSES/WS_MIT.txt',
+    why: 'ws 运行依赖 MIT 许可原文' },
   { from: 'bridge', dir: true, why: 'Bridge 模块' },
   { from: 'active', dir: true, why: 'Active 模块' },
   { from: '启动 InternalBeyond.vbs', why: '唯一用户启动入口的实现（快捷方式目标，用户只看到名字 InternalBeyond）' },
@@ -163,7 +175,11 @@ const DENY_PATH = [
     allowPrefixes: ['runtime/dsh-runtime/node_modules/@opentelemetry/otlp-transformer/build/'],
     why: '本地日志目录' },
   { test: /(^|[\\/])browser-data([\\/]|$)/i, why: '浏览器 profile' },
-  { test: /(^|[\\/])node_modules([\\/]|$)/i, allowPrefixes: ['runtime/dsh-runtime/node_modules/'], why: '依赖目录（仅固定 DSH Runtime 依赖树例外）' },
+  { test: /(^|[\\/])node_modules([\\/]|$)/i, allowPrefixes: [
+    'runtime/dsh-runtime/node_modules/',
+    'services/home-node/node_modules/@tencent-connect/qqbot-nodejs/',
+    'services/home-node/node_modules/ws/'
+  ], why: '依赖目录（仅固定 DSH Runtime 与 Tencent QQ Bot SDK 运行依赖例外）' },
   { test: /(^|[\\/])__pycache__([\\/]|$)/i, why: 'Python 缓存' },
   { test: /(^|[\\/])vision([\\/]|$)/i, why: 'Vision Python 环境（P7 不打包）' },
   { test: /(^|[\\/])scripts([\\/]|$)/i, why: '开发脚本（构建/截图/更新运行时）' },

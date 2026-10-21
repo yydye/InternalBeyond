@@ -157,9 +157,19 @@ Source: "{#StagingDir}\runtime\optional-dsh-runtime.js"; DestDir: "{tmp}"; Flags
 
 [Icons]
 ; The ONLY user-facing entry point. Users never choose between .cmd / .vbs / .js.
+#ifdef InstallerTestMode
+; The smoke harness runs under the current Windows token, so WScript shell
+; folders still resolve to the real user's profile even when USERPROFILE and
+; APPDATA are overridden for child processes. Test-only code constants bind
+; shortcuts to those isolated environment roots instead of the host shell paths.
+Name: "{code:SmokeProgramsPath}\{#AppName}"; Filename: "{app}\internalbeyond-host.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"
+Name: "{code:SmokeProgramsPath}\卸载 {#AppName}"; Filename: "{uninstallexe}"; Comment: "卸载 InternalBeyond（个人数据会保留）"
+Name: "{code:SmokeDesktopPath}\{#AppName}"; Filename: "{app}\internalbeyond-host.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"; Tasks: desktopicon
+#else
 Name: "{group}\{#AppName}"; Filename: "{app}\internalbeyond-host.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"; Comment: "卸载 InternalBeyond（个人数据会保留）"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\internalbeyond-host.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"; Tasks: desktopicon
+#endif
 
 [Run]
 ; Finish page: launch the canonical Tauri host from the same install root.
@@ -197,6 +207,31 @@ begin
     Result := GetEnv('IB_INSTALLER_SMOKE_DATA_DIR');
 #endif
 end;
+
+#ifdef InstallerTestMode
+{ A process environment override is reliable for the smoke install, while
+  WScript.Shell.SpecialFolders continues to point at the real logged-in user's
+  folders. Keep test shortcuts entirely under the harness-owned roots. }
+function SmokeProgramsPath(Param: String): String;
+var
+  Root: String;
+begin
+  Root := GetEnv('APPDATA');
+  if Root = '' then
+    Root := ExpandConstant('{userprograms}');
+  Result := AddBackslash(Root) + 'Microsoft\Windows\Start Menu\Programs\{#AppName}';
+end;
+
+function SmokeDesktopPath(Param: String): String;
+var
+  Root: String;
+begin
+  Root := GetEnv('USERPROFILE');
+  if Root = '' then
+    Root := ExpandConstant('{userdesktop}');
+  Result := AddBackslash(Root) + 'Desktop';
+end;
+#endif
 
 { ── WebView2 production prerequisite (Evergreen per-user policy) ──────────
   Tauri NSIS has a generated bootstrapper, but it is not the production
@@ -424,7 +459,7 @@ begin
   ForceDirectories(InstallerDataRoot() + '\logs');
   Params := '"' + ExpandConstant('{tmp}\{#StopHelper}') + '"'
     + ' --root "' + ExpandConstant('{app}') + '"'
-    + ' --json --timeout-ms 15000'
+    + ' --json --timeout-ms 30000'
     + ' --report "' + InstallerDataRoot() + '\logs\upgrade-stop.json"';
 
   if not Exec(Node, Params, ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Code) then

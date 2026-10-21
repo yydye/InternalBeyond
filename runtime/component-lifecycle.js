@@ -449,8 +449,10 @@ async function waitPortReleasedAndSilent(target, deadline, stepMs) {
  *   root            — the install root this caller is allowed to stop
  *   ownsCommandLine — (cmdline, root) → boolean; the caller's ownership proof
  *   provenOwn       — true when the caller has already proven ownership by a
- *                     means this function cannot see (e.g. the runner's own
- *                     child handle). Still verified against the port below.
+ *                     means this function cannot see (e.g. a child handle).
+ *   expectedPid     — when supplied by the Runner, the exact live child PID.
+ *                     The listener and health response must still name this PID
+ *                     before a request or fallback can affect it.
  *   cooperativeMs   — bound for the cooperative phase
  *   fallbackMs      — bound for the fallback phase
  *   deadline        — absolute ms timestamp the WHOLE call must respect
@@ -528,11 +530,24 @@ async function stopComponent(target, opts) {
   let pid = null;
   let proof = null;
   const canProveByCommandLine = typeof o.ownsCommandLine === 'function';
-  if (o.provenOwn === true) {
-    /* "I started this component" is proof of ownership of THAT component. It is
-       not a pid, and it says nothing about whoever holds the port right now — so
-       it authorizes the cooperative request, and the fallback kill still has to
-       re-establish what it is about to kill (see step 5). */
+  const expectedPid = Number(o.expectedPid);
+  if (o.provenOwn === true && Number.isInteger(expectedPid) && expectedPid > 0) {
+    /* Bind the Runner's child-handle proof to the OS listener before any request. */
+    const holders = await pidsForPort(target.port, o.execFile);
+    const answeredPid = Number(probe.json && probe.json.pid);
+    if (holders.length !== 1 || Number(holders[0]) !== expectedPid || !pidAlive(expectedPid) ||
+        (Number.isInteger(answeredPid) && answeredPid > 0 && answeredPid !== expectedPid)) {
+      result.state = 'UNKNOWN_OWNER';
+      result.reason = 'the listener on port ' + target.port + ' is not the current Runner child pid ' + expectedPid;
+      result.pid = holders.length === 1 ? holders[0] : null;
+      result.verified = { pidGone: !pidAlive(expectedPid), portFree: false };
+      return result;
+    }
+    pid = expectedPid;
+    proof = 'runner-child';
+  } else if (o.provenOwn === true) {
+    /* Compatibility for non-Runner callers with their own out-of-band proof.
+       Without a PID this cannot authorize a fallback kill by itself. */
     proof = 'runner-child';
   } else if (canProveByCommandLine) {
     const holders = await pidsForPort(target.port, o.execFile);
@@ -655,18 +670,34 @@ async function stopComponent(target, opts) {
     result.reason = (result.reason ? result.reason + '; ' : '') + 'the stop budget expired before a fallback could be verified';
     return result;
   }
-  const before = await pidsForPort(target.port, o.execFile);
+  let before = await pidsForPort(target.port, o.execFile);
   const stillTarget = await requestJson({ port: target.port, path: target.healthPath, timeoutMs: 1200 });
   if (!stillTarget.reachable || !identifies(target, stillTarget.json)) {
     /* It went away (or someone else took the port) between the wait and here.
        Re-verified as "no longer our target" → nothing is killed. */
     const goneNow = !(await portAnswering(target.port));
-    result.state = goneNow ? 'STOPPED' : 'FOREIGN';
+    const expectedStillAlive = !!(pid && pidAlive(pid));
+    result.state = goneNow && !expectedStillAlive ? 'STOPPED' : (goneNow ? 'COOPERATIVE_TIMEOUT' : 'FOREIGN');
     result.reason = goneNow
-      ? 'the component stopped on its own after the cooperative deadline'
+      ? (expectedStillAlive
+        ? 'the component stopped answering but its owned pid ' + pid + ' is still alive'
+        : 'the component stopped on its own after the cooperative deadline')
       : 'the port changed hands during the stop and is no longer ' + target.label;
     result.verified = { pidGone: pid ? !pidAlive(pid) : true, portFree: goneNow };
     return result;
+  }
+  if (Number.isInteger(expectedPid) && expectedPid > 0) {
+    const healthPid = Number(stillTarget.json && stillTarget.json.pid);
+    const currentHolders = await pidsForPort(target.port, o.execFile);
+    if (before.length !== 1 || Number(before[0]) !== expectedPid || currentHolders.length !== 1 ||
+        Number(currentHolders[0]) !== expectedPid ||
+        (Number.isInteger(healthPid) && healthPid > 0 && healthPid !== expectedPid)) {
+      result.state = 'FOREIGN';
+      result.reason = 'the listener or health responder changed from current Runner child pid ' + expectedPid + ' before fallback';
+      result.verified = { pidGone: !pidAlive(expectedPid), portFree: false };
+      return result;
+    }
+    before = currentHolders;
   }
   /* It is still answering as our target. Before treating that as "there is
      something here to kill", ask whether anybody is ALIVE behind it: a dead pid
@@ -699,7 +730,8 @@ async function stopComponent(target, opts) {
      `runner-child` proof is only accepted when we actually know which pid that
      child is; otherwise ownership has to be established from scratch. */
   const pidChanged = pid !== candidate;
-  const ownedByConstruction = result.proof === 'runner-child' && pid !== null && pid === candidate;
+  const ownedByConstruction = result.proof === 'runner-child' && pid !== null &&
+    pid === candidate && (!Number.isInteger(expectedPid) || expectedPid === candidate);
   if (!ownedByConstruction) {
     if (!canProveByCommandLine) {
       result.state = 'FAILED';

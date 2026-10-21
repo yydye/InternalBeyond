@@ -139,7 +139,14 @@ function startSilentSquatter(port) {
   return new Promise(resolve => {
     server.listen(port, '127.0.0.1', () => resolve({
       server: server,
-      close() { for (const s of sockets) { try { s.destroy(); } catch (_) { /* 已断 */ } } try { server.close(); } catch (_) { /* 已关 */ } openServers.delete(server); }
+      close() {
+        for (const s of sockets) { try { s.destroy(); } catch (_) { /* 已断 */ } }
+        if (!server.listening) { openServers.delete(server); return Promise.resolve(); }
+        return new Promise(resolveClose => {
+          try { server.close(() => { openServers.delete(server); resolveClose(); }); }
+          catch (_) { openServers.delete(server); resolveClose(); }
+        });
+      }
     }));
   });
 }
@@ -568,7 +575,7 @@ async function killListeners(port) {
       const squatted = await freePort();
       const squatter = await startSilentSquatter(squatted);
       const probe = await registry.probeComponent(registry.byId('bridge'), { port: squatted, host: '127.0.0.1', timeoutMs: 700 });
-      squatter.close();
+      await squatter.close();
       const msg = (probe.reason && probe.reason.message) || '';
       check('H8 超时原因写明真实端口与真实耗时（不再是 defaultPort + "within 0ms"）',
         probe.state === 'offline' && probe.reason && probe.reason.category === 'timeout' &&
@@ -598,19 +605,20 @@ async function killListeners(port) {
   if (wants('PORT')) {
     section('§PORT \u00b7 port ownership & duplicate runner');
 
-    /* P1 纯谓词：命令行的两种形态都要认出来 —— runner 自己 spawn 孩子用绝对路径，
-       而开发者/安装器/测试可能用仓库相对路径。修复前只认绝对路径，于是**我们自己的**
-       第二个 runner 被报成 foreign。 */
+    /* P1 纯谓词：只按精确绝对脚本路径分类。目录名子串和相对路径都不能证明
+       安装根，更不能成为停止进程的凭据。 */
     const absRunner = path.join(ROOT, 'runtime', 'local-services-runner.js');
     const absBridge = path.join(ROOT, 'services', 'ib-bridge-service.js');
-    check('P1 归属谓词同时认绝对路径与仓库相对路径（且不认识别人的同名文件之外的路径）',
+    const siblingRunner = path.join(path.dirname(ROOT), path.basename(ROOT) + '-other', 'runtime', 'local-services-runner.js');
+    check('P1 进程分类只接受精确绝对脚本路径，不把相对路径或根目录名子串当归属',
       runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" "' + absRunner + '"', absRunner) === true &&
-      runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" runtime/local-services-runner.js', absRunner) === true &&
-      runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" runtime\\local-services-runner.js', absRunner) === true &&
+      runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" runtime/local-services-runner.js', absRunner) === false &&
+      runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" runtime\\local-services-runner.js', absRunner) === false &&
       runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" "' + absBridge + '"', absRunner) === false &&
+      runnerLib.commandMatchesScript('"C:\\nodejs\\node.exe" "' + siblingRunner + '"', absRunner) === false &&
       runnerLib.commandMatchesScript('', absRunner) === false &&
       runnerLib.commandMatchesScript('"C:\\other\\app.exe" --serve', absRunner) === false,
-      { absolute: runnerLib.commandMatchesScript('"n" "' + absRunner + '"', absRunner), relative: runnerLib.commandMatchesScript('node runtime/local-services-runner.js', absRunner) });
+      { absolute: runnerLib.commandMatchesScript('"n" "' + absRunner + '"', absRunner), relative: runnerLib.commandMatchesScript('node runtime/local-services-runner.js', absRunner), sibling: runnerLib.commandMatchesScript('"n" "' + siblingRunner + '"', absRunner) });
 
     /* P2 free / own 的真实分类（不需要起服务） */
     {
@@ -661,13 +669,27 @@ async function killListeners(port) {
         { bridgeLogBytes: bridgeLog.length, recoveryState: bridgeRow.recoveryState, lastFailureReason: bridgeRow.lastFailureReason });
       check('P6 外部占用者没有被杀（它还在监听同一个端口）',
         (await listenersOn(ports.bridge)).length >= 1, await listenersOn(ports.bridge));
-      /* 直到这里占用者都还在。runner 的停机路径会对每个端口做有界等待
-         （stopService + waitPortFree 10s），所以"端口不是我们的"会让停机变慢但
-         不会让它挂住 —— 这正是安装器升级时的真实处境，值得如实覆盖。 */
+      await squatter.close();
+      const recoveredBridge = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, server: 'IB Bridge', environment: 'production', pid: process.pid }));
+      });
+      openServers.add(recoveredBridge);
+      await new Promise((resolve, reject) => {
+        recoveredBridge.once('error', reject);
+        recoveredBridge.listen(ports.bridge, '127.0.0.1', resolve);
+      });
+      const afterOwnerRecovery = (await componentsOf(ports.restart)).find(c => c.id === 'bridge') || {};
+      check('P6b 有效身份与健康恢复后清除旧的 portOwner 冲突快照',
+        afterOwnerRecovery.state === 'healthy' && !afterOwnerRecovery.portOwner &&
+        afterOwnerRecovery.recoveryState === 'healthy',
+        { state: afterOwnerRecovery.state, portOwner: afterOwnerRecovery.portOwner, recoveryState: afterOwnerRecovery.recoveryState });
+      await new Promise(resolve => recoveredBridge.close(resolve));
+      openServers.delete(recoveredBridge);
+      /* 端口冲突和身份恢复都已核验；关闭隔离 fixture 后检查优雅停机。 */
       const stopped = await shutdownRunner(run, ports.restart, 40000);
       check('P7 runner 能正常停机：即使有一个端口不属于它（有界等待后仍然退出，不挂住）',
         stopped === true && run.code === 0, { code: run.code, out: run.out.slice(-300) });
-      squatter.close();
       await sleep(500);
       for (const p of [ports.bridge, ports.active, ports.homeNode]) await killListeners(p);
       rmrf(dataRoot);
@@ -784,6 +806,29 @@ async function killListeners(port) {
     check('R8 锁死是一次性的：同一个组件不会因为再次收到失败信号而恢复重试资格',
       sup.handle('homeNode', supervisorModule.EVENT.PROCESS_EXIT, { restartable: true, code: 1, reason: cause }).action === 'failed' &&
       sup.authorizeAttempt('homeNode').allowed === false);
+
+    const recoveryGate = new supervisorModule.Supervisor();
+    recoveryGate.register('homeNode', 'Home Node');
+    recoveryGate.register('bridge', 'Bridge');
+    check('R9 同一组件只允许一个恢复尝试在途，不同组件仍可独立恢复',
+      recoveryGate.claimRecovery('homeNode') === true &&
+      recoveryGate.recoveryInFlight('homeNode') === true &&
+      recoveryGate.claimRecovery('homeNode') === false &&
+      recoveryGate.claimRecovery('bridge') === true);
+    check('R10 恢复完成后释放锁，下一次有界尝试可以取得锁',
+      recoveryGate.releaseRecovery('homeNode') === true &&
+      recoveryGate.recoveryInFlight('homeNode') === false &&
+      recoveryGate.claimRecovery('homeNode') === true);
+
+    const conflict = recoveryGate.handle('homeNode', supervisorModule.EVENT.PORT_CONFLICT, {
+      reason: 'Home Node port 23118 is held by port-owner-unknown'
+    });
+    const conflictView = recoveryGate.describe('homeNode');
+    check('R11 无法安全确认端口归属时 fail closed，诊断保留真实端口冲突原因',
+      conflict.action === 'failed' && conflictView.recoveryState === 'failed' &&
+      /port-owner-unknown/.test(conflictView.lastFailureReason) &&
+      /port conflict/.test(conflictView.failedReason),
+      { decision: conflict, lastFailureReason: conflictView.lastFailureReason, failedReason: conflictView.failedReason });
   }
 
   /* ── §SHUTDOWN · 生产停止路径 ─────────────────────────────────────────── */
@@ -804,8 +849,17 @@ async function killListeners(port) {
       try { const r = await request(port, 'GET', '/health', { timeoutMs: 1500 }); if (r.status === 200) { up = true; break; } } catch (_) { /* 还没起来 */ }
       await sleep(250);
     }
+    const credential = await request(port, 'POST', '/internal/desktop-credential', {
+      headers: { 'X-IB-Bootstrap': '1', Origin: 'http://127.0.0.1:23120' },
+      body: {}
+    });
+    const desktopToken = credential.body && credential.body.credential;
     const wrote = await request(port, 'POST', '/messages', {
-      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://127.0.0.1',
+        'X-IB-Home-Token': String(desktopToken || '')
+      },
       body: { message: { id: 's1', role: 'user', content: 'survives the stop path', friendId: 'f1', timestamp: 1700000000001 } }
     });
     check('S1 真实 Home Node 起来了并接受了一次写入', up === true && wrote.status === 200, { up: up, status: wrote.status });

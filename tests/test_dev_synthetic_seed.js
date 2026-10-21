@@ -22,14 +22,14 @@ test('Synthetic Seed selects a separate sandbox and leaves default Dev paths unc
     'Dev Vault writes use the injected service contract and have no production fallback');
   const local = path.join(os.tmpdir(), 'ib-synthetic-seed-path-test');
   assert.deepEqual(launcher.resolveAppDataPaths(local, false), {
-    appData: path.join(local, 'InternalBeyond'),
-    sandbox: path.join(local, 'InternalBeyond', 'dev-sandbox'),
-    credentialDataDir: path.join(local, 'InternalBeyond', 'dev-sandbox', 'credential-vault')
+    appData: path.join(local, '.dev-data', 'development'),
+    sandbox: path.join(local, '.dev-data', 'development', 'dev-sandbox'),
+    credentialDataDir: path.join(local, '.dev-data', 'development', 'dev-sandbox', 'credential-vault')
   });
   assert.deepEqual(launcher.resolveAppDataPaths(local, true), {
-    appData: path.join(local, 'InternalBeyond', 'dev-synthetic'),
-    sandbox: path.join(local, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox'),
-    credentialDataDir: path.join(local, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox', 'credential-vault')
+    appData: path.join(local, '.dev-data', 'synthetic'),
+    sandbox: path.join(local, '.dev-data', 'synthetic', 'dev-sandbox'),
+    credentialDataDir: path.join(local, '.dev-data', 'synthetic', 'dev-sandbox', 'credential-vault')
   });
   assert.deepEqual(launcher.parseStartOptions(['--synthetic', '--dsh']), {
     dshEnabled: true, synthetic: true, manualExportPath: undefined
@@ -37,29 +37,41 @@ test('Synthetic Seed selects a separate sandbox and leaves default Dev paths unc
   assert.deepEqual(launcher.parseStartOptions(['fixture.json', '--synthetic']), {
     dshEnabled: false, synthetic: true, manualExportPath: 'fixture.json'
   });
-  assert.equal(launcher.startupTimeoutMs(false), 60000);
-  assert.equal(launcher.startupTimeoutMs(true), 15 * 60 * 1000);
+  assert.equal(launcher.TAURI_BUILD_TIMEOUT_MS, 15 * 60 * 1000);
+  assert.equal(launcher.HOST_READINESS_TIMEOUT_MS, 60 * 1000);
 
-  const isolatedBase = path.join(os.tmpdir(), 'ib-synthetic-launcher-env');
+  const isolatedBase = path.join(os.tmpdir(), 'ib-dev-launcher-test-synthetic-env');
   const modulePath = path.join(ROOT, 'runtime', 'ib-dev-launcher.js');
   const childSource = 'const launcher=require(' + JSON.stringify(modulePath) + ');'
     + 'const env=launcher.tauriEnvironment();'
     + 'process.stdout.write(JSON.stringify({sandbox:launcher.SANDBOX,credentialDataDir:env.IB_CREDENTIAL_DATA_DIR,'
+    + 'cargoTarget:env.CARGO_TARGET_DIR,localAppData:env.LOCALAPPDATA,appData:env.APPDATA,temp:env.TEMP,'
+    + 'webview:env.WEBVIEW2_USER_DATA_FOLDER,projectRoot:env.IB_DEV_PROJECT_ROOT,'
     + 'synthetic:env.IB_DEV_SYNTHETIC,debug:env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS}));';
   const isolated = JSON.parse(execFileSync(process.execPath, ['-e', childSource], {
     encoding: 'utf8',
-    env: Object.assign({}, process.env, { LOCALAPPDATA: isolatedBase, IB_DEV_SYNTHETIC: '1' })
+    env: Object.assign({}, process.env, {
+      LOCALAPPDATA: isolatedBase,
+      IB_DEV_LAUNCHER_TEST_PROJECT_ROOT: isolatedBase,
+      IB_DEV_SYNTHETIC: '1'
+    })
   }));
   assert.deepEqual(isolated, {
-    sandbox: path.join(isolatedBase, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox'),
-    credentialDataDir: path.join(isolatedBase, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox', 'credential-vault'),
+    sandbox: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox'),
+    credentialDataDir: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'credential-vault'),
+    cargoTarget: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'cargo-target'),
+    localAppData: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'local-app-data'),
+    appData: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'roaming-app-data'),
+    temp: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'temp'),
+    webview: path.join(isolatedBase, '.dev-data', 'synthetic', 'dev-sandbox', 'webview2'),
+    projectRoot: isolatedBase,
     synthetic: '1', debug: '--remote-debugging-port=9225'
   });
 });
 
 test('Synthetic Seed imports only fake Providers and one virtual Workspace file', async t => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-dsh-synthetic-seed-'));
-  const sandboxRoot = path.join(parent, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+  const sandboxRoot = path.join(parent, '.dev-data', 'synthetic', 'dev-sandbox');
   const credentialDataDir = path.join(sandboxRoot, 'credential-vault');
   const fakeProvider = await synthetic.createSyntheticFakeProvider({ port: 0 });
   t.after(async () => { await fakeProvider.close(); fs.rmSync(parent, { recursive: true, force: true }); });

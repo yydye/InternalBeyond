@@ -93,6 +93,7 @@ const TEST_APP_ID = SOURCE_TEST_APP_ID || 'A4D9E7B3-1F86-4C2A-9D57-6B3E1C8F0A24'
 const TEST_APP_NAME = issQuotedDefine('TestOnlyAppName') || 'InternalBeyond Installer Smoke Test';
 const TEST_INSTALL_DIRECTORY_NAME = issQuotedDefine('TestOnlyInstallDirectoryName') || 'InternalBeyond-Installer-Smoke-Test';
 const TEST_OUTPUT_BASE_NAME = issQuotedDefine('TestOnlyOutputBaseName') || 'InternalBeyond-Installer-Smoke-Test';
+const TEST_HOST_IDENTIFIER = 'com.internalbeyond.installer-smoke';
 const TEST_PUBLISHER = 'InternalBeyond (Test Only)';
 const LOCALAPPDATA = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
 /* The developer's real user-data directory. This harness never writes here:
@@ -404,6 +405,9 @@ function assertInstallerIdentity() {
     'test identity evidence must record the explicit compile-time define');
   assert.strictEqual(evidence.source, 'installer/InternalBeyond.iss');
   assert.strictEqual(evidence.hostVersion, PRODUCT.version, 'test host PE version must match VERSION');
+  assert.strictEqual(evidence.hostIdentifier, TEST_HOST_IDENTIFIER,
+    'test host identifier must be separate from the installed production Tauri instance');
+  assert.strictEqual(evidence.hostTestMode, true, 'test host must prove the explicit isolated identifier mode');
   assert.ok(/^[0-9a-f]{64}$/i.test(String(evidence.hostSha256 || '')), 'test identity evidence must carry a host SHA-256');
   assert.strictEqual(evidence.sha256, sha256(exeAbs), 'test identity evidence must bind to this installer bytes');
   const compileLog = path.join(path.dirname(exeAbs), 'build-compile.log');
@@ -446,6 +450,7 @@ function ibProcesses(root) { return psFile(WIN_AUDIT, ['-Root', root, '-Mode', '
 /* ── state ─────────────────────────────────────────────────────────────── */
 
 const EXE = argOf('--exe') || path.join(ROOT, 'tmp', 'installer-smoke-build', TEST_OUTPUT_BASE_NAME + '-Setup-' + PRODUCT.version + '.exe');
+const RUNNER_BASELINE = argOf('--runner-baseline');
 const SMOKE_ROOT = path.join(os.tmpdir(), 'ib-p7-smoke');
 const SMOKE_MARKER = 'ib-p7-smoke-root.json';
 const INSTALL_DIR = path.join(SMOKE_ROOT, 'install-' + Date.now());
@@ -460,6 +465,7 @@ const TEST_IDENTITY_FILE = 'installer-test-identity.json';
 /* Every child this harness starts, so cleanup() can stop exactly those and no
    process it did not create. */
 const tracked = new Set();
+let HOST_EXIT_INFO = null;
 /* Temp dirs holding decoy Node copies started by the upgrade scenario. */
 const DECOYS = [];
 
@@ -491,6 +497,7 @@ function smokeEnv(extra) {
     USERPROFILE: ISOLATED_USERPROFILE,
     TEMP: ISOLATED_TEMP,
     TMP: ISOLATED_TMP,
+    WEBVIEW2_USER_DATA_FOLDER: path.join(ISOLATED_LOCALAPPDATA, 'InternalBeyondInstallerSmokeWebView'),
     IB_INSTALLER_SMOKE_DATA_DIR: DATA_DIR,
     IB_RUNTIME_MODE: 'production',
     IB_WEB_PORT: String(WEB_PORT),
@@ -576,7 +583,7 @@ function assertIsolationBeforeSpawn() {
     activeData: path.join(DATA_DIR, 'active-message-service.json'),
     bridgeData: path.join(DATA_DIR, 'bridge'),
     homeNodeData: path.join(DATA_DIR, 'home-node'),
-    webViewProfile: path.join(ISOLATED_LOCALAPPDATA, 'com.internalbeyond.desktop', 'EBWebView'),
+    webViewProfile: path.join(ISOLATED_LOCALAPPDATA, 'InternalBeyondInstallerSmokeWebView'),
     testStartMenu: TEST_START_MENU,
     testDesktopShortcut: TEST_DESKTOP_SHORTCUT,
     ports: { WEB_PORT, RESTART_PORT, BRIDGE_PORT, ACTIVE_PORT, HOME_NODE_PORT },
@@ -586,10 +593,12 @@ function assertIsolationBeforeSpawn() {
     testInstallerKey: TEST_UNINSTALL_KEY,
     testAppName: TEST_APP_NAME
   });
-  isolationGuard.assertWindowsShellIsolated({
-    appData: ISOLATED_APPDATA,
-    userProfile: ISOLATED_USERPROFILE
-  });
+  /* WScript.Shell.SpecialFolders always reports the real logon profile even
+     when APPDATA/USERPROFILE are overridden. InstallerTestMode now resolves
+     [Icons] from those explicit child environment values; assertIsolated above
+     already proves both resulting shortcut paths are under owned temp roots and
+     disjoint from the real Start Menu/Desktop. Do not query or rewrite HKCU shell
+     folder mappings just to make this smoke pass. */
 }
 
 /* ── real-smoke ledger (one success per built installer) ───────────────── */
@@ -836,6 +845,13 @@ function launchApp(env) {
      launcher; browser opening is suppressed by the existing launch seam. */
   const childEnv = smokeEnv(Object.assign({ LOCALAPPDATA: ISOLATED_LOCALAPPDATA, IB_LAUNCH_NO_OPEN: '1' }, env || {}));
   const child = spawn(HOST_EXE, [], { cwd: INSTALL_DIR, detached: true, stdio: 'ignore', windowsHide: true, env: childEnv });
+  HOST_EXIT_INFO = null;
+  child.once('error', error => {
+    HOST_EXIT_INFO = { errorCode: String(error && error.code || ''), error: String(error && error.message || error).slice(0, 180) };
+  });
+  child.once('exit', (code, signal) => {
+    HOST_EXIT_INFO = { exitCode: code, signal: String(signal || '') };
+  });
   child.unref();
   tracked.add(child.pid);
   return child.pid;
@@ -855,6 +871,116 @@ function startDecoy() {
   DECOYS.push(dir);
   return { pid: child.pid, dir: dir };
 }
+function installRunnerBaseline() {
+  if (!RUNNER_BASELINE) return null;
+  if (!REAL) fatal('--runner-baseline is only valid with --real-install-smoke');
+  const baselinePath = path.resolve(RUNNER_BASELINE);
+  if (!fs.existsSync(baselinePath) || !fs.statSync(baselinePath).isFile()) {
+    fatal('runner baseline must be an existing regular file');
+  }
+  if (isSameOrWithin(baselinePath, INSTALL_DIR) || isSameOrWithin(INSTALL_DIR, baselinePath)) {
+    fatal('runner baseline and isolated install root must be separate');
+  }
+  const runnerRel = path.join('runtime', 'local-services-runner.js');
+  const expectedPath = path.join(ROOT, runnerRel);
+  const targetPath = path.join(INSTALL_DIR, runnerRel);
+  const baselineSha256 = sha256(baselinePath);
+  const expectedSha256 = sha256(expectedPath);
+  if (baselineSha256 === expectedSha256) fatal('runner baseline must represent different, older bytes');
+  fs.copyFileSync(baselinePath, targetPath);
+  if (sha256(targetPath) !== baselineSha256) fatal('could not seed the isolated install with the runner baseline');
+  console.log('  seeded isolated runner baseline · ' + baselineSha256 + ' → expected ' + expectedSha256);
+  return { path: targetPath, baselineSha256, expectedSha256 };
+}
+function installedRunnerComponents() {
+  return getJson('http://127.0.0.1:' + RESTART_PORT + '/components', 2500).then(r =>
+    r.ok && r.json && Array.isArray(r.json.components) ? r.json : null);
+}
+function startInstalledRunner() {
+  assertIsolationBeforeSpawn();
+  const node = path.join(INSTALL_DIR, 'runtime', 'node', 'node.exe');
+  const runner = path.join(INSTALL_DIR, 'runtime', 'local-services-runner.js');
+  const child = spawn(node, [runner], {
+    cwd: INSTALL_DIR,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: smokeEnv({ IB_SHUTDOWN_BUDGET_MS: '12000' })
+  });
+  child.unref();
+  tracked.add(child.pid);
+  return child.pid;
+}
+function proveHomeNodePid(pid) {
+  const quote = value => "'" + String(value).replace(/'/g, "''") + "'";
+  const nodePath = path.join(INSTALL_DIR, 'runtime', 'node', 'node.exe');
+  const command = '$p=Get-CimInstance Win32_Process -Filter "ProcessId = ' + Number(pid) + '";' +
+    '$node=' + quote(nodePath) + ';$root=' + quote(INSTALL_DIR) + ';' +
+    'if(-not $p -or $p.ExecutablePath -ine $node -or $p.CommandLine -notlike ' + quote('*home-node-service.js*') +
+    ' -or $p.CommandLine -notlike ' + quote('*' + INSTALL_DIR + '*') + ') { exit 7 }; exit 0';
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, stdio: 'ignore' });
+}
+async function exerciseInstalledRunnerAfterUpgrade() {
+  console.log('\n[5b] updated Runner · Home Node singleton and recovery');
+  const runnerPid = startInstalledRunner();
+  const ready = await waitFor(async () => {
+    if (!alivePid(runnerPid)) return false;
+    const view = await installedRunnerComponents();
+    if (!view) return false;
+    const required = ['bridge', 'active', 'homeNode'];
+    return required.every(id => {
+      const item = view.components.find(row => row && row.id === id);
+      return !!(item && item.state === 'healthy' && Number(item.pid) > 0);
+    });
+  }, 90000, 500);
+  assert.ok(ready, 'updated installed Runner did not bring Bridge, Active, and Home Node healthy');
+  const initialView = await installedRunnerComponents();
+  const initialHome = initialView.components.find(row => row && row.id === 'homeNode');
+  const initialRunner = await getJson('http://127.0.0.1:' + RESTART_PORT + '/status');
+  assert.ok(initialRunner.ok && initialRunner.json && initialRunner.json.pid === runnerPid,
+    'the updated Runner does not own its isolated control plane');
+  console.log('  updated Runner ready · pid=' + runnerPid + ' · Home Node pid=' + initialHome.pid);
+
+  const node = path.join(INSTALL_DIR, 'runtime', 'node', 'node.exe');
+  const runner = path.join(INSTALL_DIR, 'runtime', 'local-services-runner.js');
+  const duplicate = await run(node, [runner], { timeoutMs: 15000, cwd: INSTALL_DIR, env: smokeEnv() });
+  assert.notStrictEqual(duplicate.code, 0, 'a second runner must refuse the already-owned control port');
+  const afterDuplicate = await installedRunnerComponents();
+  const afterDuplicateHome = afterDuplicate && afterDuplicate.components.find(row => row && row.id === 'homeNode');
+  assert.ok(afterDuplicateHome && afterDuplicateHome.state === 'healthy' && afterDuplicateHome.pid === initialHome.pid,
+    'a duplicate runner changed the single Home Node process');
+  console.log('  duplicate Runner refused · Home Node remains pid=' + afterDuplicateHome.pid);
+
+  proveHomeNodePid(initialHome.pid);
+  execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(initialHome.pid)], { windowsHide: true, stdio: 'ignore' });
+  const recovered = await waitFor(async () => {
+    const view = await installedRunnerComponents();
+    const home = view && view.components.find(row => row && row.id === 'homeNode');
+    return !!(home && home.state === 'healthy' && Number(home.pid) > 0 && home.pid !== initialHome.pid);
+  }, 60000, 500);
+  assert.ok(recovered, 'updated installed Runner did not recover the failed Home Node process');
+  const recoveredView = await installedRunnerComponents();
+  const recoveredHome = recoveredView.components.find(row => row && row.id === 'homeNode');
+  console.log('  Home Node recovered · pid=' + initialHome.pid + ' → ' + recoveredHome.pid);
+
+  const stopHelper = path.join(INSTALL_DIR, 'tools', 'ib-stop.js');
+  const stopped = await run(node, [stopHelper, '--root', INSTALL_DIR, '--json', '--timeout-ms', '30000'], {
+    timeoutMs: 40000, cwd: INSTALL_DIR, env: smokeEnv()
+  });
+  assert.strictEqual(stopped.code, 0, 'installed stop helper could not stop the post-upgrade Runner: ' + (stopped.stderr || stopped.stdout));
+  let report = null;
+  try { report = JSON.parse(stopped.stdout.trim()); } catch (e) { }
+  assert.ok(report && report.ok === true, 'post-upgrade Runner shutdown did not report clean completion');
+  const clean = await waitFor(async () => {
+    const processes = await ibProcesses(INSTALL_DIR);
+    const ports = [RESTART_PORT, BRIDGE_PORT, ACTIVE_PORT, HOME_NODE_PORT];
+    if (processes.length) return false;
+    for (const port of ports) if (await portBound(port)) return false;
+    return true;
+  }, 30000, 500);
+  assert.ok(clean, 'post-upgrade Runner left an InternalBeyond process or managed listener behind');
+  console.log('  installed stop helper cleaned all isolated services and listeners');
+}
 function alivePid(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return false; }
 }
@@ -869,6 +995,61 @@ function hostWindowState(pid) {
 }
 function appHealthy() {
   return getJson('http://127.0.0.1:' + WEB_PORT + '/health').then(h => !!(h.ok && h.json && h.json.server === 'InternalBeyond Web'));
+}
+async function launchFailureDiagnostics(hostPid) {
+  const out = {
+    hostProcessAlive: alivePid(hostPid),
+    hostExit: HOST_EXIT_INFO,
+    webPortListening: await portBound(WEB_PORT),
+    webHealth: null,
+    bootState: null,
+    launcherErrors: []
+  };
+  const health = await getJson('http://127.0.0.1:' + WEB_PORT + '/health', 1500);
+  out.webHealth = {
+    status: health.status,
+    expectedIdentity: !!(health.json && health.json.server === 'InternalBeyond Web')
+  };
+  const bootPath = path.join(DATA_DIR, 'boot-state.json');
+  if (fs.existsSync(bootPath)) {
+    try {
+      const boot = JSON.parse(fs.readFileSync(bootPath, 'utf8'));
+      const components = {};
+      for (const [id, row] of Object.entries(boot.components || {})) {
+        components[id] = {
+          state: String(row && row.state || 'unknown'),
+          category: String(row && row.reason && row.reason.category || ''),
+          message: String(row && row.reason && row.reason.message || '').slice(0, 240)
+        };
+      }
+      out.bootState = {
+        phase: String(boot.phase || ''),
+        overall: String(boot.overall || ''),
+        fatal: boot.fatal ? {
+          category: String(boot.fatal.category || ''),
+          message: String(boot.fatal.message || '').slice(0, 240)
+        } : null,
+        rootMatchesInstall: String(boot.launcher && boot.launcher.root || '').toLowerCase() === INSTALL_DIR.toLowerCase(),
+        nodeSource: String(boot.launcher && boot.launcher.node && boot.launcher.node.source || ''),
+        serviceManager: boot.launcher && boot.launcher.serviceManager ? {
+          state: String(boot.launcher.serviceManager.state || ''),
+          startedByLauncher: boot.launcher.serviceManager.startedByLauncher === true,
+          errorCategory: String(boot.launcher.serviceManager.error && boot.launcher.serviceManager.error.category || ''),
+          errorMessage: String(boot.launcher.serviceManager.error && boot.launcher.serviceManager.error.message || '').slice(0, 240)
+        } : null,
+        components: components
+      };
+    } catch (e) { out.bootState = { parseFailed: true }; }
+  }
+  const launcherLog = path.join(DATA_DIR, 'logs', 'launcher.log');
+  if (fs.existsSync(launcherLog)) {
+    try {
+      out.launcherErrors = fs.readFileSync(launcherLog, 'utf8').split(/\r?\n/)
+        .filter(line => /\b(?:ERROR|FATAL|WARN)\b|failed|EADDRINUSE|not found|permission denied/i.test(line))
+        .slice(-8).map(line => line.slice(0, 240));
+    } catch (e) { /* diagnostics stay best-effort */ }
+  }
+  return out;
 }
 
 /* ── main ──────────────────────────────────────────────────────────────── */
@@ -1086,7 +1267,10 @@ async function main() {
     await acheck('app becomes reachable on its local page service', async () => {
       assert.ok(launchHealthy, 'web server did not become healthy within 90s');
     }, { timeoutMs: SLOW_TIMEOUT_MS });
-    if (!launchHealthy) fatal('launch acceptance failed; refusing to continue to upgrade or uninstall');
+    if (!launchHealthy) {
+      console.log('  launch diagnostics: ' + JSON.stringify(await launchFailureDiagnostics(hostPid)));
+      fatal('launch acceptance failed; refusing to continue to upgrade or uninstall');
+    }
 
     await acheck('canonical Host window is visible and responding', async () => {
       let snapshot = null;
@@ -1211,6 +1395,8 @@ async function main() {
       assert.ok(decoy.pid > 0 && alivePid(decoy.pid), 'the decoy failed to start');
     });
 
+    const runnerBaseline = installRunnerBaseline();
+
     const upgrade = await withDeadline('silent upgrade over a running instance', SLOW_TIMEOUT_MS,
       () => silentInstall(INSTALL_DIR));
     assertProtectedStateUnchanged('after upgrade', protectedBefore);
@@ -1233,6 +1419,15 @@ async function main() {
         'node.exe must be replaced cleanly (a stale lock would leave it behind)');
       assert.strictEqual(fs.readFileSync(path.join(INSTALL_DIR, 'VERSION'), 'utf8').trim(), PRODUCT.version);
     });
+    check('the same-version upgrade replaced the Home Node Runner bytes', () => {
+      const actual = sha256(path.join(INSTALL_DIR, 'runtime', 'local-services-runner.js'));
+      const expected = runnerBaseline ? runnerBaseline.expectedSha256 : sha256(path.join(ROOT, 'runtime', 'local-services-runner.js'));
+      assert.strictEqual(actual, expected, 'installed Runner does not match this release payload');
+      if (runnerBaseline) assert.notStrictEqual(actual, runnerBaseline.baselineSha256,
+        'same-version upgrade left the older Runner bytes in place');
+    });
+    await acheck('the upgraded Runner starts services, enforces one Home Node, and recovers a failed Home Node',
+      exerciseInstalledRunnerAfterUpgrade, { timeoutMs: SLOW_TIMEOUT_MS });
     check('user data survived the upgrade', () => {
       assert.ok(fs.existsSync(MARKER_PATH), 'user data marker was deleted by the upgrade');
       assert.strictEqual(fs.readFileSync(MARKER_PATH, 'utf8'), MARKER_TEXT, 'user data content changed');

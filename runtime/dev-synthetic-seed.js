@@ -92,16 +92,13 @@ function syntheticSnapshot(endpoint, clock) {
   return snapshot;
 }
 
-function assertSyntheticRoot(sandboxRoot, credentialDataDir) {
+function assertSyntheticRoot(sandboxRoot, credentialDataDir, projectRoot) {
   const root = path.resolve(String(sandboxRoot || ''));
   const expectedVault = path.resolve(root, 'credential-vault');
   const parts = root.split(path.sep).filter(Boolean);
-  if (path.basename(root).toLowerCase() !== 'dev-sandbox'
-    || path.basename(path.dirname(root)).toLowerCase() !== 'dev-synthetic'
-    || path.basename(path.dirname(path.dirname(root))).toLowerCase() !== 'internalbeyond'
-    || path.resolve(String(credentialDataDir || '')) !== expectedVault) {
-    throw new Error('synthetic-sandbox-path-invalid');
-  }
+  try { devServiceContract.validateSandboxRoot(root, true, projectRoot || process.env.IB_DEV_PROJECT_ROOT); }
+  catch (_) { throw new Error('synthetic-sandbox-path-invalid'); }
+  if (path.resolve(String(credentialDataDir || '')) !== expectedVault) throw new Error('synthetic-sandbox-path-invalid');
   return { root, homeNodeDir: path.join(root, 'home-node'), vaultDir: expectedVault, parts };
 }
 
@@ -115,7 +112,7 @@ function assertNotReparsePoint(directory) {
 
 function seedSyntheticSandbox(options) {
   options = options || {};
-  const paths = assertSyntheticRoot(options.sandboxRoot, options.credentialDataDir);
+  const paths = assertSyntheticRoot(options.sandboxRoot, options.credentialDataDir, options.projectRoot);
   const endpoint = providerEndpoint(options.providerEndpoint);
   const clock = typeof options.clock === 'function' ? options.clock : Date.now;
   for (const directory of [paths.root, paths.homeNodeDir, paths.vaultDir]) {
@@ -290,6 +287,8 @@ function createSyntheticFakeProvider(options) {
     memoryObserved: false, personaObserved: false, codingPresetObserved: false,
     codingObserved: false, projectWriteToolNames: [], personaMarkers: { alpha: false, beta: false },
     appBuilderObserved: false, appBuildRuns: 0, appDraftToolNames: [],
+    puppetStudioAnalysisObserved: false, puppetStudioImageObserved: false, puppetStudioMotionObserved: false,
+    mapTravelObserved: false, mapTripCalls: 0, mapNoteCalls: 0,
     associationObserved: false, associationCalls: 0, associationPairCount: 0,
     associationSchemaVersion: null };
   let scriptedCallsByModel = Object.create(null);
@@ -323,6 +322,12 @@ function createSyntheticFakeProvider(options) {
           state.appBuilderObserved = false;
           state.appBuildRuns = 0;
           state.appDraftToolNames = [];
+          state.puppetStudioAnalysisObserved = false;
+          state.puppetStudioImageObserved = false;
+          state.puppetStudioMotionObserved = false;
+          state.mapTravelObserved = false;
+          state.mapTripCalls = 0;
+          state.mapNoteCalls = 0;
           state.associationObserved = false;
           state.associationCalls = 0;
           state.associationPairCount = 0;
@@ -347,7 +352,11 @@ function createSyntheticFakeProvider(options) {
     if (req.url !== '/v1/chat/completions' || req.method !== 'POST') {
       respond(res, 404, { error: 'not-found' }, req); return;
     }
-    if (req.headers.authorization !== 'Bearer ' + SYNTHETIC_FAKE_KEY) {
+    const syntheticRequestAuthenticated = !!(devIdentity && devIdentity.mode === 'synthetic' && identityAllowed(req));
+    if (devIdentity && devIdentity.mode === 'synthetic' && !syntheticRequestAuthenticated) {
+      respond(res, 403, { error: 'environment-identity-mismatch' }, req); return;
+    }
+    if (!syntheticRequestAuthenticated && req.headers.authorization !== 'Bearer ' + SYNTHETIC_FAKE_KEY) {
       respond(res, 401, { error: 'synthetic-provider-auth-required' }, req); return;
     }
     let request;
@@ -391,6 +400,7 @@ function createSyntheticFakeProvider(options) {
     state.personaObserved = state.personaMarkers.alpha || state.personaMarkers.beta;
     if (containsText(messages, '【Agent 预设 · Coding】')) state.codingPresetObserved = true;
     const allMessageText = messages.map(message => textContent(message && message.content)).join('\n');
+    const puppetStudioImage = messages.some(message => Array.isArray(message && message.content) && message.content.some(part => part && ['image_url', 'image', 'input_image'].includes(part.type)));
     let latestWorkPreset = 'general', latestPresetAt = -1, latestPresetMarker = '';
     for (const [name, marker] of [['coding', '【Agent 预设 · Coding】'], ['app-builder', '【Agent 预设 · App Builder】'],
       ['research', '【Agent 预设 · Research】'], ['general', '【Agent 预设 · General】']]) {
@@ -408,10 +418,69 @@ function createSyntheticFakeProvider(options) {
         relatedMemoryId: String(pair && pair.related && pair.related.memoryId || ''),
         relation: syntheticAssociationRelation(pair)
       })) });
+    } else if (model !== 'ib-dsh-synthetic-middle' && containsText(messages, 'IB_PUPPET_STUDIO_ANALYSIS')) {
+      state.puppetStudioAnalysisObserved = true;
+      state.puppetStudioImageObserved = state.puppetStudioImageObserved || puppetStudioImage;
+      content = JSON.stringify({
+        views: [
+          { id: 'front', label: '正面视图', box: { x: 0.018, y: 0.012, width: 0.414, height: 0.603 }, confidence: 0.91, note: '三视图左侧正面角色；含全身立绘。' },
+          { id: 'side', label: '侧面视图', box: { x: 0.438, y: 0.015, width: 0.292, height: 0.59 }, confidence: 0.87, note: '中间侧面作为轮廓参考。' },
+          { id: 'back', label: '背面视图', box: { x: 0.731, y: 0.015, width: 0.257, height: 0.59 }, confidence: 0.89, note: '右侧背面可参考头发和蝴蝶结。' },
+          { id: 'wink-detail', label: '闭眼表情细节', box: { x: 0.018, y: 0.632, width: 0.225, height: 0.126 }, confidence: 0.74, note: '底部表情格，可提取实际闭眼/微笑像素。' },
+          { id: 'open-mouth-detail', label: '张嘴表情细节', box: { x: 0.244, y: 0.632, width: 0.24, height: 0.126 }, confidence: 0.71, note: '底部表情格，可提取实际张嘴像素。' }
+        ],
+        parts: [
+          { id: 'front-hair', label: '正面头发', viewId: 'front', box: { x: 0.24, y: 0.02, width: 0.56, height: 0.24 }, boneId: 'head', anchorX: 0.5, anchorY: 0.82, zIndex: 30, confidence: 0.82, occlusion: '刘海与头饰交界需手工修边；后发不在正面完整可见。' },
+          { id: 'front-face', label: '脸部', viewId: 'front', box: { x: 0.25, y: 0.11, width: 0.52, height: 0.20 }, boneId: 'head', anchorX: 0.5, anchorY: 0.5, zIndex: 20, confidence: 0.78, occlusion: '耳朵与侧发边缘需检查；眼睛、嘴部仍在同一原图图层。' },
+          { id: 'front-torso', label: '上身服装', viewId: 'front', box: { x: 0.19, y: 0.25, width: 0.62, height: 0.38 }, boneId: 'body', anchorX: 0.5, anchorY: 0.12, zIndex: 10, confidence: 0.74, occlusion: '手臂与围裙有重叠；目前只裁取可见区域，不补画遮挡像素。' },
+          { id: 'eyes-open', label: '睁眼局部', viewId: 'front', box: { x: 0.26, y: 0.15, width: 0.48, height: 0.09 }, boneId: 'head', anchorX: 0.5, anchorY: 0.5, zIndex: 42, confidence: 0.62, occlusion: '眼睛细节嵌在脸部原图中；裁切边缘需手工修正。' },
+          { id: 'eyes-closed', label: '闭眼局部', viewId: 'wink-detail', box: { x: 0.2, y: 0.34, width: 0.62, height: 0.2 }, boneId: 'head', anchorX: 0.5, anchorY: 0.5, zIndex: 43, confidence: 0.58, occlusion: '来自设定图的眨眼表情细节，不保证与正脸尺寸一致。' },
+          { id: 'mouth-closed', label: '闭嘴局部', viewId: 'front', box: { x: 0.4, y: 0.255, width: 0.2, height: 0.06 }, boneId: 'head', anchorX: 0.5, anchorY: 0.5, zIndex: 44, confidence: 0.57, occlusion: '嘴部裁切建议，需在画布中调整定位。' },
+          { id: 'mouth-open', label: '张嘴局部', viewId: 'open-mouth-detail', box: { x: 0.34, y: 0.62, width: 0.32, height: 0.18 }, boneId: 'head', anchorX: 0.5, anchorY: 0.5, zIndex: 45, confidence: 0.57, occlusion: '来自张嘴表情参考格，大小与正脸比例需手工校准。' }
+        ],
+        bones: [
+          { id: 'root', name: 'Root', parent: null, x: 0, y: 0, rotation: 0 },
+          { id: 'body', name: '身体', parent: 'root', x: 285, y: 1100, rotation: 0 },
+          { id: 'head', name: '头部', parent: 'body', x: 0, y: -680, rotation: 0 },
+          { id: 'left-arm', name: '左臂', parent: 'body', x: -95, y: -340, rotation: 0 },
+          { id: 'right-arm', name: '右臂', parent: 'body', x: 100, y: -340, rotation: 0 }
+        ],
+        notes: [state.puppetStudioImageObserved ? 'Synthetic Mock Provider 收到了图像输入。' : 'Synthetic Mock Provider 没有收到图像输入。', '建议先将正面图设为动画画布。', '设定图的表情、侧面与背面用于参考，不会自动成为动画图层。', '头发、围裙和手臂有遮挡，需用户手工修正或选择图片编辑路由补全。']
+      });
+    } else if (model !== 'ib-dsh-synthetic-middle' && containsText(messages, 'IB_PUPPET_STUDIO_MOTION')) {
+      state.puppetStudioMotionObserved = true;
+      const head = containsText(messages, 'head') ? 'head' : 'body';
+      const arm = containsText(messages, 'left-arm') ? 'left-arm' : 'body';
+      content = JSON.stringify({
+        actions: [
+          { id: 'nod', label: '点头', durationSeconds: 0.82, fadeInSeconds: 0.14, fadeOutSeconds: 0.18, keyframes: [
+            { boneId: head, at: 0, rotation: 0, easing: 'smooth' }, { boneId: head, at: 0.22, rotation: -0.12, easing: 'easeOut' }, { boneId: head, at: 0.48, rotation: 0.075, easing: 'easeInOut' }, { boneId: head, at: 0.82, rotation: 0, easing: 'easeOut' }
+          ] },
+          { id: 'wave', label: '挥手', durationSeconds: 0.92, fadeInSeconds: 0.12, fadeOutSeconds: 0.18, keyframes: [
+            { boneId: arm, at: 0, rotation: 0 }, { boneId: arm, at: 0.2, rotation: -0.72, easing: 'easeOut' }, { boneId: arm, at: 0.45, rotation: -0.2, easing: 'easeInOut' }, { boneId: arm, at: 0.7, rotation: -0.68, easing: 'easeInOut' }, { boneId: arm, at: 0.92, rotation: 0, easing: 'easeOut' }
+          ] }
+        ], notes: ['这是一份可编辑关键帧草稿；请在时间轴里检查幅度和节奏。']
+      });
     } else if (model === 'ib-dsh-synthetic-middle') {
       content = containsText(messages, 'Read-only project audit')
         ? JSON.stringify({ steps: [{ fileId: SYNTHETIC_FILE_ID, focus: 'implementation' }] })
         : JSON.stringify({ decision: 'approve', issueCodes: [] });
+    } else if (model !== 'ib-dsh-synthetic-middle' && containsText(messages, 'IB_SYNTHETIC_MAP_TRAVEL')) {
+      /* Isolated end-to-end Map fixture: first call chooses a real named place;
+         the automatic tool continuation writes one deterministic postcard. */
+      state.mapTravelObserved = true;
+      if (containsText(messages, '【工具执行结果】') && containsText(messages, '<ws_trip_note')) {
+        state.mapNoteCalls += 1;
+        content = '巴黎的风把旧书店门口的铜铃吹响了。我把一张小小的旧书票夹进了游记里。\n'
+          + '<ws_trip_note title="巴黎旧书店" gift="旧书票" giftline="纸边留着时间的颜色" card="下次也一起走慢一点。">'
+          + '午后的巴黎有细雨。我们沿着塞纳河走到一间旧书店，木门推开时，屋里有纸张和咖啡的味道。'
+          + '我在靠窗的架子上挑了一本旧诗集，把夹在里面的书票带回来。出来时雨已经停了，河面映着浅浅的天光。</ws_trip_note>';
+      } else {
+        state.mapTripCalls += 1;
+        content = '我想带你去巴黎塞纳河边的一间旧书店。\n'
+          + '<ws_trip place="Paris" name="巴黎塞纳河旧书店" country="France" lat="48.8584" lon="2.2945" with="0">'
+          + '想沿着河边慢慢走，再挑一本旧书带回来。</ws_trip>';
+      }
     } else if (model !== 'ib-dsh-synthetic-middle' && latestWorkPreset === 'coding') {
       state.codingObserved = true;
       let codingStart = -1;

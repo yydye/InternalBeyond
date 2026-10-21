@@ -333,7 +333,16 @@ function pathMatchesRoot(p, root) {
 function commandLineMatchesRoot(cmdline, root) {
   const r = normalizeRoot(root);
   if (!r) return false;
-  return String(cmdline || '').toLowerCase().replace(/\//g, '\\').indexOf(r.replace(/\//g, '\\')) >= 0;
+  const cl = String(cmdline || '').toLowerCase().replace(/\//g, '\\');
+  let at = -1;
+  while ((at = cl.indexOf(r, at + 1)) >= 0) {
+    const before = at > 0 ? cl[at - 1] : '';
+    const after = cl[at + r.length] || '';
+    const beginsPath = !before || /[\s"'=]/.test(before);
+    const endsPath = !after || after === '\\' || /[\s"']/.test(after);
+    if (beginsPath && endsPath) return true;
+  }
+  return false;
 }
 
 /* Absolute paths on a command line that point at one of our scripts. Used to
@@ -785,6 +794,10 @@ async function stop(options) {
      runtime/component-lifecycle.js): an install-time stop has up to five targets
      and the MANAGER among them is the one whose cooperative shutdown is
      load-bearing, because its own teardown is what takes its children down.
+     The Runner owns a 12s bounded child-stop pass plus an exit tail. The normal
+     lifecycle caller caps each cooperative phase at 6s; for installer stop only,
+     allow up to 15s cooperative inside a 22s phase floor. The shared helper
+     budget remains bounded by timeoutMs.
      Measured on a real 1.0.4 instance: the legacy runner needed 2058-2371ms to
      stop Bridge and Active, while the default 3000ms share gave it only 1800ms
      of cooperative window — so every upgrade from a pre-P11-3H install expired
@@ -797,7 +810,8 @@ async function stop(options) {
     root: root,
     ownsCommandLine: ownsCommandLine,
     env: o.env,
-    perTargetFloorMs: 6000,
+    cooperativeMs: 15000,
+    perTargetFloorMs: 22000,
     discoveryMs: 2500
   });
 

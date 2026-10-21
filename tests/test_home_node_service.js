@@ -16,6 +16,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const net = require('net');
+const homeNodeIdentity = require('../runtime/home-node-identity.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const SERVICE = path.join('services', 'home-node-service.js');
@@ -103,6 +104,10 @@ function runNode(args, env) {
       check('service.start 在注入端口上启动', !!health, out.slice(-300));
       check('service.health 身份字段稳定（runner matchesHealth 契约）',
         !!health && health.service === 'internal-beyond-home-node', health && health.service);
+      check('service.health 发布协议版本与数据目录指纹（不暴露真实路径）',
+        !!health && health.protocolVersion === homeNodeIdentity.HOME_NODE_PROTOCOL_VERSION &&
+          health.dataDirectoryId === homeNodeIdentity.dataDirectoryId(dataDir),
+        health && { protocolVersion: health.protocolVersion, hasDataDirectoryId: !!health.dataDirectoryId });
       check('service.health ok=true 且带 version/messages/revision',
         !!health && health.ok === true && typeof health.version === 'string' &&
         typeof health.messages === 'number' && typeof health.revision === 'number', health);
@@ -180,7 +185,8 @@ function runNode(args, env) {
       const status2 = await runNode([RUNNER, '--json'], {
         IB_BRIDGE_PORT: String(bridgePort),
         IB_ACTIVE_PORT: String(activePort),
-        IB_HOME_NODE_PORT: String(homePort)
+        IB_HOME_NODE_PORT: String(homePort),
+        IB_HOME_NODE_DATA_DIR: dataDir
       });
       let parsed2 = null;
       try { parsed2 = JSON.parse(status2.stdout.trim()); } catch (e) { parsed2 = null; }

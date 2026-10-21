@@ -61,10 +61,18 @@ assert.ok(/\.env\("IB_HOME_NODE_AUTOSTART", "1"\)/.test(hostSource), 'Tauri expl
 assert.ok(hostSource.includes('runtime.home_node_ready = home_ready'), 'Host status follows live Home Node readiness');
 assert.ok(fs.readFileSync(path.join(root, 'src-tauri/src/tauri_service_supervisor.rs'), 'utf8')
   .includes('home-node-port-conflict'), 'unknown Home Node port owners are reported as fail-closed conflicts');
-assert.ok(hostSource.includes('Home Node 端口被未知服务占用；未启动重复进程'),
-  'an unknown Home Node listener is reported immediately, even while other startup work continues');
+assert.ok(hostSource.includes('Home Node 首选端口不兼容；Runner 正在协调空闲端口'),
+  'an incompatible Home Node listener is reported while the existing Runner selects a free endpoint');
 assert.ok(hostSource.includes('tauriHostSessionId'), 'ownership is bound to a per-Host session id');
+assert.ok(hostSource.includes('home_node_instance_matches_with') && hostSource.includes('home_node_environment_identity_matches(&value)'),
+  'Host Home Node probes require exact environment, instance, protocol, and data-directory identities');
+assert.ok(hostSource.includes('"runtime/home-node-identity.js"'),
+  'production Host payload validation requires the shared Home Node identity helper');
 assert.ok(!/taskkill\.exe[\s\S]{0,140}\/T/.test(hostSource), 'Tauri cleanup does not kill a process tree');
+assert.ok(runnerSource.includes('expectedPid: Number(entry.pid)') && !runnerSource.includes('path.basename(ROOT)'),
+  'Runner stop authority is an exact live child PID, not a root-name substring');
+assert.ok(/const ownedServices = SERVICES\.filter\(service => liveChildEntry\(service\)\)/.test(runnerSource),
+  'Runner shutdown only stops services it spawned');
 assert.ok(uiSource.includes("invoke('tauri_runtime_status')") && uiSource.includes('snapshot.degraded'),
   'the UI reads native readiness and displays degraded state');
 

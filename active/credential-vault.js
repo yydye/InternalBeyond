@@ -177,6 +177,8 @@ function createCredentialVault(deps) {
     const apiKey = incomingKey || cur.apiKey || '';
     if (!apiKey) return false;
     vault[id] = {
+      displayName: String(credential && (credential.displayName || credential.name) || cur.displayName || '').trim().slice(0, 80),
+      userManaged: credential && typeof credential.userManaged === 'boolean' ? credential.userManaged : cur.userManaged === true,
       provider: String(credential && credential.provider || cur.provider || ''),
       apiKey: apiKey,
       endpoint: String(credential && credential.endpoint || cur.endpoint || ''),
@@ -217,6 +219,37 @@ function createCredentialVault(deps) {
 
   function all() { return vaultError ? {} : vault; }
   function bindingIds() { return vaultError ? [] : Object.keys(vault); }
+  function listMetadata() {
+    if (vaultError) return [];
+    return Object.keys(vault).map(function (id) {
+      const entry = vault[id] || {};
+      let endpointHost = '', endpoint = '';
+      try {
+        const parsed = new URL(String(entry.endpoint || ''));
+        if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && !parsed.username && !parsed.password
+          && !/(?:[?&])(?:api[_-]?key|key|token|secret|authorization|bearer|password|credential|signature|sig)=/i.test(String(entry.endpoint || ''))
+          && !/(?:sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/i.test(String(entry.endpoint || ''))) {
+          endpointHost = parsed.host;
+          parsed.search = '';
+          parsed.hash = '';
+          endpoint = parsed.toString().slice(0, 1000);
+        }
+      } catch (_) {}
+      return {
+        credentialRef: id,
+        displayName: String(entry.displayName || '').slice(0, 80),
+        userManaged: entry.userManaged === true,
+        provider: String(entry.provider || '').slice(0, 48),
+        endpointHost: String(endpointHost || '').slice(0, 180),
+        endpoint: endpoint,
+        model: String(entry.model || '').slice(0, 120),
+        updatedAt: Number(entry.updatedAt) || 0,
+        secretPresent: !!String(entry.apiKey || '').trim()
+      };
+    }).sort(function (a, b) {
+      return (a.displayName || a.credentialRef).localeCompare(b.displayName || b.credentialRef);
+    });
+  }
   function count() { return vaultError ? 0 : Object.keys(vault).length; }
 
   /* ── 迁移：从旧业务 snapshot 的 character.apiKey 提取到 vault（幂等）──
@@ -245,7 +278,7 @@ function createCredentialVault(deps) {
   }
 
   return {
-    load, save, status, upsert, get, has, remove, all, bindingIds, count, migrateFromState
+    load, save, status, upsert, get, has, remove, all, bindingIds, listMetadata, count, migrateFromState
   };
 }
 

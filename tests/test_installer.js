@@ -45,9 +45,11 @@ const VERSION_FILE = path.join(ROOT, 'VERSION');
 const ISS = path.join(ROOT, 'installer', 'InternalBeyond.iss');
 const PIN = path.join(ROOT, 'installer', 'runtime-pin.json');
 const BUILD_PS1 = path.join(ROOT, 'scripts', 'build-installer.ps1');
+const HOST_STAGE_PS1 = path.join(ROOT, 'scripts', 'stage-tauri-host.ps1');
 const ISS_SRC = read(ISS);
 const PIN_JSON = JSON.parse(read(PIN));
 const BUILD_SRC = read(BUILD_PS1);
+const HOST_STAGE_SRC = read(HOST_STAGE_PS1);
 const README = read(path.join(ROOT, 'README.md'));
 
 console.log('Windows installer / release packaging contract (P7)\n');
@@ -95,6 +97,29 @@ check('installer identity has an explicit test-only compile seam', () => {
     'build script must make test mode explicit');
   assert.ok(/InstallAudit requires explicit -TestMode/.test(BUILD_SRC),
     'install audit must refuse a production build');
+});
+
+check('test-only shortcuts use isolated profile overrides', () => {
+  assert.ok(/#ifdef InstallerTestMode[\s\S]*?Name: "\{code:SmokeProgramsPath\}\\\{#AppName\}"/.test(ISS_SRC),
+    'smoke Start Menu shortcuts must resolve from the isolated APPDATA override');
+  assert.ok(/Name: "\{code:SmokeDesktopPath\}\\\{#AppName\}"/.test(ISS_SRC),
+    'smoke desktop shortcuts must resolve from the isolated USERPROFILE override');
+  assert.ok(/Root := GetEnv\('APPDATA'\)/.test(ISS_SRC) && /Root := GetEnv\('USERPROFILE'\)/.test(ISS_SRC),
+    'test shortcut resolver must use only explicit child environment roots');
+  assert.ok(/#else[\s\S]*?Name: "\{group\}\\\{#AppName\}"[\s\S]*?Name: "\{autodesktop\}\\\{#AppName\}"/.test(ISS_SRC),
+    'production Start Menu and desktop shortcut behavior must remain unchanged');
+});
+
+check('test-only Tauri Host cannot attach to production or reuse its WebView profile', () => {
+  assert.ok(/if \(\$TestMode\) \{ \$hostStageArgs \+= '-TestMode' \}/.test(BUILD_SRC),
+    'the explicit installer TestMode must reach the isolated Host builder');
+  assert.ok(/com\.internalbeyond\.installer-smoke/.test(HOST_STAGE_SRC),
+    'test Host must use a separate Tauri single-instance identifier');
+  assert.ok(/WEBVIEW2_USER_DATA_FOLDER/.test(read(path.join(ROOT, 'tests', 'test_installer_smoke.js'))),
+    'smoke Host must keep its WebView2 data under the temporary user-data root');
+  const sourceConfig = JSON.parse(read(path.join(ROOT, 'src-tauri', 'tauri.conf.json')));
+  assert.strictEqual(sourceConfig.identifier, 'com.internalbeyond.desktop',
+    'production Tauri identifier must stay unchanged');
 });
 
 check('build script reads VERSION and passes it to ISCC', () => {
@@ -232,9 +257,26 @@ check('build gates artifact generation and verifies the exact Stage consumed by 
   assert.ok(/\/DStagingDir=/.test(BUILD_SRC), 'ISCC must receive the exact Stage directory');
 });
 
+check('optional DSH archive keeps its signed compatibility range across compatible IB patch releases', () => {
+  const dshPin = JSON.parse(read(path.join(ROOT, 'runtime', 'dsh-runtime-package-pin.json')));
+  const dshBuilder = read(path.join(ROOT, 'scripts', 'build-optional-dsh-runtime.js'));
+  assert.strictEqual(dshPin.minimumProductVersion, '1.0.8');
+  assert.strictEqual(dshPin.maximumProductVersionExclusive, '2.0.0');
+  assert.ok(/packagePin\.minimumProductVersion/.test(dshBuilder)
+    && /packagePin\.maximumProductVersionExclusive/.test(dshBuilder),
+    'the DSH ZIP must use the compatibility range in the signed package pin, not the current IB build version');
+  assert.ok(/currentToMinimum < 0/.test(dshBuilder) && /currentToMaximum >= 0/.test(dshBuilder),
+    'the current product version must remain inside the pinned DSH compatibility range');
+  assert.ok(/dshPin\.minimumProductVersion -ne \$optionalDsh\.compatibility\.minimumProductVersion/.test(BUILD_SRC)
+    && /dshPin\.maximumProductVersionExclusive -ne \$optionalDsh\.compatibility\.maximumProductVersionExclusive/.test(BUILD_SRC),
+    'staging must compare the archive compatibility range to the pinned range');
+});
+
 check('payload manifest retains upgrade paths and adds size/SHA-256 records', () => {
   assert.ok(/artifactCount\s*=\s*\$payloadRecords\.Count/.test(BUILD_SRC),
     'generated manifest must count integrity records');
+  assert.ok(/\$payloadRecords\s*\|\s*ForEach-Object\s*\{\s*\[long\]\s*\$_.sizeBytes\s*\}\s*\|\s*Measure-Object\s*-Sum/.test(BUILD_SRC),
+    'artifactTotalBytes must include the Inno Host hashtable record as well as JSON Stage records');
   assert.ok(/sizeBytes\s*=/.test(BUILD_SRC) && /sha256\s*=\s*Get-Sha256/.test(BUILD_SRC),
     'generated manifest must measure actual staged and Host bytes');
   assert.ok(/files\s*=\s*@\(\$payloadFiles \| Sort-Object\)/.test(BUILD_SRC),
@@ -326,7 +368,7 @@ check('payload excludes dev, private and test material', () => {
   const files = resolved.files.map(f => f.to);
   const forbidden = [
     /(^|\/)\.git(\/|$)/, /(^|\/)logs(\/|$)/, /(^|\/)browser-data(\/|$)/,
-    /(^|\/)node_modules(\/|$)/, /(^|\/)scripts(\/|$)/, /(^|\/)vision(\/|$)/,
+    /(^|\/)scripts(\/|$)/, /(^|\/)vision(\/|$)/,
     /(^|\/)test_[^/]*$/, /^test-all\.js$/, /^scripts_check_html\.js$/,
     /^tmp_ib_probe/, /^docs\/P\d+.*REPORT\.md$/, /\.results\.json$/,
     /^start-[^/]*\.cmd$/, /^Start Internal Beyond\.cmd$/, /^create-desktop-shortcut\.cmd$/,
@@ -339,6 +381,10 @@ check('payload excludes dev, private and test material', () => {
   for (const f of files) {
     for (const re of forbidden) assert.ok(!re.test(f), 'forbidden path in payload: ' + f);
   }
+  const nodeModules = files.filter(f => /(^|\/)node_modules(\/|$)/.test(f));
+  assert.ok(nodeModules.length > 0, 'the pinned QQ SDK and runtime WebSocket dependency must ship');
+  assert.ok(nodeModules.every(f => /^services\/home-node\/node_modules\/(?:@tencent-connect\/qqbot-nodejs|ws)\//.test(f)),
+    'only the allowlisted QQ SDK and its WebSocket runtime dependency may ship from node_modules');
   assert.ok(files.indexOf('test_installer.js') < 0, 'test files must never ship');
 });
 
@@ -599,6 +645,9 @@ check('only InternalBeyond command lines are considered ours', () => {
 check('root matching is path-based and case/separator tolerant', () => {
   assert.strictEqual(ibStop.commandLineMatchesRoot('"C:\\X\\IB\\node.exe" "c:\\x\\ib\\services\\ib-bridge-service.js"', 'C:\\x\\IB'), true);
   assert.strictEqual(ibStop.commandLineMatchesRoot('"D:\\other\\node.exe" a.js', 'C:\\x\\ib'), false);
+  assert.strictEqual(ibStop.commandLineMatchesRoot('"C:\\x\\InternalBeyond-main\\runtime\\local-services-runner.js"', 'C:\\x\\InternalBeyond'), false,
+    'a sibling directory whose name starts with the install root is not owned by that install');
+  assert.strictEqual(ibStop.commandLineMatchesRoot('"C:\\x\\InternalBeyond\\runtime\\local-services-runner.js"', 'C:\\x\\InternalBeyond'), true);
 });
 
 check('stop helper never uses the image name as evidence', () => {
@@ -647,7 +696,8 @@ check('control plane stops IB services gracefully and verifies identity', () => 
   assert.ok(/restartOriginAllowed\(req\)/.test(runner), 'shutdown must reuse the Origin guard');
   assert.ok(/async function runShutdown/.test(runner), 'must implement a graceful stop path');
   assert.ok(/stopService\(service\)/.test(runner), 'must reuse the verified stop path');
-  assert.ok(/processMatchesService/.test(runner), 'stop must stay command-line verified');
+  assert.ok(/expectedPid:\s*Number\(entry\.pid\)/.test(runner), 'service stop must bind to the live child PID owned by this Runner');
+  assert.ok(/SERVICES\.filter\(service => liveChildEntry\(service\)\)/.test(runner), 'shutdown must leave borrowed services running');
   assert.ok(!/taskkill\.exe',\s*\['\/F',\s*'\/IM'/.test(runner), 'runner must not kill by image name');
   assert.ok(/shutting-down/.test(runner), '/status must report the shutdown state');
 });

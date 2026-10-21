@@ -68,6 +68,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const bootState = require('../runtime/boot-state.js');
 const productVersion = require('../runtime/product-version.js');
 /* P11-3H：停止面判定（唯一实现；Bridge / Active / Home Node 用的是同一份）。 */
@@ -76,6 +77,159 @@ const devServiceContract = require('../runtime/dev-service-contract.js');
 const { isTauriOrigin, blocksDevWebOrigin } = require('../runtime/host-origin.js');
 const { createProjectKnowledge } = require('./project-knowledge.js');
 const { createPackagingCenterApi } = require('./packaging-center-api.js');
+const appBuilderCore = require('../assets/js/app-builder-core.js');
+
+const GENERATED_APP_PATH = '/__ib-generated-app';
+const GENERATED_APP_MAX_BYTES = 128 * 1024;
+const GENERATED_APP_MAX_COUNT = 16;
+const GENERATED_APP_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+const GENERATED_APP_MAX_IDLE_MS = 30 * 60 * 1000;
+/* The generated app gets a document policy of its own. This policy is attached
+   only to the ephemeral preview route; it never changes the Tauri main CSP. */
+const GENERATED_APP_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; navigate-to 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'none'; sandbox allow-scripts";
+
+function generatedAppOriginAllowed(origin, server) {
+  origin = String(origin || '').trim();
+  if (!origin || origin === 'null') return false;
+  if (origin === 'http://tauri.localhost') return true;
+  try {
+    const parsed = new URL(origin);
+    const host = String(parsed.hostname || '').toLowerCase();
+    const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+    const boundPort = Number(server && server.address && server.address() && server.address().port);
+    const originPort = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+    return parsed.protocol === 'http:' && loopback && boundPort > 0 && originPort === boundPort;
+  } catch (_) { return false; }
+}
+
+function generatedAppId(value) {
+  value = String(value || '');
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : '';
+}
+
+function handleGeneratedAppRequest(req, res, pathname, requestUrl, server, previews) {
+  if (pathname !== GENERATED_APP_PATH && !pathname.startsWith(GENERATED_APP_PATH + '/')) return false;
+  const origin = String(req.headers.origin || '').trim();
+  const originAllowed = generatedAppOriginAllowed(origin, server);
+  const method = String(req.method || '').toUpperCase();
+  const originRequired = method !== 'GET';
+  const cors = originAllowed ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
+  const respond = function (status, body, extra) {
+    if (res.writableEnded || res.destroyed) return;
+    const headers = Object.assign({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }, cors, extra || {});
+    if (body != null) headers['Content-Length'] = Buffer.byteLength(body);
+    res.writeHead(status, headers);
+    if (body == null) res.end(); else res.end(body);
+  };
+  if (originRequired && !originAllowed) {
+    respond(403, JSON.stringify({ ok: false, error: 'origin-denied' }), { 'Content-Type': 'application/json; charset=utf-8' });
+    return true;
+  }
+  if (method === 'OPTIONS') {
+    const requestedMethod = String(req.headers['access-control-request-method'] || '').trim().toUpperCase();
+    const requestedHeaders = String(req.headers['access-control-request-headers'] || '')
+      .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+    const allowedHeaders = ['content-type', 'x-ib-dev-session', 'x-ib-dev-instance'];
+    if (!['POST', 'DELETE'].includes(requestedMethod) || requestedHeaders.some(name => !allowedHeaders.includes(name))) {
+      respond(403, null);
+      return true;
+    }
+    respond(204, null, {
+      'Access-Control-Allow-Methods': 'POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-IB-Dev-Session, X-IB-Dev-Instance',
+      'Access-Control-Max-Age': '300'
+    });
+    return true;
+  }
+  const cleanupMatch = pathname.match(/^\/__ib-generated-app\/cleanup\/([^/]+)$/);
+  if (cleanupMatch) {
+    if (method !== 'POST') {
+      respond(405, null, { Allow: 'POST' });
+      return true;
+    }
+    if (!/^text\/plain(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))) {
+      respond(415, null);
+      return true;
+    }
+    const cleanupId = generatedAppId(cleanupMatch[1]);
+    if (!cleanupId) {
+      respond(404, null);
+      return true;
+    }
+    previews.delete(cleanupId);
+    respond(204, null);
+    return true;
+  }
+  const itemMatch = pathname.match(/^\/__ib-generated-app\/([^/]+)$/);
+  if (method === 'POST' && pathname === GENERATED_APP_PATH) {
+    if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))) {
+      respond(415, JSON.stringify({ ok: false, error: 'application-json-required' }), { 'Content-Type': 'application/json; charset=utf-8' });
+      return true;
+    }
+    readJsonBody(req, GENERATED_APP_MAX_BYTES).then(function (body) {
+      if (!body.ok || !body.json || typeof body.json !== 'object' || Array.isArray(body.json)
+        || Object.keys(body.json).length !== 1 || !Object.prototype.hasOwnProperty.call(body.json, 'draft')) {
+        respond(400, JSON.stringify({ ok: false, error: body.kind || 'generated-app-draft-required' }), { 'Content-Type': 'application/json; charset=utf-8' });
+        return;
+      }
+      const draft = appBuilderCore.normalizeDraft(body.json.draft);
+      if (!draft) {
+        respond(400, JSON.stringify({ ok: false, error: 'generated-app-draft-invalid' }), { 'Content-Type': 'application/json; charset=utf-8' });
+        return;
+      }
+      const html = appBuilderCore.buildSrcdoc(draft);
+      const bytes = Buffer.byteLength(html, 'utf8');
+      if (!html || bytes > GENERATED_APP_MAX_BYTES) {
+        respond(400, JSON.stringify({ ok: false, error: 'generated-app-document-too-large' }), { 'Content-Type': 'application/json; charset=utf-8' });
+        return;
+      }
+      const now = Date.now();
+      for (const [id, entry] of previews) {
+        if (now - entry.lastUsedAt > GENERATED_APP_MAX_IDLE_MS) previews.delete(id);
+      }
+      const total = Array.from(previews.values()).reduce((sum, entry) => sum + entry.bytes, 0);
+      if (previews.size >= GENERATED_APP_MAX_COUNT || total + bytes > GENERATED_APP_MAX_TOTAL_BYTES) {
+        respond(503, JSON.stringify({ ok: false, error: 'generated-app-preview-capacity-reached' }), { 'Content-Type': 'application/json; charset=utf-8' });
+        return;
+      }
+      const id = crypto.randomUUID().toLowerCase();
+      previews.set(id, { html: html, bytes: bytes, createdAt: now, lastUsedAt: now });
+      respond(201, JSON.stringify({ ok: true, id: id }), { 'Content-Type': 'application/json; charset=utf-8' });
+    }).catch(function () {
+      respond(500, JSON.stringify({ ok: false, error: 'generated-app-preview-unavailable' }), { 'Content-Type': 'application/json; charset=utf-8' });
+    });
+    return true;
+  }
+  if (!itemMatch || !generatedAppId(itemMatch[1])) {
+    respond(404, JSON.stringify({ ok: false, error: 'generated-app-preview-not-found' }), { 'Content-Type': 'application/json; charset=utf-8' });
+    return true;
+  }
+  const id = generatedAppId(itemMatch[1]);
+  if (method === 'GET') {
+    const entry = previews.get(id);
+    if (!entry) {
+      respond(404, 'Generated app preview expired.', { 'Content-Type': 'text/plain; charset=utf-8' });
+      return true;
+    }
+    entry.lastUsedAt = Date.now();
+    respond(200, entry.html, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': GENERATED_APP_CSP,
+      'Referrer-Policy': 'no-referrer',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=()'
+    });
+    return true;
+  }
+  if (method === 'DELETE') {
+    previews.delete(id);
+    respond(204, null);
+    return true;
+  }
+  respond(405, JSON.stringify({ ok: false, error: 'method-not-allowed' }), {
+    'Content-Type': 'application/json; charset=utf-8', Allow: itemMatch ? 'GET, DELETE, OPTIONS' : 'POST, OPTIONS'
+  });
+  return true;
+}
 
 /*
  * The update runtime is loaded DEFENSIVELY, and this is load-bearing.
@@ -409,6 +563,7 @@ function createWebServer(opts) {
   const root = o.root || ROOT;
   const host = o.host || '127.0.0.1';
   const port = o.port || optionPort('IB_WEB_PORT', 23120);
+  const generatedAppPreviews = new Map();
   const identity = o.identity || 'InternalBeyond Web';
   /* Injection seams for tests. Production always uses the modules above; a test
      may substitute a stub so it can exercise the endpoint contract without a
@@ -464,14 +619,19 @@ function createWebServer(opts) {
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     if (dispatchTauriCors(req, res, pathname)) return;
+    const cleanupPreviewMatch = pathname.match(/^\/__ib-generated-app\/cleanup\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i);
+    const beaconCleanup = String(req.method || '').toUpperCase() === 'POST' && !!cleanupPreviewMatch
+      && /^text\/plain(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))
+      && generatedAppOriginAllowed(req.headers.origin, server);
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())
-      && !devServiceContract.authorizeRequestIdentity(req, process.env, WEB_IDENTITY.webOrigin)) {
+      && !beaconCleanup && !devServiceContract.authorizeRequestIdentity(req, process.env, WEB_IDENTITY.webOrigin)) {
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ ok: false, error: 'environment-identity-mismatch' }));
       return;
     }
     let requestUrl = null;
     try { requestUrl = new URL(String(req.url || '/'), 'http://127.0.0.1'); } catch (_) { }
+    if (handleGeneratedAppRequest(req, res, pathname, requestUrl, server, generatedAppPreviews)) return;
     if (packagingApi.handle(req, res, pathname, requestUrl)) return;
     if (pathname === '/health' || pathname === '/__health') {
       const pv = productVersion.get();

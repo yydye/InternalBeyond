@@ -12,9 +12,11 @@ const workModeExecutor = require('../assets/js/work-mode-executor.js');
 const REVISION = 'd743267388641bc76f17c45ce8b4c231aed1d32c';
 const ROOT = path.resolve(__dirname, '..');
 
-function syntheticRoot(localAppData) {
-  if (!localAppData) throw new Error('LOCALAPPDATA-required');
-  const root = path.resolve(localAppData, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox', 'dsh-native-ui-p0');
+function syntheticRoot(sandboxRoot) {
+  if (!sandboxRoot) throw new Error('DEV_SANDBOX_ROOT-required');
+  const projectRoot = process.env.IB_DEV_PROJECT_ROOT || path.resolve(sandboxRoot, '..', '..', '..');
+  devServiceContract.validateSandboxRoot(sandboxRoot, true, projectRoot);
+  const root = path.resolve(sandboxRoot, 'dsh-native-ui-p0');
   for (let dir = root; dir !== path.dirname(dir); dir = path.dirname(dir)) {
     if (fs.existsSync(dir) && fs.lstatSync(dir).isSymbolicLink()) throw new Error('synthetic-root-reparse-point');
   }
@@ -22,6 +24,8 @@ function syntheticRoot(localAppData) {
 }
 
 function childEnvironment(source, root, inherited) {
+  const sandboxRoot = path.resolve(root, '..');
+  const projectRoot = inherited.IB_DEV_PROJECT_ROOT || path.resolve(sandboxRoot, '..', '..', '..');
   const env = {};
   // Inherit executable/OS support only, never Provider credentials, proxies,
   // NODE_OPTIONS, product tokens, or the user's DSH configuration.
@@ -29,7 +33,8 @@ function childEnvironment(source, root, inherited) {
     if (inherited[name]) env[name] = inherited[name];
   }
   return Object.assign(env, {
-    IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DSH_P0_SOURCE: source,
+    IB_DEV_MODE: '1', IB_DEV_SYNTHETIC: '1', IB_DEV_PROJECT_ROOT: projectRoot,
+    IB_DEV_SANDBOX_ROOT: sandboxRoot, IB_DSH_P0_SOURCE: source,
     IB_DSH_P0_WORKSPACE: path.join(root, 'workspace'),
     DSH_HOME: path.join(root, 'dsh-home'), DSH_AGENTS_HOME: path.join(root, 'agents'),
     DSH_BUNDLED_SKILL_DIR: path.join(root, 'skills'),
@@ -124,7 +129,7 @@ async function start() {
   for (const relative of ['apps/web/dist/index.html', 'packages/api/gateway/lib/index.js', 'packages/client/ui-chat/lib/client.js']) {
     if (!fs.existsSync(path.join(source, relative))) throw new Error('dsh-web-build-required: ' + relative);
   }
-  const root = syntheticRoot(process.env.LOCALAPPDATA);
+  const root = syntheticRoot(process.env.IB_DEV_SANDBOX_ROOT);
   const env = childEnvironment(source, root, process.env);
   for (const dir of [root, env.IB_DSH_P0_WORKSPACE, env.DSH_HOME, env.APPDATA, env.LOCALAPPDATA, env.TEMP]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(env.IB_DSH_P0_WORKSPACE, 'README.md'), '# Synthetic Work UI P0\nNo production project or Provider is connected.\n');

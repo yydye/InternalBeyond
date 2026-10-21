@@ -33,6 +33,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const bootState = require('./boot-state.js');
 const productVersion = require('./product-version.js');
+const devServiceContract = require('./dev-service-contract.js');
 /* P11-3B：端口、身份探针与组件轴来自组件注册表 —— 启动器不再自己维护第二份
    组件清单（那份清单里从来没有 Home Node，所以启动记录结构性地无法描述它）。 */
 const registry = require('./component-registry.js');
@@ -219,7 +220,39 @@ async function webServerState() {
 
 /* ── Services detection ── */
 
-function servicesStatus() {
+function runnerStatusMatches(data) {
+  if (!data || data.service !== RESTART_IDENTITY) return false;
+  const expectedSession = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '');
+  if (expectedSession && String(data.tauriHostSessionId || '') !== expectedSession) return false;
+  if (String(process.env.IB_DEV_MODE || '') === '1') {
+    let expected;
+    try { expected = devServiceContract.identityFromEnvironment(process.env); }
+    catch (_) { return false; }
+    return data.environment === expected.mode && String(data.devInstanceId || '') === expected.instanceId;
+  }
+  return data.environment === 'production';
+}
+
+async function liveRunnerServices() {
+  const status = await httpGetJson(RESTART_PORT, '/status', 1000);
+  if (!status.responding || !runnerStatusMatches(status.data)) return null;
+  const components = await httpGetJson(RESTART_PORT, '/components', 1500);
+  if (!components.responding || !components.data || components.data.service !== RESTART_IDENTITY
+    || !Array.isArray(components.data.services)) return null;
+  const latestStatus = await httpGetJson(RESTART_PORT, '/status', 1000);
+  if (!latestStatus.responding || !runnerStatusMatches(latestStatus.data)
+    || (Number(status.data.pid) > 0 && Number(latestStatus.data.pid) !== Number(status.data.pid))) return null;
+  return components.data.services;
+}
+
+async function servicesStatus() {
+  /* The live Runner owns the negotiated Home Node port. Prefer its component
+     snapshot over a detached --json probe, whose inherited environment only
+     contains the preferred port and can misreport a healthy fallback as a
+     conflict. The detached status command remains the bootstrap path when no
+     compatible control plane is available. */
+  const live = await liveRunnerServices();
+  if (live) return live;
   return new Promise(resolve => {
     execFile(process.execPath, [RUNNER, '--json'], { cwd: ROOT, timeout: 8000 }, (err, stdout) => {
       if (err) { resolve([]); return; }
@@ -255,24 +288,28 @@ function observeStartupChild(child, label, script) {
 /* Same probe, but keeps the failure reason so boot-state can say WHY it is
    unknown instead of pretending the services are offline. */
 function probeServices() {
-  return new Promise(resolve => {
-    execFile(process.execPath, [RUNNER, '--json'], { cwd: ROOT, timeout: 8000 }, (err, stdout, stderr) => {
-      if (err) {
-        const failure = commandFailureSummary(err, stderr);
-        const message = 'local-services-runner.js --json failed (' + failure.status + '): ' + failure.cause;
-        log('[ERROR] ' + message + ' executable="' + process.execPath + '" script="' + RUNNER + '" cwd="' + ROOT + '"');
-        resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: message } });
-        return;
-      }
-      try {
-        const parsed = JSON.parse(String(stdout || ''));
-        if (!parsed || !Array.isArray(parsed.services)) throw new Error('missing services array');
-        resolve({ ok: true, rows: parsed.services, error: null });
-      } catch (e) {
-        resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: 'unparsable runner status: ' + String(e.message || e).slice(0, 200) } });
-      }
+  return (async () => {
+    const live = await liveRunnerServices();
+    if (live) return { ok: true, rows: live, error: null };
+    return new Promise(resolve => {
+      execFile(process.execPath, [RUNNER, '--json'], { cwd: ROOT, timeout: 8000 }, (err, stdout, stderr) => {
+        if (err) {
+          const failure = commandFailureSummary(err, stderr);
+          const message = 'local-services-runner.js --json failed (' + failure.status + '): ' + failure.cause;
+          log('[ERROR] ' + message + ' executable="' + process.execPath + '" script="' + RUNNER + '" cwd="' + ROOT + '"');
+          resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: message } });
+          return;
+        }
+        try {
+          const parsed = JSON.parse(String(stdout || ''));
+          if (!parsed || !Array.isArray(parsed.services)) throw new Error('missing services array');
+          resolve({ ok: true, rows: parsed.services, error: null });
+        } catch (e) {
+          resolve({ ok: false, rows: [], error: { category: bootState.REASON.RUNNER_UNAVAILABLE, message: 'unparsable runner status: ' + String(e.message || e).slice(0, 200) } });
+        }
+      });
     });
-  });
+  })();
 }
 
 /* "The services manager has done its job" is defined by the registry, not by a
@@ -299,7 +336,7 @@ function servicesHealthy(rows) {
 
 function managerRuntimeInfo() {
   return httpGetJson(RESTART_PORT, '/status', 1000).then(h => {
-    if (!h.responding || !h.data || h.data.service !== 'InternalBeyond Restart') return null;
+    if (!h.responding || !runnerStatusMatches(h.data)) return null;
     return h.data;
   }).catch(() => null);
 }
@@ -309,23 +346,43 @@ function rowForComponent(rows, component) {
   return (rows || []).find(r => r && (r.componentId === component.id || r.name === component.name)) || null;
 }
 
-/* A services manager counts only when its command line names THIS install root.
-   A second InternalBeyond — or a developer checkout — may legitimately run its
-   own runner on its own ports; treating it as ours would leave our Bridge/Active
-   unstarted and the launch degraded. */
+/* A services manager counts only when its command line names this exact Runner
+   script. A root-prefix check also matches nested copies such as tmp\coastline-*
+   and can suppress this install's Runner start while its own services are offline. */
+function managerCommandMatchesRunner(commandLine) {
+  const expected = path.resolve(RUNNER).toLowerCase().replace(/\//g, '\\');
+  const actual = String(commandLine || '').toLowerCase().replace(/\//g, '\\');
+  return actual.indexOf(expected) >= 0;
+}
+
 function managerProcessRunning() {
   return new Promise(resolve => {
     execFile('powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command',
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" +
-        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'local-services-runner' } | Select-Object -ExpandProperty CommandLine"],
+        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'local-services-runner' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
       { windowsHide: true, timeout: 6000 }, (err, stdout) => {
         if (err) { resolve(false); return; }
         const root = path.resolve(ROOT).toLowerCase().replace(/\//g, '\\');
-        const lines = String(stdout || '').split(/\r?\n/)
-          .map(s => s.trim().toLowerCase().replace(/\//g, '\\'))
-          .filter(Boolean);
-        resolve(lines.some(cl => cl.indexOf(root) >= 0));
+        let rows = [];
+        try {
+          const parsed = JSON.parse(String(stdout || '[]'));
+          rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+        } catch (_) { rows = []; }
+        const exact = rows.filter(row => managerCommandMatchesRunner(row && row.CommandLine));
+        const nested = rows.filter(row => {
+          const command = String(row && row.CommandLine || '').toLowerCase().replace(/\//g, '\\');
+          return command.indexOf(root) >= 0 && !managerCommandMatchesRunner(command);
+        });
+        if (nested.length) {
+          log('Ignored nested Runner process(es) outside this install path (PID(s) '
+            + nested.map(row => Number(row.ProcessId) || 0).filter(Boolean).join(',') + ').');
+        }
+        if (exact.length) {
+          log('Found Runner process for this exact install path (PID(s) '
+            + exact.map(row => Number(row.ProcessId) || 0).filter(Boolean).join(',') + ').');
+        }
+        resolve(exact.length > 0);
       });
   });
 }
@@ -562,7 +619,10 @@ async function ensureServices(opts) {
       }
       continue;
     }
-    components[component.id] = serviceComponent(component, row, { port: component.defaultPort, waitedMs: waitedMs });
+    components[component.id] = serviceComponent(component, row, {
+      port: Number(row.port) || component.defaultPort,
+      waitedMs: waitedMs
+    });
     managedRows.push(row);
   }
 
@@ -814,6 +874,7 @@ module.exports = {
   probeServices: probeServices,
   servicesHealthy: servicesHealthy,
   homeNodeRequiredForTauriStartup: homeNodeRequiredForTauriStartup,
+  managerCommandMatchesRunner: managerCommandMatchesRunner,
   managerProcessRunning: managerProcessRunning,
   managerState: managerState,
   ensureServices: ensureServices,

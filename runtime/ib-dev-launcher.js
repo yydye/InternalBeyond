@@ -14,21 +14,46 @@ const devServiceContract = require('./dev-service-contract');
 
 const ROOT = path.resolve(__dirname, '..');
 const LOCAL_APP_DATA = process.env.LOCALAPPDATA;
+const DEFAULT_DEV_DATA_ROOT = path.resolve(process.env.IB_DEV_DATA_ROOT || 'D:\\IB-Dev');
+const DEFAULT_SHARED_CARGO_TARGET_DIR = path.resolve('D:\\IB-Dev\\cargo-target');
 const SYNTHETIC_MODE = process.env.IB_DEV_SYNTHETIC === '1' || process.argv.includes('--synthetic');
-const DATA_PATHS = resolveAppDataPaths(LOCAL_APP_DATA, SYNTHETIC_MODE);
+const TEST_PROJECT_ROOT_OVERRIDE = process.env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT;
+const DEV_DATA_PROJECT_ROOT = resolveDevDataProjectRoot(DEFAULT_DEV_DATA_ROOT, TEST_PROJECT_ROOT_OVERRIDE);
+const DEV_ENV_ROOT = TEST_PROJECT_ROOT_OVERRIDE ? DEV_DATA_PROJECT_ROOT : DEFAULT_DEV_DATA_ROOT;
+const DEV_CARGO_HOME = path.join(DEV_ENV_ROOT, 'cargo-home');
+const DEV_RUSTUP_HOME = path.join(DEV_ENV_ROOT, 'rustup');
+const DEV_RUSTUP_TOOLCHAIN = process.env.IB_DEV_RUSTUP_TOOLCHAIN || 'stable-x86_64-pc-windows-msvc';
+const DEV_TOOLCHAIN_BIN = path.join(DEV_RUSTUP_HOME, 'toolchains', DEV_RUSTUP_TOOLCHAIN, 'bin');
+const DEV_CARGO_BIN = path.join(DEV_CARGO_HOME, 'bin');
+const DEV_TOOL_PATH = [DEV_CARGO_BIN, DEV_TOOLCHAIN_BIN, process.env.PATH || ''].filter(Boolean).join(path.delimiter);
+const DEV_CARGO_COMMAND = process.env.IB_CARGO || (TEST_PROJECT_ROOT_OVERRIDE ? 'cargo' : path.join(DEV_CARGO_BIN, 'cargo.exe'));
+const DEV_CACHE_HOME = path.join(DEV_ENV_ROOT, 'cache');
+const DEV_LAUNCHER_TEMP_DIR = path.join(DEV_ENV_ROOT, 'temp', 'launcher');
+const DATA_PATHS = resolveAppDataPaths(DEV_DATA_PROJECT_ROOT, SYNTHETIC_MODE);
 const APP_DATA = DATA_PATHS.appData;
 const SANDBOX = DATA_PATHS.sandbox;
 const CREDENTIAL_DATA_DIR = DATA_PATHS.credentialDataDir;
-function resolveCargoTargetDir(sandbox, override) {
-  if (!override) return path.join(sandbox, 'cargo-target');
-  const target = path.resolve(String(override));
+const DEV_LOCAL_APP_DATA = path.join(SANDBOX, 'local-app-data');
+const DEV_ROAMING_APP_DATA = path.join(SANDBOX, 'roaming-app-data');
+const DEV_TEMP_DIR = path.join(SANDBOX, 'temp');
+const DEV_CACHE_DIR = path.join(SANDBOX, 'cache');
+const DEV_WEBVIEW2_DIR = path.join(SANDBOX, 'webview2');
+const FORMAL_APP_DATA = LOCAL_APP_DATA ? path.join(LOCAL_APP_DATA, 'InternalBeyond') : path.join(os.homedir(), '.internal-beyond');
+function resolveCargoTargetDir(sandbox, override, projectRoot, syntheticMode) {
+  const testRelative = path.relative(path.resolve(os.tmpdir()), path.resolve(String(projectRoot || '')));
+  const testFirstSegment = testRelative.split(path.sep).filter(Boolean)[0] || '';
+  const isTestProject = !!testRelative && testRelative !== '..' && !testRelative.startsWith('..' + path.sep)
+    && !path.isAbsolute(testRelative) && testFirstSegment.toLowerCase().startsWith('ib-dev-launcher-test-');
+  if (!override && isTestProject) return path.join(sandbox, 'cargo-target');
+  const target = path.resolve(String(override || DEFAULT_SHARED_CARGO_TARGET_DIR));
   if (path.basename(target).toLowerCase() !== 'cargo-target') throw new Error('dev-cargo-target-path-invalid');
+  if (target.toLowerCase() === DEFAULT_SHARED_CARGO_TARGET_DIR.toLowerCase()) return target;
   const targetSandbox = path.dirname(target);
-  try { devServiceContract.validateSandboxRoot(targetSandbox, path.basename(path.dirname(targetSandbox)).toLowerCase() === 'dev-synthetic'); }
+  try { devServiceContract.validateSandboxRoot(targetSandbox, syntheticMode === true, projectRoot); }
   catch (_) { throw new Error('dev-cargo-target-must-belong-to-a-private-sandbox'); }
   return target;
 }
-const CARGO_TARGET_DIR = resolveCargoTargetDir(SANDBOX, process.env.IB_DEV_CARGO_TARGET_DIR);
+const CARGO_TARGET_DIR = resolveCargoTargetDir(SANDBOX, process.env.IB_DEV_CARGO_TARGET_DIR, DEV_DATA_PROJECT_ROOT, SYNTHETIC_MODE);
 const HOST_DATA = path.join(SANDBOX, 'host');
 const LOG_DIR = path.join(SANDBOX, 'logs');
 const STATE_FILE = path.join(SANDBOX, 'launcher-state.json');
@@ -36,7 +61,7 @@ const STOP_REQUEST_FILE = path.join(SANDBOX, 'stop-requested.json');
 const SEED_FILE = path.join(SANDBOX, 'seed.json');
 const SEED_IMPORTED_FILE = path.join(SANDBOX, 'seed-imported.json');
 const CONFIG_FILE = path.join(SANDBOX, 'tauri-dev-config.json');
-const SOURCE_DB = path.join(APP_DATA, 'home-node', 'home-node.db');
+const SOURCE_DB = path.join(FORMAL_APP_DATA, 'home-node', 'home-node.db');
 const SOURCE_WEB_PORT = validPort(process.env.IB_PROD_WEB_PORT, 23120);
 const DEV_PORTS = devServiceContract.DEV_PORTS;
 const DEV_ORIGIN = 'http://127.0.0.1:' + DEV_PORTS.web;
@@ -44,32 +69,48 @@ const DEV_INSTANCE_ID = crypto.randomUUID();
 const DEV_SESSION_TOKEN = crypto.randomBytes(32).toString('hex');
 const HOST_STOP_MS = 15000;
 const SERVICE_STOP_MS = 8000;
-const DEFAULT_STARTUP_TIMEOUT_MS = 60000;
-const SYNTHETIC_STARTUP_TIMEOUT_MS = 15 * 60 * 1000;
+const TAURI_BUILD_TIMEOUT_MS = 15 * 60 * 1000;
+const HOST_READINESS_TIMEOUT_MS = 60000;
+const HOST_STATUS_STALE_MS = 10000;
+const RUNTIME_LIFECYCLE_POLL_MS = 2000;
 
 let child = null;
 let childSpawnedAt = 0;
 let stopRequested = false;
 let currentState = null;
+let runtimeLifecycleTimer = null;
+let runtimeLifecycleGeneration = 0;
+
+function launcherStopRequested() {
+  return stopRequested || fs.existsSync(STOP_REQUEST_FILE);
+}
 
 function validPort(value, fallback) {
   const n = Number(value);
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
 }
 
-function resolveAppDataPaths(localAppData, syntheticMode) {
-  const base = localAppData ? path.join(localAppData, 'InternalBeyond') : path.join(os.homedir(), '.internal-beyond');
-  const appData = syntheticMode === true ? path.join(base, 'dev-synthetic') : base;
+function resolveDevDataProjectRoot(projectRoot, testOverride) {
+  if (!testOverride) return path.resolve(projectRoot);
+  const target = path.resolve(String(testOverride));
+  const relative = path.relative(path.resolve(os.tmpdir()), target);
+  const firstSegment = relative.split(path.sep).filter(Boolean)[0] || '';
+  if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)
+    || !firstSegment.toLowerCase().startsWith('ib-dev-launcher-test-')) {
+    throw new Error('dev-launcher-test-project-root-invalid');
+  }
+  return target;
+}
+
+function resolveAppDataPaths(projectRoot, syntheticMode) {
+  const base = path.join(path.resolve(String(projectRoot || ROOT)), '.dev-data');
+  const appData = path.join(base, syntheticMode === true ? 'synthetic' : 'development');
   const sandbox = path.join(appData, 'dev-sandbox');
   return Object.freeze({
     appData: appData,
     sandbox: sandbox,
     credentialDataDir: path.join(sandbox, 'credential-vault')
   });
-}
-
-function startupTimeoutMs(syntheticMode) {
-  return syntheticMode === true ? SYNTHETIC_STARTUP_TIMEOUT_MS : DEFAULT_STARTUP_TIMEOUT_MS;
 }
 
 function timestamp() { return new Date().toISOString(); }
@@ -95,14 +136,19 @@ function ensureSandbox() {
   if (path.dirname(sandboxAbs).toLowerCase() !== expectedParent || sandboxAbs.toLowerCase() === expectedParent) {
     throw new Error('Dev Sandbox path validation failed.');
   }
-  try {
-    const stat = fs.lstatSync(SANDBOX);
-    if (stat.isSymbolicLink()) throw new Error('Dev Sandbox path is a reparse point; refusing to use it.');
-  } catch (error) {
-    if (error && error.code !== 'ENOENT') throw error;
-  }
-  for (const dir of [SANDBOX, HOST_DATA, LOG_DIR, path.join(SANDBOX, 'home-node'), path.join(SANDBOX, 'bridge'), path.join(SANDBOX, 'active')]) {
+  const directories = [
+    DEV_DATA_PROJECT_ROOT, path.join(DEV_DATA_PROJECT_ROOT, '.dev-data'), APP_DATA, SANDBOX, HOST_DATA, LOG_DIR,
+    path.join(SANDBOX, 'home-node'), path.join(SANDBOX, 'bridge'), path.join(SANDBOX, 'active'),
+    CREDENTIAL_DATA_DIR, DEV_LOCAL_APP_DATA, DEV_ROAMING_APP_DATA, DEV_TEMP_DIR, DEV_CACHE_DIR, DEV_WEBVIEW2_DIR,
+    DEV_CACHE_HOME, path.join(DEV_CACHE_HOME, 'npm'), path.join(DEV_CACHE_HOME, 'pip'),
+    path.join(DEV_CACHE_HOME, 'huggingface', 'hub'), path.join(DEV_CACHE_HOME, 'torch'),
+    path.join(DEV_CACHE_HOME, 'python-cache'), path.join(DEV_CACHE_HOME, 'matplotlib'),
+    DEV_CARGO_HOME, DEV_RUSTUP_HOME, DEV_LAUNCHER_TEMP_DIR, path.dirname(CARGO_TARGET_DIR), CARGO_TARGET_DIR
+  ];
+  for (const dir of directories) {
     fs.mkdirSync(dir, { recursive: true });
+    const stat = fs.lstatSync(dir);
+    if (stat.isSymbolicLink()) throw new Error('Dev data path is a reparse point; refusing to use it.');
   }
 }
 
@@ -246,8 +292,31 @@ function runtimeNode() {
   return resolved;
 }
 
+function devToolEnvironment(extra) {
+  return Object.assign({}, process.env, {
+    CARGO_HOME: DEV_CARGO_HOME,
+    RUSTUP_HOME: DEV_RUSTUP_HOME,
+    RUSTUP_TOOLCHAIN: DEV_RUSTUP_TOOLCHAIN,
+    CARGO_TARGET_DIR: CARGO_TARGET_DIR,
+    PATH: DEV_TOOL_PATH,
+    TEMP: DEV_LAUNCHER_TEMP_DIR,
+    TMP: DEV_LAUNCHER_TEMP_DIR,
+    TMPDIR: DEV_LAUNCHER_TEMP_DIR,
+    npm_config_cache: path.join(DEV_CACHE_HOME, 'npm'),
+    PIP_CACHE_DIR: path.join(DEV_CACHE_HOME, 'pip'),
+    HF_HOME: path.join(DEV_CACHE_HOME, 'huggingface'),
+    HF_HUB_CACHE: path.join(DEV_CACHE_HOME, 'huggingface', 'hub'),
+    HUGGINGFACE_HUB_CACHE: path.join(DEV_CACHE_HOME, 'huggingface', 'hub'),
+    TORCH_HOME: path.join(DEV_CACHE_HOME, 'torch'),
+    PYTHONPYCACHEPREFIX: path.join(DEV_CACHE_HOME, 'python-cache'),
+    MPLCONFIGDIR: path.join(DEV_CACHE_HOME, 'matplotlib')
+  }, extra || {});
+}
+
 function checkTauriCli() {
-  const result = syncSpawn(process.env.IB_CARGO || 'cargo', ['tauri', '--version'], { cwd: path.join(ROOT, 'src-tauri'), timeout: 15000 });
+  const result = syncSpawn(DEV_CARGO_COMMAND, ['tauri', '--version'], {
+    cwd: path.join(ROOT, 'src-tauri'), env: devToolEnvironment(), timeout: 15000
+  });
   if (result.error || result.status !== 0) {
     throw new Error('The Rust Tauri CLI is unavailable. Install the repository development toolchain, then run the launcher again.');
   }
@@ -272,9 +341,195 @@ function hostPid(record) { return Number(record && (record.hostPid || record.hos
 function hostStartedAt(record) { return Number(record && (record.hostStartedAtMs || record.host_started_at_ms)) || 0; }
 function sessionId(record) { return String(record && (record.hostSessionId || record.host_session_id) || ''); }
 
+function hostRecordMatchesWatcher(record, watcherStartedAtMs) {
+  const watcherStartedAt = Number(watcherStartedAtMs) || 0;
+  return !watcherStartedAt || hostStartedAt(record) + 20000 >= watcherStartedAt;
+}
+
+function runtimeStatusSnapshot(record, watcherStartedAtMs) {
+  if (!record) return null;
+  const status = record.status || record.runtimeStatus || {};
+  if (!hostRecordMatchesWatcher(record, watcherStartedAtMs)) {
+    return {
+      hostPid: hostPid(record),
+      hostStartedAtMs: hostStartedAt(record),
+      hostSessionId: sessionId(record),
+      state: 'STALE',
+      message: 'Last Host status belongs to a previous Dev launch.',
+      updatedAtMs: Number(status.updatedAtMs || status.updated_at_ms) || 0,
+      degraded: false,
+      homeNodeReady: null,
+      homeNodePort: 0,
+      homeNodeReasonCode: '',
+      bridgeReady: null,
+      activeReady: null,
+      staticReady: null,
+      services: 'stale:previous-host-record'
+    };
+  }
+  const services = servicesFrom(record).map(row => {
+    const kind = String(serviceField(row, 'serviceKind', 'service_kind') || 'service');
+    const state = String(serviceField(row, 'state', 'state') || 'unknown');
+    return kind + ':' + state;
+  }).sort();
+  return {
+    hostPid: hostPid(record),
+    hostStartedAtMs: hostStartedAt(record),
+    hostSessionId: sessionId(record),
+    state: String(status.state || 'unknown'),
+    message: String(status.message || ''),
+    updatedAtMs: Number(status.updatedAtMs || status.updated_at_ms) || 0,
+    degraded: status.degraded === true || String(status.state || '').toUpperCase() === 'DEGRADED',
+    homeNodeReady: status.homeNodeReady === true || status.home_node_ready === true,
+    homeNodePort: Number(status.homeNodePort || status.home_node_port) || 0,
+    homeNodeReasonCode: String(status.homeNodeReasonCode || status.home_node_reason_code || ''),
+    bridgeReady: typeof status.bridgeReady === 'boolean' ? status.bridgeReady
+      : (typeof status.bridge_ready === 'boolean' ? status.bridge_ready : null),
+    activeReady: typeof status.activeReady === 'boolean' ? status.activeReady
+      : (typeof status.active_ready === 'boolean' ? status.active_ready : null),
+    staticReady: typeof status.staticReady === 'boolean' ? status.staticReady
+      : (typeof status.static_ready === 'boolean' ? status.static_ready : null),
+    services: services.join(',')
+  };
+}
+
+function runtimeHealthCategory(snapshot) {
+  if (!snapshot) return 'unknown';
+  if (String(snapshot.state || '').toUpperCase() === 'STALE') return 'unknown';
+  if (String(snapshot.state || '').toUpperCase() === 'STOPPED') return 'stopped';
+  if (snapshot.degraded === true || String(snapshot.state || '').toUpperCase() === 'DEGRADED') return 'service-degraded';
+  return 'healthy';
+}
+
+function resolvedHomeNodePort(status, state) {
+  return Number(status && (status.homeNodePort || status.home_node_port)) ||
+    Number(state && state.ports && state.ports.homeNode) || DEV_PORTS.homeNode;
+}
+
+function formatRuntimeStatus(snapshot) {
+  if (!snapshot) return 'hostState=unknown';
+  const readiness = value => value === true ? 'ready' : (value === false ? 'unavailable' : 'unknown');
+  return 'hostPid=' + (snapshot.hostPid || 'unknown') + ', hostState=' + snapshot.state
+    + ', HomeNode=' + readiness(snapshot.homeNodeReady)
+    + (snapshot.homeNodeReady ? '' : (snapshot.homeNodeReasonCode ? '(' + snapshot.homeNodeReasonCode + ')' : ''))
+    + ', Bridge=' + readiness(snapshot.bridgeReady)
+    + ', Active=' + readiness(snapshot.activeReady)
+    + ', Web=' + readiness(snapshot.staticReady)
+    + ', services=' + (snapshot.services || 'unknown')
+    + (snapshot.message ? ', detail=' + safeLogText(snapshot.message) : '');
+}
+
+function classifyTauriExit(code, signal, launcherStopRequested, hostRecord) {
+  if (launcherStopRequested === true) return 'launcher-requested-stop';
+  const status = hostRecord && (hostRecord.status || hostRecord.runtimeStatus) || {};
+  if (String(status.state || '').toUpperCase() === 'STOPPED') return 'host-closed-without-launcher-request';
+  if (signal || (Number.isInteger(code) && code !== 0)) return 'tauri-dev-process-error';
+  if (code === 0) return 'tauri-dev-process-exited-without-stop-request';
+  return 'tauri-dev-process-exit-unknown';
+}
+
+function stopRuntimeLifecycleMonitor() {
+  runtimeLifecycleGeneration += 1;
+  if (runtimeLifecycleTimer) clearInterval(runtimeLifecycleTimer);
+  runtimeLifecycleTimer = null;
+}
+
+function startRuntimeLifecycleMonitor(devChild) {
+  stopRuntimeLifecycleMonitor();
+  const generation = runtimeLifecycleGeneration;
+  const watcherStartedAtMs = Number(devChild && devChild.launcherSpawnedAtMs) || 0;
+  let previous = runtimeStatusSnapshot(currentHostRecord(), watcherStartedAtMs);
+  let lastHostPid = previous ? previous.hostPid : 0;
+  let lastHostSessionId = previous ? previous.hostSessionId : '';
+  let previousCategory = runtimeHealthCategory(previous);
+  let previousDegradedSignature = '';
+  let staleReported = false;
+  let rebuildObservedAt = 0;
+  let logOffset = 0;
+  try {
+    if (devChild && devChild.buildLogPath) logOffset = fs.statSync(devChild.buildLogPath).size;
+  } catch (_) {}
+
+  const timer = setInterval(() => {
+    if (generation !== runtimeLifecycleGeneration || child !== devChild
+      || !devChild || devChild.exitCode !== null || devChild.signalCode !== null) {
+      if (generation === runtimeLifecycleGeneration) stopRuntimeLifecycleMonitor();
+      return;
+    }
+
+    if (devChild.buildLogPath) {
+      const appended = readAppendedLog(devChild.buildLogPath, logOffset);
+      logOffset = appended.offset;
+      if (/Info\s+File\s+.+?\s+changed\.\s+Rebuilding application\.\.\./i.test(appended.text)) {
+        rebuildObservedAt = Date.now();
+        log('Runtime lifecycle: Tauri file watcher requested a rebuild; the Dev watcher remains active while the Host reloads.');
+      }
+    }
+
+    const snapshot = runtimeStatusSnapshot(currentHostRecord(), watcherStartedAtMs);
+    if (!snapshot) return;
+    const category = runtimeHealthCategory(snapshot);
+    const requestedStop = stopRequested || fs.existsSync(STOP_REQUEST_FILE);
+
+    if (snapshot.hostPid > 0 && (snapshot.hostPid !== lastHostPid || snapshot.hostSessionId !== lastHostSessionId)) {
+      if (lastHostPid > 0) {
+        const isHotReload = rebuildObservedAt > 0 && Date.now() - rebuildObservedAt <= 120000;
+        log('Runtime lifecycle: Tauri Host process changed under the live Dev watcher (oldPid=' + lastHostPid
+          + ', newPid=' + snapshot.hostPid + ', cause=' + (isHotReload ? 'file-hot-reload' : 'host-replacement-without-file-change-evidence')
+          + ', watcherPid=' + devChild.pid + '). ' + formatRuntimeStatus(snapshot));
+      }
+      lastHostPid = snapshot.hostPid;
+      lastHostSessionId = snapshot.hostSessionId;
+      staleReported = false;
+      rebuildObservedAt = 0;
+    }
+
+    if (category === 'service-degraded'
+      && (previousCategory !== 'service-degraded' || previousDegradedSignature !== formatRuntimeStatus(snapshot))) {
+      log('Runtime lifecycle: service health degraded while the Dev watcher remains active. ' + formatRuntimeStatus(snapshot));
+      previousDegradedSignature = formatRuntimeStatus(snapshot);
+    } else if (category === 'healthy' && previousCategory === 'service-degraded') {
+      log('Runtime lifecycle: service health recovered. ' + formatRuntimeStatus(snapshot));
+      previousDegradedSignature = '';
+    }
+
+    if (snapshot.state.toUpperCase() === 'STOPPED' && previous && previous.state.toUpperCase() !== 'STOPPED') {
+      const cause = requestedStop ? 'launcher-cleanup' : (rebuildObservedAt > 0 ? 'file-hot-reload' : 'host-closed-without-launcher-request');
+      log('Runtime lifecycle: Tauri Host entered STOPPED while the Dev watcher remains alive (cause=' + cause
+        + ', watcherPid=' + devChild.pid + '). ' + formatRuntimeStatus(snapshot));
+    }
+
+    const heartbeatAgeMs = snapshot.updatedAtMs > 0 ? Date.now() - snapshot.updatedAtMs : 0;
+    const rebuilding = rebuildObservedAt > 0 && Date.now() - rebuildObservedAt <= 30000;
+    if (snapshot.updatedAtMs > 0 && heartbeatAgeMs > HOST_STATUS_STALE_MS && !staleReported && !rebuilding
+      && snapshot.state.toUpperCase() !== 'STOPPED') {
+      const cause = snapshot.state.toUpperCase() === 'STOPPED'
+        ? (requestedStop ? 'launcher-cleanup-complete' : 'host-closed-without-launcher-request')
+        : 'host-crash-or-hang-suspected';
+      log('Runtime lifecycle: Host status heartbeat is stale by ' + heartbeatAgeMs + 'ms (cause=' + cause
+        + ', watcherPid=' + devChild.pid + ', lastUpdatedAtMs=' + snapshot.updatedAtMs
+        + '). No startup timeout or automatic Dev shutdown is applied during runtime. ' + formatRuntimeStatus(snapshot));
+      staleReported = true;
+    } else if (heartbeatAgeMs <= HOST_STATUS_STALE_MS) {
+      staleReported = false;
+    }
+
+    previous = snapshot;
+    previousCategory = category;
+  }, RUNTIME_LIFECYCLE_POLL_MS);
+  timer.unref();
+  runtimeLifecycleTimer = timer;
+}
+
 function hostIsAlive(record) {
   const pid = hostPid(record);
   return pid > 0 && processMatchesHost(pid, hostStartedAt(record));
+}
+
+function captureReadyHostSnapshot(record) {
+  const status = record && (record.status || record.runtimeStatus) || {};
+  if (!record || status.staticReady !== true || status.homeNodeReady !== true) return null;
+  return { record, status: Object.assign({}, status) };
 }
 
 function saveState(state) {
@@ -283,10 +538,11 @@ function saveState(state) {
 }
 
 function tauriEnvironment(extra) {
-  const env = Object.assign({}, process.env, {
+  const env = Object.assign(devToolEnvironment(), {
     IB_DEV_MODE: '1',
     IB_DEV_DSH_ENABLED: '0',
     IB_DEV_SYNTHETIC: SYNTHETIC_MODE ? '1' : '0',
+    IB_DEV_PROJECT_ROOT: DEV_DATA_PROJECT_ROOT,
     IB_DEV_SANDBOX_ROOT: SANDBOX,
     IB_DEV_INSTANCE_ID: DEV_INSTANCE_ID,
     IB_DEV_SESSION_TOKEN: DEV_SESSION_TOKEN,
@@ -312,7 +568,15 @@ function tauriEnvironment(extra) {
     IB_DEV_FAKE_PROVIDER_PORT: String(DEV_PORTS.fakeProvider),
     IB_ECONOMY_CHANNEL_SOURCE_PORT: String(DEV_PORTS.activeChannelSource),
     IB_DSH_CONTROL_PORT: String(DEV_PORTS.dshControl),
-    IB_DSH_WEB_PORT: String(DEV_PORTS.dshWeb)
+    IB_DSH_WEB_PORT: String(DEV_PORTS.dshWeb),
+    LOCALAPPDATA: DEV_LOCAL_APP_DATA,
+    APPDATA: DEV_ROAMING_APP_DATA,
+    TEMP: DEV_TEMP_DIR,
+    TMP: DEV_TEMP_DIR,
+    TMPDIR: DEV_TEMP_DIR,
+    XDG_CACHE_HOME: DEV_CACHE_DIR,
+    WEBVIEW2_USER_DATA_FOLDER: DEV_WEBVIEW2_DIR,
+    IB_DEV_WEBVIEW2_DATA_DIR: DEV_WEBVIEW2_DIR
   }, extra && Object.prototype.hasOwnProperty.call(extra, 'IB_DEV_DSH_ENABLED')
     ? { IB_DEV_DSH_ENABLED: extra.IB_DEV_DSH_ENABLED === '1' ? '1' : '0' } : {});
   /* A production deployment can set these; they must never flow into the
@@ -329,6 +593,7 @@ function tauriEnvironment(extra) {
   delete env.IB_DEV_SNAPSHOT_ENDPOINT;
   delete env.IB_DEV_PRODUCTION_WEBVIEW_DATA_DIR;
   delete env.IB_DEV_SOURCE_ORIGIN;
+  delete env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT;
   delete env.IB_PROD_WEB_PORT;
   if (SYNTHETIC_MODE) {
     env.IB_DEV_WEBVIEW_DEBUG_PORT = '9225';
@@ -345,11 +610,12 @@ function writeTauriConfig(origin) {
 }
 
 function spawnTauri(extraEnv, tag) {
-  const command = process.env.IB_CARGO || 'cargo';
+  const command = DEV_CARGO_COMMAND;
   const args = ['tauri', 'dev', '--config', CONFIG_FILE];
   const logPath = path.join(LOG_DIR, 'tauri-' + tag + '.log');
   const stdoutFd = fs.openSync(logPath, 'a');
   const stderrFd = fs.openSync(logPath, 'a');
+  const logStartOffset = fs.fstatSync(stdoutFd).size;
   const childEnv = tauriEnvironment(extraEnv);
   log('Native Dev environment contract: instance=' + (!!childEnv.IB_DEV_INSTANCE_ID)
     + ', session=' + (!!childEnv.IB_DEV_SESSION_TOKEN) + ', mode=' + childEnv.IB_DEV_SYNTHETIC
@@ -362,24 +628,50 @@ function spawnTauri(extraEnv, tag) {
   });
   try { fs.closeSync(stdoutFd); } catch (_) {}
   try { fs.closeSync(stderrFd); } catch (_) {}
+  processChild.buildLogPath = logPath;
+  processChild.buildLogStartOffset = logStartOffset;
   return trackTauriChild(processChild, tag);
 }
 
 function trackTauriChild(processChild, tag) {
   child = processChild;
   childSpawnedAt = Date.now();
-  child.on('error', error => { log('Tauri process could not start (' + (error && error.code || 'spawn-failed') + ').'); });
+  processChild.launcherSpawnedAtMs = childSpawnedAt;
+  child.on('error', error => {
+    log('Tauri process could not start (tag=' + tag + ', code=' + (error && error.code || 'spawn-failed')
+      + ', message=' + safeLogText(error && error.message || 'unknown-error') + ').');
+  });
   child.on('exit', (code, signal) => {
+    stopRuntimeLifecycleMonitor();
     const latest = readJson(STATE_FILE) || currentState || {};
-    latest.launcherState = stopRequested || fs.existsSync(STOP_REQUEST_FILE) ? 'stopped' : 'exited';
+    const requestedStop = launcherStopRequested();
+    const hostRecord = currentHostRecord();
+    const watcherStartedAtMs = Number(processChild.launcherSpawnedAtMs || latest.childStartedAtMs) || 0;
+    const hostRecordIsCurrent = hostRecordMatchesWatcher(hostRecord, watcherStartedAtMs);
+    const hostStatus = runtimeStatusSnapshot(hostRecord, watcherStartedAtMs);
+    const exitReason = classifyTauriExit(code, signal, requestedStop, hostRecordIsCurrent ? hostRecord : null);
+    latest.launcherState = requestedStop || exitReason === 'host-closed-without-launcher-request'
+      ? 'stopped' : ((signal || (Number.isInteger(code) && code !== 0)) ? 'failed' : 'exited');
     latest.exitCode = Number.isInteger(code) ? code : null;
     latest.exitSignal = signal || null;
+    latest.exitReason = exitReason;
     latest.updatedAt = timestamp();
     saveState(latest);
-    if (!stopRequested && code !== 0) log('Tauri development process exited with an error; see tauri-' + tag + '.log.');
+    log('Runtime lifecycle: Tauri Dev watcher exited (tag=' + tag + ', cause=' + exitReason
+      + ', code=' + (Number.isInteger(code) ? code : 'none') + ', signal=' + (signal || 'none')
+      + ', launcherStopRequested=' + requestedStop + ', watcherPid=' + (processChild.pid || 'unknown')
+      + '). ' + formatRuntimeStatus(hostStatus) + '; log=' + (processChild.buildLogPath || 'tauri-' + tag + '.log'));
     child = null;
-    if (!stopRequested && tag === 'main') {
-      stopOwnedServices(currentHostRecord(), false).then(() => stopLauncherStatic(latest)).catch(() => {});
+    if (!requestedStop && exitReason !== 'host-closed-without-launcher-request') {
+      log('Runtime lifecycle: unexpected Tauri Dev watcher exit; cleaning only services recorded by this Launcher instance.');
+    }
+    if (!requestedStop && tag === 'main') {
+      stopOwnedServices(hostRecord, false).then(() => stopLauncherStatic(latest)).then(() => {
+        log('Runtime lifecycle: Launcher-owned service cleanup completed after Tauri Dev watcher exit (cause=' + exitReason + ').');
+      }).catch(error => {
+        log('Runtime lifecycle: Launcher-owned service cleanup failed after Tauri Dev watcher exit (cause=' + exitReason
+          + ', error=' + safeLogText(error && error.message || 'cleanup-failed') + ').');
+      });
     }
   });
   return child;
@@ -595,12 +887,119 @@ async function waitFor(predicate, timeoutMs, intervalMs) {
   return !!(await predicate());
 }
 
+function readAppendedLog(filePath, offset) {
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const size = fs.fstatSync(fd).size;
+    const start = size < offset ? 0 : offset;
+    const length = Math.min(Math.max(0, size - start), 64 * 1024);
+    if (length === 0) return { text: '', offset: start };
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    return { text: buffer.toString('utf8', 0, bytesRead), offset: start + bytesRead };
+  } catch (_) {
+    return { text: '', offset: offset };
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
+  }
+}
+
+function hasCargoBuildFinished(text) {
+  const plain = String(text || '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  return /\bFinished\s+`dev`\s+profile\b/i.test(plain);
+}
+
+function cargoBuildFailure(text) {
+  const plain = String(text || '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  const lines = plain.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const fatalLine = lines.find(line => /^error:\s+(?:failed to build archive\b|linking with\b|linker\b|failed to run custom build command\b)/i.test(line))
+    || lines.find(line => /^error:\s+(?:could not compile\b|failed to compile\b)/i.test(line));
+  return fatalLine ? safeLogText(fatalLine).slice(0, 480) : '';
+}
+
+function childExitDiagnostic(devChild, phase) {
+  const code = Number.isInteger(devChild && devChild.exitCode) ? devChild.exitCode : 'none';
+  const signal = devChild && devChild.signalCode ? devChild.signalCode : 'none';
+  const logPath = devChild && devChild.buildLogPath ? devChild.buildLogPath : 'tauri-main.log';
+  return 'tauri-dev-exited-' + phase + ' (code=' + code + ', signal=' + signal + '; log=' + logPath + ')';
+}
+
+async function waitForTauriBuild(devChild, timeoutMs, intervalMs, isHostRunning, isStopRequested) {
+  const logPath = devChild && devChild.buildLogPath;
+  if (!logPath) throw new Error('tauri-build-log-unavailable');
+  const limitMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) >= 0
+    ? Number(timeoutMs) : TAURI_BUILD_TIMEOUT_MS;
+  const pollMs = Number.isFinite(Number(intervalMs)) && Number(intervalMs) > 0 ? Number(intervalMs) : 350;
+  const deadline = Date.now() + limitMs;
+  let offset = Math.max(0, Number(devChild.buildLogStartOffset) || 0);
+  let recentOutput = '';
+  let lastHostCheckAt = 0;
+  const hostStarted = async force => {
+    if (typeof isHostRunning !== 'function') return false;
+    if (!force && Date.now() - lastHostCheckAt < 1000) return false;
+    lastHostCheckAt = Date.now();
+    try { return (await isHostRunning()) === true; }
+    catch (_) { return false; }
+  };
+  const shouldStop = async () => {
+    if (typeof isStopRequested === 'function') {
+      try { return (await isStopRequested()) === true; }
+      catch (_) { return launcherStopRequested(); }
+    }
+    return launcherStopRequested();
+  };
+  const throwIfBuildFailed = () => {
+    const failure = cargoBuildFailure(recentOutput);
+    if (failure) throw new Error('tauri-cargo-build-failed (' + failure + '; log=' + logPath + ')');
+  };
+  while (true) {
+    const appended = readAppendedLog(logPath, offset);
+    offset = appended.offset;
+    recentOutput = (recentOutput + appended.text).slice(-4096);
+    throwIfBuildFailed();
+    if (await shouldStop()) throw new Error('launcher-stop-requested-during-build');
+    if (hasCargoBuildFinished(recentOutput)) {
+      devChild.buildCompletionSource = 'cargo-finished-marker';
+      return true;
+    }
+    if (await hostStarted()) {
+      devChild.buildCompletionSource = 'host-process-observed';
+      return true;
+    }
+    if (devChild.exitCode !== null || devChild.signalCode !== null) {
+      if (await shouldStop()) throw new Error('launcher-stop-requested-during-build');
+      throw new Error(childExitDiagnostic(devChild, 'during-build'));
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  }
+
+  const appended = readAppendedLog(logPath, offset);
+  recentOutput = (recentOutput + appended.text).slice(-4096);
+  throwIfBuildFailed();
+  if (await shouldStop()) throw new Error('launcher-stop-requested-during-build');
+  if (hasCargoBuildFinished(recentOutput)) {
+    devChild.buildCompletionSource = 'cargo-finished-marker';
+    return true;
+  }
+  if (await hostStarted(true)) {
+    devChild.buildCompletionSource = 'host-process-observed';
+    return true;
+  }
+  if (devChild.exitCode !== null || devChild.signalCode !== null) {
+    if (await shouldStop()) throw new Error('launcher-stop-requested-during-build');
+    throw new Error(childExitDiagnostic(devChild, 'during-build'));
+  }
+  throw new Error('tauri-build-timeout (stage=rust-build, timeoutMs=' + limitMs + '; log=' + logPath + ')');
+}
+
 async function initializeDevHostLifecycle(dependencies) {
   const deps = dependencies || {};
   const handles = { staticServer: null, dshHost: null, state: null, devChild: null };
-  const cleanup = async reason => {
+  const cleanup = async (reason, error) => {
     if (typeof deps.cleanupOwned !== 'function') return;
-    await deps.cleanupOwned(handles, reason);
+    await deps.cleanupOwned(handles, reason, error);
   };
   try {
     handles.staticServer = await deps.startStaticServer();
@@ -623,7 +1022,8 @@ async function initializeDevHostLifecycle(dependencies) {
       stop: () => cleanup('normal-exit')
     });
   } catch (error) {
-    try { await cleanup('startup-failure'); }
+    const cleanupReason = launcherStopRequested() ? 'launcher-stop-requested' : 'startup-failure';
+    try { await cleanup(cleanupReason, error); }
     catch (cleanupError) {
       if (error && typeof error === 'object') error.cleanupError = String(cleanupError && cleanupError.message || cleanupError);
     }
@@ -631,9 +1031,11 @@ async function initializeDevHostLifecycle(dependencies) {
   }
 }
 
-async function cleanupDevHostLifecycle(handles, reason) {
+async function cleanupDevHostLifecycle(handles, reason, startupError) {
   if (!handles || (!handles.staticServer && !handles.dshHost && !handles.state && !handles.devChild)) return;
   if (reason === 'startup-failure') log('Startup failed; cleaning only processes recorded by this Launcher instance.');
+  else if (reason === 'launcher-stop-requested') log('Runtime lifecycle: explicit stop interrupted startup; cleaning only processes recorded by this Launcher instance.');
+  else if (reason === 'normal-exit') log('Runtime lifecycle: explicit normal stop requested; cleaning only processes recorded by this Launcher instance.');
   try { await stop(); }
   catch (error) { log('Owned-process cleanup reported an error (' + String(error && error.message || 'cleanup-failed') + ').'); }
 
@@ -655,9 +1057,20 @@ async function cleanupDevHostLifecycle(handles, reason) {
   }
 
   const latest = readJson(STATE_FILE) || handles.state || {};
-  latest.launcherState = reason === 'startup-failure' ? 'failed' : 'stopped';
+  latest.launcherState = launcherStateAfterCleanup(reason);
+  if (reason === 'launcher-stop-requested') latest.exitReason = 'launcher-requested-stop';
+  else if (reason === 'startup-failure') latest.exitReason = launcherFailureCode(startupError);
   latest.updatedAt = timestamp();
   saveState(latest);
+}
+
+function launcherStateAfterCleanup(reason) {
+  return reason === 'startup-failure' ? 'failed' : 'stopped';
+}
+
+function launcherFailureCode(error) {
+  const match = String(error && error.message || '').match(/^([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b/i);
+  return match ? match[1].toLowerCase() : 'startup-failure';
 }
 
 async function start(options) {
@@ -689,7 +1102,13 @@ async function start(options) {
   try { fs.rmSync(STOP_REQUEST_FILE, { force: true }); } catch (_) {}
 
   const occupied = [];
-  for (const port of Object.values(DEV_PORTS)) if (!(await isPortFree(port))) occupied.push(port);
+  for (const [name, port] of Object.entries(DEV_PORTS)) {
+    /* Host and Runner verify Home Node's identity and choose a private fallback
+       when its preferred port is occupied. Other Dev services keep their
+       existing fail-fast port contract. */
+    if (name === 'homeNode') continue;
+    if (!(await isPortFree(port))) occupied.push(port);
+  }
   if (occupied.length) throw new Error('A private Dev port is already in use (' + occupied.join(', ') + '). No process was stopped.');
   if (!SYNTHETIC_MODE) await requireProductionSource();
   checkTauriCli();
@@ -704,6 +1123,7 @@ async function start(options) {
       });
       const seeded = syntheticSeed.seedSyntheticSandbox({
         sandboxRoot: SANDBOX,
+        projectRoot: DEV_DATA_PROJECT_ROOT,
         credentialDataDir: CREDENTIAL_DATA_DIR,
         providerEndpoint: fakeProvider.endpoint
       });
@@ -736,24 +1156,69 @@ async function start(options) {
       },
       childStartedAtMs: () => childSpawnedAt,
       waitForReady: async (_state, devChild) => {
-        const ready = await waitFor(async () => {
-          if (devChild.exitCode !== null || devChild.signalCode !== null) return { exited: true };
+        log('Waiting for Rust build completion (max ' + Math.round(TAURI_BUILD_TIMEOUT_MS / 60000) + ' minutes; output: tauri-main.log).');
+        await waitForTauriBuild(devChild, TAURI_BUILD_TIMEOUT_MS, 350, () => {
           const record = currentHostRecord();
-          return record && hostIsAlive(record) && (record.status || {}).staticReady === true
-            ? { record }
-            : false;
-        }, startupTimeoutMs(SYNTHETIC_MODE), 350);
-        if (!ready && (devChild.exitCode !== null || devChild.signalCode !== null)) throw new Error('tauri-dev-exited-before-readiness');
-        if (!ready) throw new Error('dev-host-startup-timeout');
-        const record = currentHostRecord();
-        if (!record || !hostIsAlive(record) || (record.status || {}).staticReady !== true) {
-          throw new Error('dev-host-exited-before-readiness');
+          const spawnedAt = Number(devChild.launcherSpawnedAtMs) || 0;
+          const status = record && (record.status || record.runtimeStatus) || {};
+          if (!record || !spawnedAt || hostStartedAt(record) + 20000 < spawnedAt
+            || Number(status.updatedAtMs || status.updated_at_ms) + 20000 < spawnedAt) return false;
+          return hostIsAlive(record);
+        }, launcherStopRequested);
+        if (devChild.buildCompletionSource === 'host-process-observed') {
+          const record = currentHostRecord();
+          log('Tauri Host process observed (PID ' + hostPid(record)
+            + ') before the Cargo Finished marker; releasing the build-log wait and checking Host/Web/Home Node readiness separately.');
+        } else {
+          log('Rust build completion marker observed.');
         }
-        log('Dev host started (PID ' + hostPid(record) + '). Sandbox writes are isolated.');
+        log((devChild.buildCompletionSource === 'host-process-observed' ? 'Tauri Host process is live. Waiting up to ' : 'Rust build completed. Waiting up to ')
+          + Math.round(HOST_READINESS_TIMEOUT_MS / 1000)
+          + ' seconds for the Tauri Host, Web service and Home Node.');
+        let readySnapshot = null;
+        const ready = await waitFor(async () => {
+          if (devChild.exitCode !== null || devChild.signalCode !== null) return false;
+          const record = currentHostRecord();
+          if (!record || !hostIsAlive(record)) return false;
+          readySnapshot = captureReadyHostSnapshot(record);
+          return !!readySnapshot;
+        }, HOST_READINESS_TIMEOUT_MS, 350);
+        if (!ready && (devChild.exitCode !== null || devChild.signalCode !== null)) {
+          throw new Error(childExitDiagnostic(devChild, 'before-readiness'));
+        }
+        if (!ready) {
+          const record = currentHostRecord();
+          const status = record && (record.status || record.runtimeStatus) || {};
+          throw new Error('dev-host-readiness-timeout (timeoutMs=' + HOST_READINESS_TIMEOUT_MS
+            + ', webReady=' + (status.staticReady === true) + ', homeNodeReady=' + (status.homeNodeReady === true)
+            + '; log=' + (devChild.buildLogPath || 'tauri-main.log') + ')');
+        }
+        /* Use the Host process and readiness state that passed the poll together.
+           Re-reading the supervisor file here can observe a transient teardown or
+           health refresh and reject a Host that was already ready. */
+        if (!readySnapshot) throw new Error('dev-host-readiness-snapshot-unavailable');
+        const record = readySnapshot.record;
+        const status = readySnapshot.status;
+        const actualHomeNodePort = Number(status.homeNodePort || status.home_node_port) || DEV_PORTS.homeNode;
+        if (_state && _state.ports && _state.ports.homeNode !== actualHomeNodePort) {
+          _state.ports.homeNode = actualHomeNodePort;
+          _state.updatedAt = timestamp();
+          saveState(_state);
+        }
+        log('Dev host started (PID ' + hostPid(record) + '); Web is ready and Home Node is ready on ' + actualHomeNodePort + '. Sandbox writes are isolated.');
         return true;
       },
       cleanupOwned: cleanupDevHostLifecycle
     });
+    const runningState = readJson(STATE_FILE) || lifecycle.state;
+    runningState.launcherState = 'running';
+    runningState.exitCode = null;
+    runningState.exitSignal = null;
+    runningState.exitReason = null;
+    runningState.updatedAt = timestamp();
+    saveState(runningState);
+    startRuntimeLifecycleMonitor(lifecycle.devChild);
+    log('Runtime lifecycle monitor started after readiness; startup timeouts no longer apply.');
     return await runConsole(lifecycle.stop);
   } finally {
     if (fakeProvider) await fakeProvider.close();
@@ -769,7 +1234,7 @@ function statusText() {
   const lines = [
     'IB Dev Launcher v1: ' + (running ? 'RUNNING' : (state.launcherState || 'STOPPED')),
     'Sandbox: ' + SANDBOX,
-    'Home Node: ' + (status && status.homeNodeReady ? 'ready on ' + DEV_PORTS.homeNode : 'not ready'),
+    'Home Node: ' + (status && status.homeNodeReady ? 'ready on ' + resolvedHomeNodePort(status, currentState) : 'not ready'),
     'Bridge: ' + (status && status.bridgeReady ? 'ready on ' + DEV_PORTS.bridge : 'not ready'),
     'Active scheduler: disabled in Dev mode',
     'Web: ' + (status && status.staticReady ? 'ready on ' + DEV_PORTS.web : 'not ready'),
@@ -922,6 +1387,7 @@ async function stop() {
   ensureSandbox();
   stopRequested = true;
   try { writeJsonAtomic(STOP_REQUEST_FILE, { requestedAt: timestamp() }); } catch (_) {}
+  log('Runtime lifecycle: Launcher cleanup requested (source=' + (process.stdin.isTTY ? 'interactive-console' : 'stop-command') + ').');
   const snapshotHostFile = path.join(HOST_DATA, 'dev-snapshot-host.json');
   const snapshotHost = readJson(snapshotHostFile);
   if (snapshotHost && processMatchesHost(snapshotHost.hostPid, snapshotHost.hostStartedAtMs)) {
@@ -1008,7 +1474,7 @@ function statusText() {
     'Sandbox: ' + SANDBOX,
     'Tauri host: ' + (running ? 'PID ' + hostPid(host) : 'not running'),
     'Static Web: ' + (status.staticReady === true ? 'ready (' + DEV_PORTS.web + ')' : 'not ready'),
-    'Home Node: ' + (status.homeNodeReady === true ? 'ready (' + DEV_PORTS.homeNode + ')' : 'not ready'),
+    'Home Node: ' + (status.homeNodeReady === true ? 'ready (' + resolvedHomeNodePort(status, state) + ')' : 'not ready'),
     'DSH execution: ' + (state.dshEnabled === true ? 'enabled (Dev opt-in)' : 'disabled'),
     'Bridge: ' + (status.bridgeReady === true ? 'ready (' + DEV_PORTS.bridge + ')' : 'not ready'),
     'Active scheduler: disabled in Dev mode',
@@ -1059,6 +1525,10 @@ function parseStartOptions(args) {
 }
 
 async function main() {
+  if (!TEST_PROJECT_ROOT_OVERRIDE) {
+    fs.mkdirSync(DEV_LAUNCHER_TEMP_DIR, { recursive: true });
+    Object.assign(process.env, devToolEnvironment());
+  }
   const arg = String(process.argv[2] || 'start').toLowerCase();
   if (arg === 'status' || arg === '--status') { ensureSandbox(); printStatus(); return; }
   if (arg === 'logs' || arg === '--logs') { await showLogs(); return; }
@@ -1078,7 +1548,11 @@ if (require.main === module) {
 }
 
 module.exports = Object.freeze({
-  ROOT, APP_DATA, SANDBOX, DEV_PORTS, SYNTHETIC_MODE, resolveAppDataPaths, startupTimeoutMs, ensureSandbox, statusText, reset,
-  stageManualExportFile, manualSeedRequired, initializeDevHostLifecycle, tauriEnvironment, parseStartOptions, currentHostRecord, hostIsAlive,
+  ROOT, DEFAULT_DEV_DATA_ROOT, DEV_DATA_PROJECT_ROOT, DEV_ENV_ROOT, APP_DATA, SANDBOX, DEV_PORTS,
+  CARGO_TARGET_DIR, DEV_CARGO_HOME, DEV_RUSTUP_HOME, SYNTHETIC_MODE, TAURI_BUILD_TIMEOUT_MS, HOST_READINESS_TIMEOUT_MS,
+  resolveAppDataPaths, resolveCargoTargetDir, ensureSandbox, statusText, reset, waitForTauriBuild,
+  classifyTauriExit, runtimeHealthCategory,
+  runtimeStatusSnapshot, captureReadyHostSnapshot, launcherStateAfterCleanup, launcherFailureCode,
+  stageManualExportFile, manualSeedRequired, initializeDevHostLifecycle, devToolEnvironment, tauriEnvironment, parseStartOptions, currentHostRecord, hostIsAlive,
   requestServiceStop, processMatchesHost, processMatchesLauncher
 });

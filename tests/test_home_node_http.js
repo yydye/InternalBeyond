@@ -10,6 +10,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const homeNodeIdentity = require('../runtime/home-node-identity.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 24500 + Math.floor(Math.random() * 400);
@@ -85,6 +86,10 @@ const nextTs = () => ++_tsSeq;
     if (!health) { console.error(svc.output()); return; }
     check('http.health 身份正确（matchesHealth 契约）', health.service === 'internal-beyond-home-node', health.service);
     check('http.health 声明 canonical 角色', health.role === 'canonical-chat-authority', health.role);
+    check('http.health 回报匹配的数据目录指纹与协议版本',
+      health.protocolVersion === homeNodeIdentity.HOME_NODE_PROTOCOL_VERSION &&
+        health.dataDirectoryId === homeNodeIdentity.dataDirectoryId(DATA_DIR),
+      { protocolVersion: health.protocolVersion, dataDirectoryMatches: health.dataDirectoryId === homeNodeIdentity.dataDirectoryId(DATA_DIR) });
     check('http.health schemaVersion = 1', health.schemaVersion === 1, health.schemaVersion);
     check('http.health 无需 token（探针零数据）', health.messages === 0 && health.revision === 0);
 

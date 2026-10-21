@@ -29,6 +29,12 @@ function listen(server) {
     server.listen(0, '127.0.0.1', () => resolve(server.address().port));
   });
 }
+function listenOn(server, port) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve(server.address().port));
+  });
+}
 function close(server) {
   return new Promise(resolve => server.close(resolve));
 }
@@ -159,24 +165,103 @@ async function check(name, fn) {
     const mod = reRequireLauncher(await freePort());
     assert.strictEqual(mod.servicesHealthy([]), false);
   });
+  await check('Runner ownership requires the exact script path, not a nested repo copy', async () => {
+    const mod = reRequireLauncher(await freePort());
+    const expectedRunner = path.join(mod.ROOT, 'runtime', 'local-services-runner.js');
+    assert.strictEqual(mod.managerCommandMatchesRunner('node.exe "' + expectedRunner + '"'), true);
+    const nestedCopy = path.join(mod.ROOT, 'tmp', 'coastline-webview-final', 'runtime', 'local-services-runner.js');
+    assert.strictEqual(mod.managerCommandMatchesRunner('node.exe "' + nestedCopy + '"'), false);
+    const productionCopy = 'C:\\Users\\admin\\AppData\\Local\\Programs\\InternalBeyond\\runtime\\local-services-runner.js';
+    assert.strictEqual(mod.managerCommandMatchesRunner('node.exe "' + productionCopy + '"'), false);
+  });
 
   /* ── 4. runner --json identity parsing (read-only, randomized ports) ── */
   await check('servicesStatus supports offline shape', async () => {
-    const mod = reRequireLauncher(await freePort());
+    const original = {
+      bridge: process.env.IB_BRIDGE_PORT,
+      active: process.env.IB_ACTIVE_PORT,
+      homeNode: process.env.IB_HOME_NODE_PORT,
+      restart: process.env.IB_RESTART_PORT,
+      dev: process.env.IB_DEV_MODE
+    };
     const srv = healthResponder({ ok: true, service: 'internal-beyond-active-messages', version: 1 });
     const ap = await listen(srv);
     try {
       process.env.IB_BRIDGE_PORT = String(await freePort());
       process.env.IB_ACTIVE_PORT = String(ap);
+      process.env.IB_HOME_NODE_PORT = String(await freePort());
+      process.env.IB_RESTART_PORT = String(await freePort());
+      process.env.IB_DEV_MODE = '0';
+      const mod = reRequireLauncher(await freePort());
       const rows = await mod.servicesStatus();
-      delete process.env.IB_BRIDGE_PORT; delete process.env.IB_ACTIVE_PORT;
       const active = rows.find(r => r.name === 'Active');
       const bridge = rows.find(r => r.name === 'Bridge');
       assert.ok(active && active.online === true, 'Active mock identity should be online');
-      assert.ok(bridge && bridge.online === false, 'Bridge on free port should be offline');
+      assert.ok(bridge && bridge.online === false, 'Bridge on free port should be offline: ' + JSON.stringify(rows));
     } finally {
-      delete process.env.IB_BRIDGE_PORT; delete process.env.IB_ACTIVE_PORT;
+      for (const [key, value] of Object.entries({
+        IB_BRIDGE_PORT: original.bridge,
+        IB_ACTIVE_PORT: original.active,
+        IB_HOME_NODE_PORT: original.homeNode,
+        IB_RESTART_PORT: original.restart,
+        IB_DEV_MODE: original.dev
+      })) {
+        if (value == null) delete process.env[key]; else process.env[key] = value;
+      }
       await close(srv);
+    }
+  });
+
+  await check('launcher reads the negotiated Home Node port from its compatible Runner', async () => {
+    const restartPort = await freePort();
+    const preferredHomePort = await freePort();
+    const actualHomePort = await freePort();
+    const unrelated = healthResponder({ ok: true, service: 'unrelated-port-holder' });
+    await listenOn(unrelated, preferredHomePort);
+    const rows = [
+      { name: 'Bridge', componentId: 'bridge', online: true, port: 23115 },
+      { name: 'Active', componentId: 'active', online: true, port: 23114 },
+      { name: 'HomeNode', componentId: 'homeNode', online: true, port: actualHomePort }
+    ];
+    const control = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.url === '/status') {
+        res.end(JSON.stringify({ ok: true, service: 'InternalBeyond Restart', environment: 'production', pid: 12345 }));
+      } else if (req.url === '/components') {
+        res.end(JSON.stringify({ ok: true, service: 'InternalBeyond Restart', pid: 12345, services: rows }));
+      } else {
+        res.writeHead(404); res.end('{}');
+      }
+    });
+    await listenOn(control, restartPort);
+    const previous = {
+      restart: process.env.IB_RESTART_PORT,
+      preferred: process.env.IB_HOME_NODE_PORT,
+      dev: process.env.IB_DEV_MODE,
+      hostSession: process.env.IB_TAURI_HOST_INSTANCE_ID
+    };
+    try {
+      process.env.IB_RESTART_PORT = String(restartPort);
+      process.env.IB_HOME_NODE_PORT = String(preferredHomePort);
+      process.env.IB_DEV_MODE = '0';
+      delete process.env.IB_TAURI_HOST_INSTANCE_ID;
+      const mod = reRequireLauncher(await freePort());
+      const result = await mod.ensureServices({ servicesTimeout: 100 });
+      const homeNode = result.components.homeNode;
+      assert.strictEqual(homeNode.healthy, true, 'the live Runner health snapshot should be used');
+      assert.strictEqual(homeNode.port, actualHomePort, 'status should carry the negotiated port, not the preferred port');
+      assert.strictEqual((await getJson(preferredHomePort, '/health')).status, 200, 'the unrelated preferred-port listener remains alive');
+    } finally {
+      for (const [key, value] of Object.entries({
+        IB_RESTART_PORT: previous.restart,
+        IB_HOME_NODE_PORT: previous.preferred,
+        IB_DEV_MODE: previous.dev,
+        IB_TAURI_HOST_INSTANCE_ID: previous.hostSession
+      })) {
+        if (value == null) delete process.env[key]; else process.env[key] = value;
+      }
+      await close(control);
+      await close(unrelated);
     }
   });
 

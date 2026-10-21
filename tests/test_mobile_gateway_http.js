@@ -169,6 +169,41 @@ const ERROR_CODES = ['AUTH_REQUIRED', 'AUTH_INVALID', 'DEVICE_REVOKED', 'PAIRING
     check('gw.5 允许的 Origin 预检声明 Authorization 头',
       String(goodPreflight.headers['access-control-allow-headers'] || '').indexOf('Authorization') >= 0, goodPreflight.headers);
 
+    /* Tauri uses its bundled `tauri.localhost` origin for the desktop Memory
+       client. These desktop-admin paths are implemented by the shared gateway,
+       but must use a narrowly scoped desktop CORS allowance rather than the
+       mobile device-origin allowlist. The request still needs the Home Node
+       token; CORS only lets WebView read the response. */
+    const desktopMemoryPreflight = await request(port, 'OPTIONS', '/memory/list?limit=1', {
+      headers: {
+        Origin: 'http://tauri.localhost',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'x-ib-home-token,x-ib-protocol'
+      }
+    });
+    check('gw.5 Tauri desktop Memory preflight is allowed on the desktop-admin path',
+      desktopMemoryPreflight.status === 204 &&
+        desktopMemoryPreflight.headers['access-control-allow-origin'] === 'http://tauri.localhost' &&
+        /x-ib-home-token/i.test(desktopMemoryPreflight.headers['access-control-allow-headers'] || '') &&
+        /x-ib-protocol/i.test(desktopMemoryPreflight.headers['access-control-allow-headers'] || ''),
+      desktopMemoryPreflight.headers);
+    const desktopMemoryRead = await request(port, 'GET', '/memory/list?limit=1', {
+      headers: { Origin: 'http://tauri.localhost', 'X-IB-Home-Token': ADMIN_TOKEN, 'X-IB-Protocol': '1' }
+    });
+    check('gw.5 authenticated Tauri Memory read returns a readable desktop response',
+      desktopMemoryRead.status === 200 &&
+        desktopMemoryRead.headers['access-control-allow-origin'] === 'http://tauri.localhost' &&
+        desktopMemoryRead.body && desktopMemoryRead.body.type === 'memory.list' &&
+        desktopMemoryRead.body.payload && Array.isArray(desktopMemoryRead.body.payload.records),
+      { status: desktopMemoryRead.status, allowOrigin: desktopMemoryRead.headers['access-control-allow-origin'], type: desktopMemoryRead.body && desktopMemoryRead.body.type });
+
+    const tauriMobilePreflight = await request(port, 'OPTIONS', '/mobile/v1/chat/send', {
+      headers: { Origin: 'http://tauri.localhost', 'Access-Control-Request-Method': 'POST' }
+    });
+    check('gw.5 Tauri origin does not gain CORS access to mobile device APIs',
+      tauriMobilePreflight.status === 204 && tauriMobilePreflight.headers['access-control-allow-origin'] === undefined,
+      tauriMobilePreflight.headers);
+
     /* ── 6 · mobile 面没有 Bridge 危险路由 ─────────────────────── */
     const dangerous = ['/mobile/v1/api/llm-proxy', '/mobile/v1/tools', '/mobile/v1/tools/execute', '/mobile/v1/pay/checkout',
       '/mobile/v1/submit_payment', '/mobile/v1/pay_set_config', '/mobile/v1/webhook', '/mobile/v1/resident/chat',

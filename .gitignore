@@ -1,4 +1,5 @@
 # ── 本地环境 / 缓存（不属于项目源码）────────────────────────────
+services/home-node/node_modules/
 .venv-vision/
 vision/__pycache__/
 vision/.cache/
@@ -20,6 +21,7 @@ browser-data/
 logs/
 tmp_ib_probe*.js
 _icon_preview.png
+.dev-data/
 
 # 阶段验收用的临时工作区（CDP 截图、探针脚本、解压出来的参考实现、对照树）。
 # 它是证据，不是源码：**内容保留在工作机上不删**，这条规则只防止未来
@@ -83,3 +85,9 @@ src-tauri/gen/
 .codegraph/
 .ua/
 .claude/
+
+# Historical local Dev-only Live2D staging path; never use this inside release assets.
+/assets/live2d-dev/
+# The proprietary Cubism Core is provided to the release staging tree only after
+# the applicable publication rights have been cleared.
+/assets/live2d/runtime/live2dcubismcore.min.js

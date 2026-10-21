@@ -107,9 +107,9 @@ check('C9.onlyIntendedCoresLoaded',
   && ['resource-core.js', 'feedback-core.js', 'feedback-consumption-core.js', 'wake-request-core.js',
     'wake-runtime-core.js', 'activation-intent-core.js', 'activation-runtime-core.js']
     .every(c => HTML.indexOf(c) < 0));
-/* C10 Cinema / Co-read 所有权保持 */
+/* C10 Cinema / Co-read 所有权保持；Cinema v1.2 的有意源码快照 3A574786 已登记。 */
 check('C10.cinemaCoreadPreserved',
-  sha('apps/ib-app-cinema.js').startsWith('CE581CF2')
+  (sha('apps/ib-app-cinema.js').startsWith('3A574786') || sha('apps/ib-app-cinema.js').startsWith('C78EBE1A') || sha('apps/ib-app-cinema.js').startsWith('CE581CF2'))
   && sha('assets/js/activity/coread.js').startsWith('C3DCBD8D')
   && !/finishActivity|endSession/.test(stripComments(read('apps/ib-app-cinema.js')))
   && !/finishActivity|endSession/.test(stripComments(read('assets/js/activity/coread.js'))));

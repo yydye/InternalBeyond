@@ -261,6 +261,28 @@ function createHttp(ctx) {
       /* ── Credential Authority: Vault secret + non-secret resolver allowlist ──
          The allowlist is reference metadata only; API keys remain exclusively in the encrypted Vault.
          No response or exception echoes the submitted secret. */
+      if (request.method === 'GET' && url.pathname === '/credentials') {
+        const vaultError = credentialVaultErrorCode();
+        if (vaultError) {
+          json(response, 503, { ok: false, error: vaultError, credentials: [] });
+          return;
+        }
+        if (!credentialVault || typeof credentialVault.listMetadata !== 'function') {
+          json(response, 503, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', credentials: [] });
+          return;
+        }
+        try {
+          const state = getState() || {};
+          const authorized = new Set((Array.isArray(state.credentialBindings) ? state.credentialBindings : []).map(value => String(value || '')));
+          const credentials = credentialVault.listMetadata().map(row => Object.assign({}, row, {
+            authorized: authorized.has(String(row && row.credentialRef || ''))
+          }));
+          json(response, 200, { ok: true, credentials: credentials });
+        } catch (_) {
+          json(response, 503, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', credentials: [] });
+        }
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/credentials') {
         const vaultError = credentialVaultErrorCode();
         if (vaultError) {
@@ -290,12 +312,15 @@ function createHttp(ctx) {
             /* Persist authorization metadata first. A failure must not return success
                after the secret was written but the resolver still cannot reach it. */
             saveNow();
-            if (!credentialVault.upsert(id, {
+            const credentialRecord = {
+              displayName: String(c.displayName || c.name || '').slice(0, 80),
               provider: String(c.provider || ''),
               apiKey: keyNow,
               endpoint: String(c.endpoint || ''),
               model: String(c.model || '')
-            })) {
+            };
+            if (c.userManaged === true) credentialRecord.userManaged = true;
+            if (!credentialVault.upsert(id, credentialRecord)) {
               const writeError = credentialVaultErrorCode();
               if (writeError) {
                 json(response, 503, { ok: false, error: writeError, stored: stored, credentialRefs: credentialRefs });

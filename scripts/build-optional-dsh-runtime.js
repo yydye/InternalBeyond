@@ -17,6 +17,19 @@ const runtimeRoot = path.resolve(argument('--runtime-root', path.join(ROOT, 'run
 const version = fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim();
 const nodeVersion = fs.readFileSync(path.join(ROOT, 'runtime', 'node', 'VERSION'), 'utf8').trim();
 const runtimeManifest = optional.readRuntimeManifest(runtimeRoot);
+const packagePin = JSON.parse(fs.readFileSync(path.join(ROOT, 'runtime', 'dsh-runtime-package-pin.json'), 'utf8'));
+const minimumProductVersion = String(packagePin.minimumProductVersion || '');
+const maximumProductVersionExclusive = String(packagePin.maximumProductVersionExclusive || '');
+const archiveName = `InternalBeyond-DSH-Runtime-${runtimeManifest.runtimeVersion}-${TARGET}.zip`;
+const currentToMinimum = optional.compareVersion(version, minimumProductVersion);
+const currentToMaximum = optional.compareVersion(version, maximumProductVersionExclusive);
+if (!packagePin || packagePin.schema !== 'internalbeyond.optional-dsh-runtime-pin'
+  || Number(packagePin.schemaVersion) !== 1 || packagePin.runtimeVersion !== runtimeManifest.runtimeVersion
+  || packagePin.sourceRevision !== runtimeManifest.sourceRevision || packagePin.target !== TARGET
+  || packagePin.archiveFile !== archiveName || !/^[a-f0-9]{64}$/i.test(String(packagePin.archiveSha256 || ''))
+  || currentToMinimum == null || currentToMaximum == null || currentToMinimum < 0 || currentToMaximum >= 0) {
+  throw new Error('dsh-package-pin-or-product-compatibility-invalid');
+}
 const excluded = DSH_RUNTIME_EXCLUDES.map(wildcardToRegExp);
 const files = [];
 
@@ -44,8 +57,6 @@ if (files.length > optional.MAX_FILES || payloadBytes > optional.MAX_UNPACKED_BY
 }
 
 const fileRecords = files.map(file => ({ path: file.path, bytes: file.bytes, sha256: optional.hashFile(file.source) }));
-const major = Number(version.split('.')[0]);
-if (!Number.isSafeInteger(major) || major < 1) throw new Error('product-version-invalid');
 const packageManifest = {
   schema: optional.SCHEMA,
   schemaVersion: 1,
@@ -54,8 +65,8 @@ const packageManifest = {
   target: runtimeManifest.target,
   protocolVersion: runtimeManifest.protocolVersion,
   compatibility: {
-    minimumProductVersion: version,
-    maximumProductVersionExclusive: (major + 1) + '.0.0',
+    minimumProductVersion,
+    maximumProductVersionExclusive,
     bundledNodeVersion: nodeVersion,
     dshNodeEngine: runtimeManifest.nodeEngine
   },

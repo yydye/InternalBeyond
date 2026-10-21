@@ -119,6 +119,16 @@ $optionalDshBuilder = Join-Path $repo 'scripts\build-optional-dsh-runtime.js'
 $discoveryCheck = Join-Path $repo 'scripts\packaging-auto-discovery.js'
 $hostStageTool = Join-Path $repo 'scripts\stage-tauri-host.ps1'
 $hostBuildRoot = Join-Path ($env:ProgramData | ForEach-Object { if ($_){$_} else { Split-Path -Parent $repo } }) 'InternalBeyond\host-build'
+if (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+  # Keep the release-only mirror beside the caller's Cargo target volume.
+  # stage-tauri-host builds inside this owned mirror and removes it afterwards;
+  # with the Dev launcher target on D:, release Rust artifacts stay on D: too.
+  $cargoTargetRoot = [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+  $cargoCacheParent = Split-Path -Parent $cargoTargetRoot
+  if (-not [string]::IsNullOrWhiteSpace($cargoCacheParent)) {
+    $hostBuildRoot = Join-Path $cargoCacheParent 'installer-host-build'
+  }
+}
 $manifestOut = Join-Path $dist 'update-stable.json'
 $manifestTool = Join-Path $repo 'runtime\update-manifest.js'
 
@@ -422,6 +432,8 @@ if ($dshPin.schema -ne 'internalbeyond.optional-dsh-runtime-pin' -or
     $dshPin.runtimeVersion -ne $optionalDsh.runtimeVersion -or
     $dshPin.sourceRevision -ne $optionalDsh.sourceRevision -or
     $dshPin.target -ne $optionalDsh.target -or
+    $dshPin.minimumProductVersion -ne $optionalDsh.compatibility.minimumProductVersion -or
+    $dshPin.maximumProductVersionExclusive -ne $optionalDsh.compatibility.maximumProductVersionExclusive -or
     [string]$dshPin.archiveSha256 -ne [string]$optionalDsh.archiveSha256) {
   Fail 'optional DSH Runtime pin does not match the ZIP built for this release'
 }
@@ -431,12 +443,21 @@ if ($dshPin.schema -ne 'internalbeyond.optional-dsh-runtime-pin' -or
 # exactly one executable into the canonical payload root. No _up_, target tree
 # or .tauri-frontend directory is ever consumed by Inno.
 $hostOutput = Join-Path $staging 'internalbeyond-host.exe'
-$hostJson = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $hostStageTool `
-  -RepositoryRoot $repo -OutputPath $hostOutput -Version $version -BuildRoot $hostBuildRoot 2>&1 | Out-String
+$hostStageArgs = @(
+  '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $hostStageTool,
+  '-RepositoryRoot', $repo, '-OutputPath', $hostOutput, '-Version', $version, '-BuildRoot', $hostBuildRoot
+)
+if ($TestMode) { $hostStageArgs += '-TestMode' }
+$hostJson = & powershell.exe @hostStageArgs 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { Fail "Tauri host staging 失败：$hostJson" }
 $hostResult = $hostJson.Trim() | ConvertFrom-Json
 if (-not $hostResult.ok) { Fail "Tauri host staging 不完整：$hostJson" }
-Write-Ok ("stable host · {0:N1} MiB · version {1} · sha256 {2}" -f ($hostResult.bytes / 1MB), $hostResult.version, $hostResult.sha256)
+$expectedHostIdentifier = if ($TestMode) { 'com.internalbeyond.installer-smoke' } else { 'com.internalbeyond.desktop' }
+if ([string]$hostResult.identifier -ne $expectedHostIdentifier -or [bool]$hostResult.testMode -ne [bool]$TestMode) {
+  Fail "Tauri Host identifier mismatch: expected $expectedHostIdentifier, got $($hostResult.identifier)"
+}
+Write-Ok ("stable host · {0:N1} MiB · version {1} · identifier {2} · sha256 {3}" -f `
+  ($hostResult.bytes / 1MB), $hostResult.version, $hostResult.identifier, $hostResult.sha256)
 
 # The install root carries its OWN payload manifest (upgrade §7). It is written
 # from the bytes staging just produced — never hand-maintained — and it is what
@@ -487,7 +508,7 @@ $payloadManifestObject = [ordered]@{
   count     = $payloadFiles.Count
   files     = @($payloadFiles | Sort-Object)
   artifactCount = $payloadRecords.Count
-  artifactTotalBytes = [long](($payloadRecords | Measure-Object -Property sizeBytes -Sum).Sum)
+  artifactTotalBytes = [long](($payloadRecords | ForEach-Object { [long]$_.sizeBytes } | Measure-Object -Sum).Sum)
   artifacts = $payloadRecords
 }
 # UTF-8 WITHOUT BOM: JSON.parse cannot read a BOM, and the installer's helper is
@@ -598,6 +619,8 @@ if ($TestMode) {
     publisher = 'InternalBeyond (Test Only)'
     installDirectoryName = (Get-IssQuotedDefine $issSource 'TestOnlyInstallDirectoryName')
     hostVersion = [string]$hostResult.version
+    hostIdentifier = [string]$hostResult.identifier
+    hostTestMode = [bool]$hostResult.testMode
     hostBytes = [int64]$hostResult.bytes
     hostSha256 = [string]$hostResult.sha256
     outputBaseName = $testOutputBaseName

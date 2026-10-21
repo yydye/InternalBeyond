@@ -10,10 +10,12 @@ const devContract = require('../runtime/dev-service-contract.js');
 const createHomeNodeHttp = require('../services/home-node/http.js');
 
 function devEnvironment() {
-  const sandboxRoot = path.join(os.tmpdir(), 'ib-memory-cors-fixture', 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+  const projectRoot = path.join(os.tmpdir(), 'ib-memory-cors-fixture');
+  const sandboxRoot = path.join(projectRoot, '.dev-data', 'synthetic', 'dev-sandbox');
   const env = {
     IB_DEV_MODE: '1',
     IB_DEV_SYNTHETIC: '1',
+    IB_DEV_PROJECT_ROOT: projectRoot,
     IB_DEV_INSTANCE_ID: crypto.randomUUID(),
     IB_DEV_SESSION_TOKEN: crypto.randomBytes(32).toString('hex'),
     IB_DEV_SANDBOX_ROOT: sandboxRoot,

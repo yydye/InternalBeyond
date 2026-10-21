@@ -41,24 +41,25 @@ function normalizedPath(value) { return path.resolve(String(value || '')).replac
 
 function exactPath(value, expected) { return normalizedPath(value) === normalizedPath(expected); }
 
-function validateSandboxRoot(root, synthetic) {
-  root = path.resolve(String(root || ''));
-  const segments = root.split(path.sep).filter(Boolean).map(value => value.toLowerCase());
-  if (path.basename(root).toLowerCase() !== 'dev-sandbox'
-    || segments[segments.length - (synthetic ? 3 : 2)] !== 'internalbeyond'
-    || (synthetic && path.basename(path.dirname(root)).toLowerCase() !== 'dev-synthetic')) {
-    throw new Error('dev-sandbox-identity-invalid');
+function validateSandboxRoot(root, synthetic, projectRoot) {
+  const sandboxRoot = path.resolve(String(root || ''));
+  const expectedProjectRoot = projectRoot
+    ? path.resolve(String(projectRoot))
+    : path.resolve(sandboxRoot, '..', '..', '..');
+  const expectedRoot = path.join(expectedProjectRoot, '.dev-data', synthetic ? 'synthetic' : 'development', 'dev-sandbox');
+  if (!exactPath(sandboxRoot, expectedRoot)) throw new Error('dev-sandbox-identity-invalid');
+  for (const candidate of [path.join(expectedProjectRoot, '.dev-data'), path.dirname(sandboxRoot), sandboxRoot]) {
+    try { if (fs.lstatSync(candidate).isSymbolicLink()) throw new Error('dev-sandbox-reparse-point-blocked'); }
+    catch (error) { if (error && error.code !== 'ENOENT') throw error; }
   }
-  try { if (fs.lstatSync(root).isSymbolicLink()) throw new Error('dev-sandbox-reparse-point-blocked'); }
-  catch (error) { if (error && error.code !== 'ENOENT') throw error; }
-  return root;
+  return sandboxRoot;
 }
 
 function identityFromEnvironment(env) {
   env = env || process.env;
   if (String(env.IB_DEV_MODE || '') !== '1') return Object.freeze({ mode: 'production' });
   const synthetic = String(env.IB_DEV_SYNTHETIC || '') === '1';
-  const sandboxRoot = validateSandboxRoot(env.IB_DEV_SANDBOX_ROOT, synthetic);
+  const sandboxRoot = validateSandboxRoot(env.IB_DEV_SANDBOX_ROOT, synthetic, env.IB_DEV_PROJECT_ROOT);
   const instanceId = String(env.IB_DEV_INSTANCE_ID || '').toLowerCase();
   const sessionToken = String(env.IB_DEV_SESSION_TOKEN || '').toLowerCase();
   if (!ID_RE.test(instanceId) || !TOKEN_RE.test(sessionToken)) throw new Error('dev-service-identity-required');

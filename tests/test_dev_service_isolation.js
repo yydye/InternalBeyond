@@ -21,16 +21,21 @@ const syntheticSeed = require('../runtime/dev-synthetic-seed.js');
 function makeDevEnvironment(root, options) {
   options = options || {};
   const synthetic = options.synthetic !== false;
-  const sandbox = synthetic
-    ? path.join(root, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox')
-    : path.join(root, 'InternalBeyond', 'dev-sandbox');
+  const sandbox = path.join(root, '.dev-data', synthetic ? 'synthetic' : 'development', 'dev-sandbox');
   const ports = Object.assign({}, contract.DEV_PORTS, options.ports || {});
   const env = {
+    LOCALAPPDATA: path.join(sandbox, 'local-app-data'),
+    APPDATA: path.join(sandbox, 'roaming-app-data'),
+    TEMP: path.join(sandbox, 'temp'),
+    TMP: path.join(sandbox, 'temp'),
     IB_DEV_MODE: '1',
     IB_DEV_SYNTHETIC: synthetic ? '1' : '0',
+    IB_DEV_PROJECT_ROOT: root,
     IB_DEV_INSTANCE_ID: crypto.randomUUID(),
     IB_DEV_SESSION_TOKEN: crypto.randomBytes(32).toString('hex'),
     IB_DEV_SANDBOX_ROOT: sandbox,
+    IB_BOOT_STATE_DIR: path.join(sandbox, 'host'),
+    IB_LOG_DIR: path.join(sandbox, 'logs'),
     IB_ACTIVE_DATA_DIR: path.join(sandbox, 'active'),
     IB_BRIDGE_DATA_DIR: path.join(sandbox, 'bridge'),
     IB_HOME_NODE_DATA_DIR: path.join(sandbox, 'home-node'),
@@ -83,6 +88,10 @@ async function withServer(server, action) {
 test('Dev service discovery fails closed on missing ports, role collisions, and any production port', () => {
   const { env, ports } = makeDevEnvironment(os.tmpdir());
   assert.deepEqual(Object.assign({}, contract.portsFromEnvironment(env)), ports);
+  assert.throws(() => contract.validateSandboxRoot(path.join(os.tmpdir(), 'InternalBeyond', 'dev-sandbox'), false, os.tmpdir()),
+    /dev-sandbox-identity-invalid/, 'the legacy C: AppData root is no longer a valid Dev write target');
+  assert.throws(() => contract.validateSandboxRoot(env.IB_DEV_SANDBOX_ROOT, true, path.join(os.tmpdir(), 'another-project')),
+    /dev-sandbox-identity-invalid/, 'a sandbox cannot be rebound to another project root');
   assert.throws(() => contract.portsFromEnvironment(Object.assign({}, env, { IB_ACTIVE_PORT: '' })), /dev-service-port-required:IB_ACTIVE_PORT/);
   assert.throws(() => contract.portsFromEnvironment(Object.assign({}, env, { IB_DSH_WEB_PORT: env.IB_ACTIVE_PORT })), /dev-service-port-conflict/);
   assert.throws(() => contract.portsFromEnvironment(Object.assign({}, env, { IB_ACTIVE_PORT: '23120' })), /dev-service-port-overlaps-production:active/);
@@ -213,19 +222,25 @@ test('Tauri Dev environment overrides caller-supplied production ports and Vault
 });
 
 test('a shared Cargo cache override must still resolve inside a private Sandbox', () => {
-  const root = path.join(os.tmpdir(), 'ib-dev-cargo-cache-fixture');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-dev-launcher-test-cargo-cache-'));
   const modulePath = path.resolve(__dirname, '../runtime/ib-dev-launcher.js');
-  const target = path.join(root, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox', 'cargo-target');
+  const target = path.join(root, '.dev-data', 'development', 'dev-sandbox', 'cargo-target');
   const script = 'const l=require(' + JSON.stringify(modulePath) + '); process.stdout.write(l.tauriEnvironment().CARGO_TARGET_DIR);';
-  const accepted = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', env: Object.assign({}, process.env, {
-    LOCALAPPDATA: path.join(root, 'local-app-data'), IB_DEV_CARGO_TARGET_DIR: target
-  }) });
-  assert.equal(path.resolve(accepted), path.resolve(target));
-  const rejected = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: Object.assign({}, process.env, {
-    LOCALAPPDATA: path.join(root, 'local-app-data'), IB_DEV_CARGO_TARGET_DIR: path.join(root, 'outside', 'cargo-target')
-  }) });
-  assert.notEqual(rejected.status, 0);
-  assert.match(rejected.stderr, /dev-cargo-target-must-belong-to-a-private-sandbox/);
+  try {
+    const accepted = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', env: Object.assign({}, process.env, {
+      LOCALAPPDATA: path.join(root, 'local-app-data'), IB_DEV_LAUNCHER_TEST_PROJECT_ROOT: root,
+      IB_DEV_CARGO_TARGET_DIR: target
+    }) });
+    assert.equal(path.resolve(accepted), path.resolve(target));
+    const rejected = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: Object.assign({}, process.env, {
+      LOCALAPPDATA: path.join(root, 'local-app-data'), IB_DEV_LAUNCHER_TEST_PROJECT_ROOT: root,
+      IB_DEV_CARGO_TARGET_DIR: path.join(root, 'outside', 'cargo-target')
+    }) });
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /dev-cargo-target-must-belong-to-a-private-sandbox/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('Synthetic restart control has no production-port fallback and sends its identity', async () => {

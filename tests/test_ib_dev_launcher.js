@@ -16,8 +16,10 @@ const createCredentialResolver = require('../active/credential-resolver.js');
 
 const previousLocalAppData = process.env.LOCALAPPDATA;
 const previousProdPort = process.env.IB_PROD_WEB_PORT;
+const previousTestProjectRoot = process.env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT;
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-dev-launcher-test-'));
 process.env.LOCALAPPDATA = tempRoot;
+process.env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT = tempRoot;
 delete process.env.IB_PROD_WEB_PORT;
 const launcher = require('../runtime/ib-dev-launcher.js');
 
@@ -59,12 +61,13 @@ function homeNodeRequest(port, method, route, body, headers) {
 }
 
 function spawnDevHomeNode(port, sandbox, credentialDir, dataDir, devIdentity) {
-  const syntheticMode = path.basename(path.dirname(sandbox)).toLowerCase() === 'dev-synthetic';
+  const syntheticMode = path.basename(path.dirname(sandbox)).toLowerCase() === 'synthetic';
   devIdentity = devIdentity || { instanceId: crypto.randomUUID(), sessionToken: crypto.randomBytes(32).toString('hex') };
   const env = Object.assign({}, process.env, {
     LOCALAPPDATA: tempRoot,
     IB_DEV_MODE: '1',
     IB_DEV_SYNTHETIC: syntheticMode ? '1' : '0',
+    IB_DEV_PROJECT_ROOT: path.resolve(sandbox, '..', '..', '..'),
     IB_DEV_INSTANCE_ID: devIdentity.instanceId,
     IB_DEV_SESSION_TOKEN: devIdentity.sessionToken,
     IB_DEV_SANDBOX_ROOT: sandbox,
@@ -244,7 +247,7 @@ function manualExportFixture() {
   let formalHomeNodeChild = null;
   try {
     console.log('IB Dev Launcher isolation and snapshot checks\n');
-    const sandbox = path.join(tempRoot, 'InternalBeyond', 'dev-sandbox');
+    const sandbox = launcher.SANDBOX;
 
     await check('Dev Home Node exits before opening a path outside its Sandbox', async () => {
       const outside = path.join(tempRoot, 'formal-fixture', 'rejected-home-node');
@@ -294,6 +297,11 @@ function manualExportFixture() {
       });
       assert.strictEqual(envForTauri.IB_HOME_NODE_DATA_DIR, path.join(launcher.SANDBOX, 'home-node'));
       assert.strictEqual(envForTauri.CARGO_TARGET_DIR, path.join(launcher.SANDBOX, 'cargo-target'));
+      assert.strictEqual(envForTauri.CARGO_HOME, path.join(tempRoot, 'cargo-home'));
+      assert.strictEqual(envForTauri.RUSTUP_HOME, path.join(tempRoot, 'rustup'));
+      assert.strictEqual(envForTauri.npm_config_cache, path.join(tempRoot, 'cache', 'npm'));
+      assert.strictEqual(envForTauri.PIP_CACHE_DIR, path.join(tempRoot, 'cache', 'pip'));
+      assert.strictEqual(envForTauri.HF_HOME, path.join(tempRoot, 'cache', 'huggingface'));
       assert.strictEqual(envForTauri.IB_BRIDGE_DATA_DIR, path.join(launcher.SANDBOX, 'bridge'));
       assert.strictEqual(envForTauri.IB_ACTIVE_DATA_DIR, path.join(launcher.SANDBOX, 'active'));
       assert.strictEqual(envForTauri.IB_CREDENTIAL_DATA_DIR, path.join(launcher.SANDBOX, 'credential-vault'));
@@ -305,14 +313,162 @@ function manualExportFixture() {
       assert.strictEqual(envForTauri.IB_DEV_DSH_ENABLED, '0');
       assert.strictEqual(envForTauri.IB_DEV_SYNTHETIC, '0');
       assert.strictEqual(launcher.tauriEnvironment({ IB_DEV_DSH_ENABLED: '1' }).IB_DEV_DSH_ENABLED, '1');
+      assert.strictEqual(launcher.DEFAULT_DEV_DATA_ROOT, path.resolve('D:\\IB-Dev'));
+      assert.strictEqual(
+        launcher.resolveAppDataPaths(launcher.DEFAULT_DEV_DATA_ROOT, true).sandbox,
+        path.join('D:\\IB-Dev', '.dev-data', 'synthetic', 'dev-sandbox')
+      );
+      assert.strictEqual(
+        launcher.resolveCargoTargetDir(path.join(tempRoot, 'roots', '.dev-data', 'synthetic', 'dev-sandbox'), undefined, launcher.ROOT, true),
+        path.resolve('D:\\IB-Dev\\cargo-target')
+      );
       assert.deepStrictEqual(launcher.parseStartOptions([]), { dshEnabled: false, synthetic: false, manualExportPath: undefined });
       assert.deepStrictEqual(launcher.parseStartOptions(['fixture.json', '--dsh']), { dshEnabled: true, synthetic: false, manualExportPath: 'fixture.json' });
       assert.deepStrictEqual(launcher.parseStartOptions(['--synthetic', '--dsh']), { dshEnabled: true, synthetic: true, manualExportPath: undefined });
-      assert.deepStrictEqual(launcher.resolveAppDataPaths(path.join(tempRoot, 'roots'), true), {
-        appData: path.join(tempRoot, 'roots', 'InternalBeyond', 'dev-synthetic'),
-        sandbox: path.join(tempRoot, 'roots', 'InternalBeyond', 'dev-synthetic', 'dev-sandbox'),
-        credentialDataDir: path.join(tempRoot, 'roots', 'InternalBeyond', 'dev-synthetic', 'dev-sandbox', 'credential-vault')
+      assert.deepStrictEqual(launcher.resolveAppDataPaths(path.join(tempRoot, 'roots'), false), {
+        appData: path.join(tempRoot, 'roots', '.dev-data', 'development'),
+        sandbox: path.join(tempRoot, 'roots', '.dev-data', 'development', 'dev-sandbox'),
+        credentialDataDir: path.join(tempRoot, 'roots', '.dev-data', 'development', 'dev-sandbox', 'credential-vault')
       });
+      assert.deepStrictEqual(launcher.resolveAppDataPaths(path.join(tempRoot, 'roots'), true), {
+        appData: path.join(tempRoot, 'roots', '.dev-data', 'synthetic'),
+        sandbox: path.join(tempRoot, 'roots', '.dev-data', 'synthetic', 'dev-sandbox'),
+        credentialDataDir: path.join(tempRoot, 'roots', '.dev-data', 'synthetic', 'dev-sandbox', 'credential-vault')
+      });
+      const devEnv = launcher.tauriEnvironment();
+      assert.strictEqual(devEnv.IB_DEV_PROJECT_ROOT, tempRoot);
+      assert.strictEqual(devEnv.LOCALAPPDATA, path.join(launcher.SANDBOX, 'local-app-data'));
+      assert.strictEqual(devEnv.APPDATA, path.join(launcher.SANDBOX, 'roaming-app-data'));
+      assert.strictEqual(devEnv.TEMP, path.join(launcher.SANDBOX, 'temp'));
+      assert.strictEqual(devEnv.WEBVIEW2_USER_DATA_FOLDER, path.join(launcher.SANDBOX, 'webview2'));
+    });
+
+    await check('Tauri build completion has a bounded wait separate from Host readiness', async () => {
+      assert.strictEqual(launcher.TAURI_BUILD_TIMEOUT_MS, 15 * 60 * 1000);
+      assert.strictEqual(launcher.HOST_READINESS_TIMEOUT_MS, 60 * 1000);
+      assert.ok(launcher.TAURI_BUILD_TIMEOUT_MS > launcher.HOST_READINESS_TIMEOUT_MS);
+
+      const logPath = path.join(tempRoot, 'tauri-build-wait-fixture.log');
+      fs.writeFileSync(logPath, 'old run: Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.0s\n', 'utf8');
+      const child = { exitCode: null, signalCode: null, buildLogPath: logPath, buildLogStartOffset: fs.statSync(logPath).size };
+      let settled = false;
+      const buildWait = launcher.waitForTauriBuild(child, 2000, 10).then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 60));
+      assert.strictEqual(settled, false, 'a Finished marker from an earlier run must not satisfy this build');
+      fs.appendFileSync(logPath, '   Building [=======================> ] 372/374: internalbeyond-host\n', 'utf8');
+      await new Promise(resolve => setTimeout(resolve, 60));
+      assert.strictEqual(settled, false, 'Rust progress must keep the build phase open until Cargo reports Finished');
+      fs.appendFileSync(logPath, '\u001b[32m    Finished\u001b[0m `dev` profile [unoptimized + debuginfo] target(s) in 71.2s\n', 'utf8');
+      await buildWait;
+      assert.strictEqual(settled, true);
+
+      const timeoutLog = path.join(tempRoot, 'tauri-build-timeout-fixture.log');
+      fs.writeFileSync(timeoutLog, 'Building 372/374\n', 'utf8');
+      await assert.rejects(launcher.waitForTauriBuild({
+        exitCode: null, signalCode: null, buildLogPath: timeoutLog, buildLogStartOffset: 0
+      }, 30, 5), /tauri-build-timeout \(stage=rust-build, timeoutMs=30/);
+
+      const failedLog = path.join(tempRoot, 'tauri-build-failed-fixture.log');
+      fs.writeFileSync(failedLog, 'error: could not compile internalbeyond-host\n', 'utf8');
+      await assert.rejects(launcher.waitForTauriBuild({
+        exitCode: 101, signalCode: null, buildLogPath: failedLog, buildLogStartOffset: 0
+      }, 1000, 5), /tauri-cargo-build-failed \(error: could not compile/);
+
+      const archiveFailureLog = path.join(tempRoot, 'tauri-build-no-space-fixture.log');
+      fs.writeFileSync(archiveFailureLog, 'error: failed to build archive at target.lib: No space left on device (os error 112)\n', 'utf8');
+      await assert.rejects(launcher.waitForTauriBuild({
+        exitCode: null, signalCode: null, buildLogPath: archiveFailureLog, buildLogStartOffset: 0
+      }, 10000, 5), /tauri-cargo-build-failed .*os error 112/);
+
+      const stopRequestFile = path.join(launcher.SANDBOX, 'stop-requested.json');
+      fs.mkdirSync(launcher.SANDBOX, { recursive: true });
+      fs.writeFileSync(stopRequestFile, JSON.stringify({ requestedAt: new Date().toISOString() }), 'utf8');
+      try {
+        const interruptedLog = path.join(tempRoot, 'tauri-build-stop-fixture.log');
+        fs.writeFileSync(interruptedLog, 'Building 372/374\n', 'utf8');
+        await assert.rejects(launcher.waitForTauriBuild({
+          exitCode: 4294967295, signalCode: null, buildLogPath: interruptedLog, buildLogStartOffset: 0
+        }, 10000, 5), /launcher-stop-requested-during-build/);
+      } finally {
+        fs.rmSync(stopRequestFile, { force: true });
+      }
+
+      const hostStartedLog = path.join(tempRoot, 'tauri-host-started-without-marker.log');
+      fs.writeFileSync(hostStartedLog, 'Building 372/374\n', 'utf8');
+      const hostStartedChild = {
+        exitCode: null, signalCode: null, buildLogPath: hostStartedLog, buildLogStartOffset: 0
+      };
+      await launcher.waitForTauriBuild(hostStartedChild, 30, 5, async () => true);
+      assert.strictEqual(hostStartedChild.buildCompletionSource, 'host-process-observed',
+        'a live Host must release the startup build-log wait even when Cargo never writes its Finished marker');
+    });
+
+    await check('runtime exit classification separates Launcher stop, Host close, and watcher failure', async () => {
+      assert.strictEqual(launcher.classifyTauriExit(0, null, true, { status: { state: 'STOPPED' } }), 'launcher-requested-stop');
+      assert.strictEqual(launcher.classifyTauriExit(0, null, false, { status: { state: 'STOPPED' } }), 'host-closed-without-launcher-request');
+      assert.strictEqual(launcher.classifyTauriExit(1, null, false, { status: { state: 'HOST_READY' } }), 'tauri-dev-process-error');
+      assert.strictEqual(launcher.classifyTauriExit(0, null, false, { status: { state: 'HOST_READY' } }), 'tauri-dev-process-exited-without-stop-request');
+      assert.strictEqual(launcher.runtimeHealthCategory({ state: 'DEGRADED', degraded: true }), 'service-degraded');
+      assert.strictEqual(launcher.runtimeHealthCategory({ state: 'HOST_READY', degraded: false }), 'healthy');
+      assert.strictEqual(launcher.runtimeHealthCategory({ state: 'STOPPED', degraded: false }), 'stopped');
+      assert.strictEqual(launcher.launcherStateAfterCleanup('launcher-stop-requested'), 'stopped');
+      assert.strictEqual(launcher.launcherStateAfterCleanup('startup-failure'), 'failed');
+      assert.strictEqual(launcher.launcherFailureCode(new Error('tauri-cargo-build-failed (disk full)')), 'tauri-cargo-build-failed');
+    });
+
+    await check('Dev startup treats a stop command as cancellation during build cleanup', async () => {
+      const stopRequestFile = path.join(launcher.SANDBOX, 'stop-requested.json');
+      const cleanupReasons = [];
+      fs.mkdirSync(launcher.SANDBOX, { recursive: true });
+      fs.writeFileSync(stopRequestFile, JSON.stringify({ requestedAt: new Date().toISOString() }), 'utf8');
+      try {
+        await assert.rejects(launcher.initializeDevHostLifecycle({
+          startStaticServer: async () => ({ pid: 5101, startedAtMs: 10, script: 'static-fixture.js' }),
+          createState: () => ({ childPid: 0, staticPid: 5101, staticStartedAtMs: 10 }),
+          saveState: () => {},
+          spawnTauri: () => ({ pid: 5102, exitCode: 4294967295, signalCode: null }),
+          childStartedAtMs: () => 20,
+          waitForReady: async () => { throw new Error('launcher-stop-requested-during-build'); },
+          cleanupOwned: async (_handles, reason) => { cleanupReasons.push(reason); }
+        }), /launcher-stop-requested-during-build/);
+        assert.deepStrictEqual(cleanupReasons, ['launcher-stop-requested']);
+      } finally {
+        fs.rmSync(stopRequestFile, { force: true });
+      }
+    });
+
+    await check('runtime diagnostics ignore service health from a previous Host record', async () => {
+      const stale = launcher.runtimeStatusSnapshot({
+        runtimeRoot: launcher.ROOT,
+        hostPid: 34408,
+        hostStartedAtMs: 1000,
+        status: {
+          state: 'DEGRADED', updatedAtMs: 2000, homeNodeReady: false,
+          homeNodeReasonCode: 'home-node-port-conflict',
+          services: [{ serviceKind: 'homeNode', state: 'healthy' }]
+        }
+      }, 50000);
+      assert.strictEqual(stale.state, 'STALE');
+      assert.strictEqual(stale.homeNodeReady, null);
+      assert.strictEqual(stale.services, 'stale:previous-host-record');
+      assert.strictEqual(launcher.runtimeHealthCategory(stale), 'unknown');
+    });
+
+    await check('startup retains the same Host readiness snapshot after the liveness check', async () => {
+      const record = {
+        hostPid: 17356,
+        hostStartedAtMs: Date.now(),
+        status: { staticReady: true, homeNodeReady: true, homeNodePort: 23138, state: 'HOST_READY' }
+      };
+      const ready = launcher.captureReadyHostSnapshot(record);
+      assert.ok(ready);
+      assert.strictEqual(ready.record, record);
+      assert.deepStrictEqual(ready.status, record.status);
+
+      record.status.homeNodeReady = false;
+      assert.strictEqual(ready.status.homeNodeReady, true,
+        'a later supervisor write must not invalidate the state already accepted as ready');
+      assert.strictEqual(launcher.captureReadyHostSnapshot({ status: { staticReady: true, homeNodeReady: false } }), null);
     });
 
     await check('status does not show stale service handles as ready after the Host exits', async () => {
@@ -434,7 +590,7 @@ function manualExportFixture() {
 
     await check('Dev Home Node writes only to its sandbox across API errors, normal stop, crash, and restart', async () => {
       const formalVault = path.join(tempRoot, 'formal-vault-fixture');
-      const serviceSandbox = path.join(tempRoot, 'InternalBeyond', 'dev-synthetic', 'dev-sandbox');
+      const serviceSandbox = path.join(tempRoot, '.dev-data', 'synthetic', 'dev-sandbox');
       const homeNodeDir = path.join(serviceSandbox, 'home-node');
       const formalDb = path.join(tempRoot, 'formal-fixture', 'home-node.db');
       const formalLiveDir = path.join(tempRoot, 'formal-fixture', 'live-home-node');
@@ -671,6 +827,8 @@ function manualExportFixture() {
     }
     if (previousLocalAppData == null) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = previousLocalAppData;
     if (previousProdPort == null) delete process.env.IB_PROD_WEB_PORT; else process.env.IB_PROD_WEB_PORT = previousProdPort;
+    if (previousTestProjectRoot == null) delete process.env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT;
+    else process.env.IB_DEV_LAUNCHER_TEST_PROJECT_ROOT = previousTestProjectRoot;
   }
 })().catch(error => {
   console.error(error && error.stack || error);

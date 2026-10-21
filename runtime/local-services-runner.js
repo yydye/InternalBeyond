@@ -38,10 +38,15 @@ const supervisorModule = require('./component-supervisor.js');
 const lifecycle = require('./component-lifecycle.js');
 const { isTauriOrigin } = require('./host-origin.js');
 const devServiceContract = require('./dev-service-contract.js');
+const homeNodeIdentity = require('./home-node-identity.js');
 const RUNNER_STARTED_AT = Date.now();
 const TAURI_HOST_SESSION_ID = String(process.env.IB_TAURI_HOST_INSTANCE_ID || '').slice(0, 80);
 const DEV_IDENTITY = devServiceContract.identityFromEnvironment(process.env);
-const SERVICE_PORTS = devServiceContract.portsFromEnvironment(process.env);
+let SERVICE_PORTS = Object.assign({}, devServiceContract.portsFromEnvironment(process.env));
+const HOME_NODE_DATA_DIRECTORY_ID = homeNodeIdentity.dataDirectoryId(
+  homeNodeIdentity.homeNodeDataDirectory(process.env, DEV_IDENTITY));
+const HOME_NODE_INSTANCE_ID = homeNodeIdentity.instanceId(
+  DEV_IDENTITY.mode, path.resolve(__dirname, '..'), DEV_IDENTITY.instanceId);
 
 /* 恢复策略（P11-3C）。有界由四道独立的闸门保证，任何一道都足以阻止无限重启：
      maxAttempts     滑动窗口内允许的重启次数（有限值，supervisor 会强制夹紧）
@@ -82,8 +87,7 @@ const RECOVERY_POLICY_ACTIVE = recoveryPolicyFromEnv(process.env.IB_RECOVERY_POL
 
 /* Repository root == installed app root. This file lives in runtime/, so the
    root is one level up: the service scripts live in services/, the Windows
-   helper scripts in scripts/windows/. `path.basename(ROOT)` is still used for
-   the process-matching heuristic below and must stay the project directory. */
+   helper scripts in scripts/windows/. */
 const ROOT = path.resolve(__dirname, '..');
 const SERVICE_DIR = path.join(ROOT, 'services');
 const WINDOWS_DIR = path.join(ROOT, 'scripts', 'windows');
@@ -128,6 +132,7 @@ const RESTART_SERVER_NAME = 'InternalBeyond Restart';
    on the component row so "offline" can carry the reason it is offline. Reset by a
    control-plane restart, which re-runs the same preflight. */
 const portConflicts = {};
+let homeNodePortResolved = false;
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -178,11 +183,13 @@ function buildServiceSpec(component) {
     name: component.name,
     componentId: component.id,
     label: component.label,
-    port: registry.portOf(component.id),
+    port: Number(SERVICE_PORTS[component.id]) || registry.portOf(component.id),
     endpoint: component.healthPath,
     command: launch.command,
     commandArgs: launch.commandArgs || [],
     matchesHealth: component.matchesHealth,
+    identityRequiresOk: component.identityRequiresOk === true,
+    servingHealth: component.servingHealth,
     /* P11-3H：停止目标逐字来自 registry（端口 / 健康路径 / 身份谓词 / 停止路径）。
        runner 与 installer 用同一份描述停止同一个组件，所以"runner 停得了但 installer
        停不了"这种漂移在结构上不再可能。 */
@@ -200,7 +207,7 @@ function buildServiceSpec(component) {
        is no second list of "which components may be restarted". */
     restartable: component.restartable === true,
     managedByRunner: component.managedByRunner === true,
-    env: launch.env || {}
+    env: Object.assign({}, launch.env || {})
   };
 }
 
@@ -259,7 +266,34 @@ function requestJson(port, endpoint, timeoutMs) {
 
 async function serviceStatus(service) {
   const health = await requestJson(service.port, service.endpoint);
-  const identityMatches = health.healthy && (!service.matchesHealth || service.matchesHealth(health.data));
+  /* Reachability, identity, and serving health are separate facts. Home Node
+     deliberately returns HTTP 200 + ok:false + serving:false when its canonical
+     store cannot serve requests. That is our Home Node answering unhealthy, not
+     another program occupying the port. */
+  const homeNodeEnvironmentMatches = service.componentId !== 'homeNode' || (
+    String(health.data && health.data.environment || '') === DEV_IDENTITY.mode &&
+    (DEV_IDENTITY.mode === 'production'
+      ? health.data && health.data.devInstanceId === null
+      :
+      String(health.data && health.data.devInstanceId || '') === DEV_IDENTITY.instanceId));
+  const homeNodeProtocolMatches = service.componentId !== 'homeNode' ||
+    Number(health.data && health.data.protocolVersion) === homeNodeIdentity.HOME_NODE_PROTOCOL_VERSION;
+  const homeNodeDataDirectoryMatches = service.componentId !== 'homeNode' ||
+    String(health.data && health.data.dataDirectoryId || '') === HOME_NODE_DATA_DIRECTORY_ID;
+  const homeNodeInstanceMatches = service.componentId !== 'homeNode' || (
+    !!HOME_NODE_INSTANCE_ID && String(health.data && health.data.instanceId || '') === HOME_NODE_INSTANCE_ID);
+  const homeNodeContractMatches = homeNodeEnvironmentMatches && homeNodeProtocolMatches
+    && homeNodeDataDirectoryMatches && homeNodeInstanceMatches;
+  const homeNodeRecognized = service.componentId === 'homeNode' && health.responding === true
+    && !!(service.matchesHealth && service.matchesHealth(health.data));
+  const identityMatches = health.responding && homeNodeContractMatches &&
+    (!service.matchesHealth || service.matchesHealth(health.data)) &&
+    (!service.identityRequiresOk || !!(health.data && health.data.ok === true));
+  const servingFailure = identityMatches && service.servingHealth
+    ? service.servingHealth(health.data)
+    : null;
+  const online = identityMatches && health.healthy && !servingFailure;
+  if (online && service.componentId) delete portConflicts[service.componentId];
   /* Runner-side process tracking (P11-3B): what this runner itself did.
      `owned` means "started by this process", not "healthy" — a runner-owned
      child can have exited and a foreign instance can be perfectly healthy. */
@@ -269,11 +303,18 @@ async function serviceStatus(service) {
     componentId: service.componentId || null,
     label: service.label || service.name,
     port: service.port,
-    online: identityMatches,
+    online: online,
+    identityOk: identityMatches,
+    unhealthy: health.responding && identityMatches && !online,
     conflict: health.responding && !identityMatches,
     status: health.status,
     version: health.data && (health.data.version || health.data.serviceVersion) || '',
     details: health.data || null,
+    homeNodeRecognized: service.componentId === 'homeNode' ? homeNodeRecognized : undefined,
+    dataDirectoryMatches: service.componentId === 'homeNode' ? homeNodeDataDirectoryMatches : undefined,
+    protocolMatches: service.componentId === 'homeNode' ? homeNodeProtocolMatches : undefined,
+    environmentMatches: service.componentId === 'homeNode' ? homeNodeEnvironmentMatches : undefined,
+    instanceMatches: service.componentId === 'homeNode' ? homeNodeInstanceMatches : undefined,
     responding: health.responding === true,
     timedOut: health.timedOut === true,
     tookMs: health.tookMs,
@@ -303,7 +344,7 @@ function printStatus(rows, components) {
   }
   console.log('\nInternal Beyond local services');
   rows.forEach(row => {
-    const state = row.online ? 'online' : (row.conflict ? 'conflict' : 'offline');
+    const state = row.online ? 'online' : (row.conflict ? 'conflict' : (row.unhealthy ? 'unhealthy' : 'offline'));
     const extra = row.online && row.version ? ' · v' + row.version : '';
     console.log('  ' + row.name.padEnd(9) + state.padEnd(8) + '127.0.0.1:' + row.port + extra);
   });
@@ -383,72 +424,43 @@ function processCommandline(pid) {
     });
   });
 }
-/* Is this command line an Internal Beyond instance of `scriptFile`?
- *
- * Two independent confirmations, as before: the expected script name must appear,
- * AND the invocation must be rooted in this repository/installation. P11-3X-B adds
- * the second *form* of "rooted here": this runner spawns children with absolute
- * paths, but a developer, a test or the installer may launch the very same file as
- * `node runtime/local-services-runner.js` — and a command line never contains a
- * working directory, so the absolute-path test alone called our OWN second runner
- * "foreign". Measured: runner B against runner A's control port was reported as
- * `control-plane-foreign`.
- *
- * The relative form therefore also has to show the script's own parent segment
- * (`runtime/`, `services/`) next to its name. Both forms still require an
- * IB-specific script name, so this is a heuristic about our own files — it was
- * never a security boundary, because a command line is controlled by whoever
- * started the process. */
+/* Does a command line contain this exact absolute script path? This is a
+ * read-only port-classification aid. A match never grants stop authority. */
 function commandMatchesScript(commandLine, scriptFile) {
   const cl = String(commandLine || '');
   const full = String(scriptFile || '');
   if (!cl || !full) return false;
   const script = path.basename(full);
   if (!script || cl.indexOf(script) < 0) return false;
-  if (cl.indexOf(path.basename(ROOT)) >= 0) return true;
-  const parent = path.basename(path.dirname(full));
+  /* Never treat a root basename as installation identity. The exact-path
+     check below is diagnostic only; currentChild is the only stop authority. */
+  const parent = path.dirname(path.resolve(full));
   if (!parent) return false;
   const quote = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  /* The pair `parent/script` must appear as a whole path fragment: preceded by a
-     separator, a space, a quote or the start of the command line (a command line
-     never contains a working directory, so `node runtime/x.js` starts the argument
-     with the parent segment), and followed by a space, a quote or the end. */
+  /* The exact absolute script path must appear as a whole command-line token. */
   return new RegExp('(^|[\\s"\'\\\\/])' + quote(parent) + '[\\\\/]' + quote(script) + '([\\s"\']|$)').test(cl);
-}
-
-function processMatchesService(pid, service) {
-  return new Promise(resolve => {
-    processCommandline(pid).then(cl => resolve(commandMatchesScript(cl, service.commandArgs[0])));
-  });
 }
 
 /* ── Port ownership (P11-3X-B) ────────────────────────────────────────────
  *
- * Who holds a port, asked BEFORE anything is spawned. This is not a second
- * ownership ruleset: it is the same two existing predicates the stop path has used
- * since P11-3B — the OS's listener list (`pidsForPort`) plus "is that process one
- * of ours" (`processCommandline` against this repo and the expected script). What
- * P11-3X-B adds is asking the question *early* and giving the answer a name, so an
- * occupied port is a diagnosis instead of a random child that dies with
- * EADDRINUSE three lines later.
+ * The OS listener list and this Runner's live ChildProcess records establish SELF.
+ * Exact script paths are diagnostic only and never authorize a stop.
  *
  * Five outcomes, and the two that must never be conflated are FOREIGN and UNKNOWN:
  *
  *   free              nothing is listening
  *   self              this runner's own live child already holds it
- *   owned-component   a VERIFIED Internal Beyond process holds it (our repo path
- *                     and the expected script name both appear in its command line)
+ *   unowned-component an exact service script path appears, but this Runner did not spawn it
  *   foreign           a process is listening and is verifiably not ours
  *   unknown           a process is listening and we could not read its command line
  *
  * UNKNOWN is deliberately not folded into FOREIGN. "I could not identify it" is
- * not evidence that it is somebody else's, and the only action this classification
- * ever authorizes is a kill — so an unreadable command line must fail safe. It
- * does: neither FOREIGN nor UNKNOWN is ever killed. */
+ * not evidence that it is somebody else's. Neither classification can authorize
+ * a stop. */
 const PORT_OWNER = {
   FREE: 'free',
   SELF: 'self',
-  OWNED_COMPONENT: 'owned-component',
+  UNOWNED_COMPONENT: 'unowned-component',
   FOREIGN: 'foreign',
   UNKNOWN: 'unknown'
 };
@@ -456,9 +468,13 @@ const PORT_OWNER = {
 async function classifyPortOwner(port, scriptFile) {
   const pids = await pidsForPort(port);
   if (!pids.length) return { owner: PORT_OWNER.FREE, pids: [] };
-  const ours = [];
-  const others = [];
+  const self = [];
+  const sameScript = [];
+  const foreign = [];
   for (const pid of pids) {
+    const child = Object.values(currentChild).find(entry => entry && !entry.exited &&
+      Number(entry.pid) === Number(pid) && entry.child && Number(entry.child.pid) === Number(pid));
+    if (child) { self.push(pid); continue; }
     const commandLine = await processCommandline(pid);
     if (!commandLine) {
       /* An unreadable command line is `unknown`, never `foreign`: we have no
@@ -468,14 +484,17 @@ async function classifyPortOwner(port, scriptFile) {
         reason: 'a process holds the port but its command line could not be read'
       };
     }
-    if (commandMatchesScript(commandLine, scriptFile)) ours.push(pid);
-    else others.push(pid);
+    if (commandMatchesScript(commandLine, scriptFile)) sameScript.push(pid);
+    else foreign.push(pid);
   }
-  if (ours.length && !others.length) return { owner: PORT_OWNER.OWNED_COMPONENT, pids: ours };
-  /* A mixed set is reported as foreign: refusing is the safe answer, and one
-     verified stranger on the port means the port is not uncontested. */
+  if (self.length && !sameScript.length && !foreign.length) return { owner: PORT_OWNER.SELF, pids: self };
+  if (!self.length && sameScript.length && !foreign.length) {
+    return { owner: PORT_OWNER.UNOWNED_COMPONENT, pids: sameScript,
+      reason: 'the matching service process was not spawned by this Runner' };
+  }
+  /* A mixed set is foreign: one process outside this Runner makes a stop unsafe. */
   return {
-    owner: PORT_OWNER.FOREIGN, pids: others.concat(ours),
+    owner: PORT_OWNER.FOREIGN, pids: foreign.concat(sameScript, self),
     reason: 'the port is held by a process that is not an Internal Beyond ' + path.basename(String(scriptFile || 'service'))
   };
 }
@@ -484,21 +503,21 @@ async function classifyPortOwner(port, scriptFile) {
    identity is the JSON that names it, not "something answered". */
 function probeControlPlane(port) {
   return requestJson(port, '/status', 1200).then(function (health) {
-    const identity = !!(health.data && health.data.service === RESTART_SERVER_NAME);
-    return { responding: health.responding === true, identity: identity, status: health.status, data: health.data };
+    const serviceIdentity = !!(health.data && health.data.service === RESTART_SERVER_NAME);
+    const environmentMatches = serviceIdentity && String(health.data.environment || '') === DEV_IDENTITY.mode &&
+      (DEV_IDENTITY.mode === 'production'
+        ? health.data.devInstanceId === null
+        : String(health.data.devInstanceId || '') === DEV_IDENTITY.instanceId);
+    return {
+      responding: health.responding === true,
+      serviceIdentity: serviceIdentity,
+      environmentMatches: environmentMatches,
+      identity: serviceIdentity && environmentMatches,
+      status: health.status,
+      data: health.data
+    };
   });
 }
-function killPid(pid) {
-  return new Promise(resolve => {
-    if (process.platform === 'win32') {
-      execFile('taskkill.exe', ['/F', '/PID', String(Number(pid))], { windowsHide: true, timeout: 6000 }, () => resolve());
-    } else {
-      try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { }
-      resolve();
-    }
-  });
-}
-
 /* Can this process bind the port right now? This is the cheap, authoritative
    "is it free" question — Node's own kernel answer, no shelling out. It is asked
    BEFORE the expensive ownership classification, because the common case is a free
@@ -521,22 +540,38 @@ function portBindable(port, host) {
 }
 
 function waitPortFree(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise(resolve => {
-    const probe = () => {
-      if (Date.now() > deadline) { resolve(true); return; }
-      const sock = net.connect({ host: '127.0.0.1', port: port, timeout: 300 });
-      let settled = false;
-      const done = bound => { if (settled) return; settled = true; try { sock.destroy(); } catch (e) { } resolve(bound); };
-      sock.on('connect', () => { done(false); });
-      sock.on('timeout', () => { done(true); });
-      sock.on('error', () => { done(true); });
+  const duration = Math.max(0, Number(timeoutMs) || 0);
+  const deadline = Date.now() + duration;
+  const probe = () => new Promise(resolve => {
+    let sock;
+    try {
+      sock = net.connect({
+        host: '127.0.0.1', port: port,
+        timeout: Math.max(1, Math.min(300, deadline - Date.now()))
+      });
+    } catch (_) { resolve(false); return; }
+    let settled = false;
+    const done = free => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch (e) { /* already closed */ }
+      resolve(!!free);
     };
-    probe();
-  }).then(free => {
-    if (free) return true;
-    return new Promise(r => setTimeout(r, 200)).then(() => waitPortFree(port, deadline - Date.now()));
+    sock.once('connect', () => done(false));
+    sock.once('timeout', () => done(true));
+    sock.once('error', () => done(true));
   });
+  return (async () => {
+    while (true) {
+      /* Do one probe even for a zero timeout, so an already-free port is still
+         reported correctly. A connected listener is retried only until the
+         original deadline; it can no longer create an unbounded promise chain. */
+      if (await probe()) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise(resolve => setTimeout(resolve, Math.min(200, remaining)));
+    }
+  })();
 }
 
 async function stopService(service, opts) {
@@ -547,6 +582,13 @@ async function stopService(service, opts) {
         a crash and would be "recovered" into a process nobody asked for. The
         supervisor is told too, so the state is `stopped` rather than `recovering`. */
   const entry = currentChild[service.name];
+  /* A healthy borrowed component, an unowned same-path process, or a process
+     whose ChildProcess has exited is outside this Runner's stop authority. */
+  if (!entry || entry.exited || !entry.pid || !entry.child ||
+      Number(entry.child.pid) !== Number(entry.pid) || entry.child.exitCode !== null ||
+      entry.child.signalCode !== null || entry.child.killed || stopping.has(service.componentId)) {
+    return null;
+  }
   stopping.add(service.componentId);
   if (entry) entry.stopIntent = 'intentional';
   supervisor.handle(service.componentId, supervisorModule.EVENT.STOP, { at: Date.now() });
@@ -561,36 +603,26 @@ async function stopService(service, opts) {
         fallback performed by the shared state machine in
         runtime/component-lifecycle.js. The same state machine is what the
         installer's tools/ib-stop.js runs, so there is one stop contract.
-        A child this runner spawned is proven-ours by construction (`provenOwn`),
-        so no command-line heuristic is needed here. */
+        A child this Runner spawned is proven-ours by construction, and the
+        lifecycle also verifies that the service port still belongs to this PID. */
   let outcome = null;
   try {
     outcome = await lifecycle.stopComponent(service.lifecycleTarget, Object.assign({}, o, {
-      /* `provenOwn` says "this runner started this component"; the command-line
-         predicate is passed too, because the fallback kill still has to
-         re-establish what it is about to kill — a port can change hands while a
-         stop is in flight, and a kill on a stale pid is the failure mode the
-         whole identity rule exists to prevent. This is the runner's own existing
-         predicate (runtime/local-services-runner.js `commandMatchesScript`), not
-         a second heuristic. */
+      /* `expectedPid` binds the cooperative request and any fallback to the live
+         child handle this Runner created. A command line is not stop authority. */
       provenOwn: true,
-      requestHeaders: devServiceContract.identityHeaders(DEV_IDENTITY),
-      ownsCommandLine: (cmdline, root) => commandMatchesScript(cmdline, service.commandArgs[0]),
-      root: ROOT
+      expectedPid: Number(entry.pid),
+      requestHeaders: devServiceContract.identityHeaders(DEV_IDENTITY)
     }));
   } catch (e) {
     appendRestartLog(service.name + ' cooperative stop failed: ' + redact(String(e && e.message || e)).slice(0, 200));
   }
-  /* 2. Any remaining process bound to the port that matches our service script
-        (covers services started outside this runner). Only ever kills verified
-        Internal Beyond service processes — never an arbitrary process. */
-  if (!outcome || !outcome.verified || outcome.verified.portFree !== true) {
-    const pids = await pidsForPort(service.port);
-    for (const pid of pids) {
-      if (await processMatchesService(pid, service)) await killPid(pid);
-    }
-  }
+  /* No second process scan or command-line takeover follows the shared stop
+     state machine. If it cannot re-verify this child PID, the listener is left. */
   stopping.delete(service.componentId);
+  if (entry && !entry.exited && (!outcome || !['STOPPED', 'NOT_RUNNING'].includes(outcome.state))) {
+    entry.stopIntent = null;
+  }
   appendRestartLog('stopping ' + service.name + ' intentionally (port ' + service.port + ')' +
     (outcome ? (' → ' + outcome.state + (outcome.accepted ? ' (cooperative)' : '') +
       (outcome.fallbackKills ? ' fallback-kills=' + outcome.fallbackKills : '')) : ' (no lifecycle outcome)'));
@@ -622,6 +654,175 @@ function findServiceSpec(componentId) {
   return SERVICES.find(s => s.componentId === componentId) || null;
 }
 
+function bindEphemeralLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, RESTART_HOST, () => {
+      const address = server.address();
+      const port = address && Number(address.port) || 0;
+      server.close(error => error ? reject(error) : (port > 0 ? resolve(port) : reject(new Error('ephemeral-port-unavailable'))));
+    });
+  });
+}
+
+async function nextHomeNodePort() {
+  const reserved = new Set(Object.entries(SERVICE_PORTS)
+    .filter(([name]) => name !== 'homeNode')
+    .map(([, port]) => Number(port)));
+  Object.values(devServiceContract.PRODUCTION_PORTS).forEach(port => reserved.add(Number(port)));
+  for (let attempt = 0; attempt < 24; attempt++) {
+    let candidate = 0;
+    try { candidate = await bindEphemeralLoopbackPort(); } catch (_) { continue; }
+    if (!candidate || reserved.has(candidate)) continue;
+    if (await portBindable(candidate, RESTART_HOST)) return candidate;
+  }
+  throw new Error('home-node-fallback-port-unavailable');
+}
+
+function applyHomeNodePort(port) {
+  const actual = Number(port);
+  if (!Number.isInteger(actual) || actual < 1 || actual > 65535) throw new Error('home-node-port-invalid');
+  const previous = Number(SERVICE_PORTS.homeNode) || 0;
+  SERVICE_PORTS.homeNode = actual;
+  SERVICES.forEach(service => {
+    service.env = Object.assign({}, service.env || {}, { IB_HOME_NODE_PORT: String(actual) });
+    if (service.componentId === 'homeNode') {
+      service.port = actual;
+      if (service.lifecycleTarget) service.lifecycleTarget.port = actual;
+    }
+  });
+  return previous;
+}
+
+async function relocateHomeNodePort(port) {
+  const previous = applyHomeNodePort(port);
+  if (previous === Number(port) || !spawnPhaseComplete || restartRunning() || shuttingDown) return previous;
+  const bridge = findServiceSpec('bridge');
+  const entry = bridge && currentChild[bridge.name];
+  if (!bridge || !entry || entry.exited) return previous;
+  if (supervisor.recoveryInFlight(bridge.componentId)) {
+    appendRestartLog('Bridge recovery already owns its lifecycle; it will inherit the negotiated Home Node port.');
+    return previous;
+  }
+  appendRestartLog('Home Node endpoint changed ' + previous + ' → ' + port + '; restarting the Runner-owned Bridge with the new endpoint environment.');
+  await stopService(bridge);
+  if (!(await waitPortFree(bridge.port, 8000))) {
+    appendRestartLog('Bridge port remained occupied after the verified stop; leaving the foreign occupant untouched.');
+    return previous;
+  }
+  const replacement = spawnService(bridge);
+  const healthy = await waitUntilHealthy(bridge, 15000, replacement);
+  if (healthy) supervisor.noteHealthy(bridge.componentId);
+  else appendRestartLog('Bridge did not become healthy after Home Node endpoint synchronization.');
+  return previous;
+}
+
+function liveChildEntry(service) {
+  const entry = service && currentChild[service.name];
+  return entry && !entry.exited && entry.pid && entry.child &&
+    Number(entry.child.pid) === Number(entry.pid) && entry.child.exitCode === null &&
+    entry.child.signalCode === null && !entry.child.killed ? entry : null;
+}
+
+function knownHomeNodeDataDirectory(row) {
+  const id = String(row && row.details && row.details.dataDirectoryId || '');
+  return /^[0-9a-f]{64}$/i.test(id) ? id : '';
+}
+
+function homeNodeConflictDecision(observed, holder, service) {
+  const entry = liveChildEntry(service);
+  if (entry && holder && holder.owner === PORT_OWNER.SELF &&
+      Number(observed && observed.details && observed.details.pid) === Number(entry.pid)) {
+    return { action: 'recover', reason: 'runner-owned-home-node-identity-mismatch' };
+  }
+  if (observed && observed.homeNodeRecognized) {
+    const dataId = knownHomeNodeDataDirectory(observed);
+    if (!dataId) return { action: 'block', reason: 'home-node-data-directory-identity-missing' };
+    if (dataId === HOME_NODE_DATA_DIRECTORY_ID) {
+      return { action: 'block', reason: 'home-node-data-directory-already-open-by-unowned-instance' };
+    }
+    return { action: 'fallback', reason: 'home-node-uses-a-distinct-data-directory' };
+  }
+  if (holder && holder.owner === PORT_OWNER.UNOWNED_COMPONENT) {
+    return { action: 'block', reason: 'home-node-process-identity-unavailable' };
+  }
+  if (holder && holder.owner === PORT_OWNER.UNKNOWN) {
+    return { action: 'block', reason: 'port-owner-identity-unavailable' };
+  }
+  if (holder && holder.owner === PORT_OWNER.SELF && entry) {
+    return { action: 'block', reason: 'runner-owned-home-node-health-unavailable' };
+  }
+  return { action: 'fallback', reason: observed && observed.conflict ? 'incompatible-home-node' : 'foreign-port-occupant' };
+}
+
+async function waitForOwnedChildExit(entry, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (entry && !entry.exited && entry.child && entry.child.exitCode === null &&
+      entry.child.signalCode === null && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 80));
+  }
+  return !entry || entry.exited || !entry.child || entry.child.exitCode !== null || entry.child.signalCode !== null;
+}
+
+async function prepareHomeNodePort() {
+  const service = findServiceSpec('homeNode');
+  if (!service) return { port: 0, reused: false, relocated: false };
+  const observed = await serviceStatus(service);
+  if (observed.online) return { port: service.port, reused: true, relocated: false };
+  if (await portBindable(service.port, RESTART_HOST)) return { port: service.port, reused: false, relocated: false };
+  const holder = await classifyPortOwner(service.port, service.commandArgs[0]);
+  const decision = homeNodeConflictDecision(observed, holder, service);
+  if (decision.action === 'recover') return { port: service.port, reused: false, relocated: false, ownUnhealthy: true };
+  if (decision.action !== 'fallback') {
+    appendRestartLog('Home Node preferred port ' + service.port + ' is occupied but safe separation is unproven (' + decision.reason + '); leaving it untouched.');
+    return { port: service.port, reused: false, relocated: false, blocked: true, reason: decision.reason, holder: holder };
+  }
+  const preferred = service.port;
+  const fallback = await nextHomeNodePort();
+  await relocateHomeNodePort(fallback);
+  const reason = decision.reason;
+  appendRestartLog('Home Node preferred port ' + preferred + ' is unavailable (' + reason + '); selected loopback port ' + fallback + '. No occupant was stopped.');
+  console.warn('[runner] Home Node port ' + preferred + ' is occupied or incompatible; using free loopback port ' + fallback + '.');
+  return { port: fallback, reused: false, relocated: true, preferredPort: preferred, reason: reason };
+}
+
+async function ensureStartPort(service) {
+  let relocated = false;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const observed = await serviceStatus(service);
+    if (observed.online) return { ready: true, reused: true, relocated: relocated, row: observed };
+    if (await portBindable(service.port, RESTART_HOST)) return { ready: true, reused: false, relocated: relocated };
+    let holder = await classifyPortOwner(service.port, service.commandArgs[0]);
+    const ownedEntry = liveChildEntry(service);
+    if (holder.owner === PORT_OWNER.SELF && ownedEntry) {
+      appendRestartLog(service.name + ' found its current Runner child on port ' + service.port + '; using the verified stop path');
+      const stopped = await stopService(service);
+      const childExited = await waitForOwnedChildExit(ownedEntry, 8000);
+      if (childExited && stopped && stopped.verified && stopped.verified.portFree === true && await portBindable(service.port, RESTART_HOST)) {
+        return { ready: true, reused: false, relocated: relocated };
+      }
+      const afterStop = await serviceStatus(service);
+      if (afterStop.online) return { ready: true, reused: true, relocated: relocated, row: afterStop };
+      holder = await classifyPortOwner(service.port, service.commandArgs[0]);
+    }
+    if (service.componentId === 'homeNode') {
+      const decision = homeNodeConflictDecision(observed, holder, service);
+      if (decision.action !== 'fallback') {
+        return { ready: false, holder: holder, reason: decision.reason, relocated: relocated };
+      }
+      const previous = service.port;
+      const fallback = await nextHomeNodePort();
+      await relocateHomeNodePort(fallback);
+      relocated = true;
+      appendRestartLog('Home Node lost port ' + previous + ' during startup (' + decision.reason + '); retrying on ' + fallback + '.');
+      continue;
+    }
+    return { ready: false, holder: holder, reason: holder.owner === PORT_OWNER.UNKNOWN ? 'port-owner-unknown' : 'port-owned-by-foreign-process', relocated: relocated };
+  }
+  return { ready: false, holder: { owner: PORT_OWNER.UNKNOWN, pids: [] }, reason: 'home-node-port-race-limit', relocated: relocated };
+}
+
 function probeErrorReport(component, message, port) {
   return registry.componentReport(component, {
     port: port,
@@ -635,8 +836,8 @@ function probeErrorReport(component, message, port) {
 
 async function componentHealth(component, rows, opts) {
   const o = opts || {};
-  const port = registry.portOf(component.id);
   const service = findServiceSpec(component.id);
+  const port = service ? service.port : registry.portOf(component.id);
   if (service) {
     const row = (rows || []).find(r => r && r.name === component.name);
     if (!row) {
@@ -647,8 +848,9 @@ async function componentHealth(component, rows, opts) {
       timedOut: row.timedOut,
       status: row.status,
       data: row.details,
-      identityOk: row.online === true
+      identityOk: row.identityOk === true
     }, { port: port, timeoutMs: row.tookMs });
+    if (row.online) supervisor.noteHealthy(component.id);
     const note = row.owned
       ? (row.exits > 0
         ? 'started by this runner; ' + row.exits + ' exit event(s) observed, recovery state above'
@@ -790,7 +992,8 @@ async function runRestart() {
   restartState.startedAt = Date.now();
   restartState.lastError = '';
   appendRestartLog('restart requested');
-  /* P11-3C: a control-plane restart takes every target down ON PURPOSE. Pending
+  /* P11-3C: a control-plane restart takes this Runner's target children down ON
+     PURPOSE. Borrowed healthy services stay up. Pending
      automatic recoveries are dropped for the cycle (a scheduled attempt that
      fired mid-restart would spawn a second process for a port the cycle is
      already bringing up), and the exits it causes are marked intentional below,
@@ -801,16 +1004,42 @@ async function runRestart() {
   recoveryGeneration += 1;
   cancelRecoveryTimers();
   try {
-    const targets = SERVICES.filter(s => RESTART_TARGET_IDS.indexOf(s.componentId) >= 0);
-    /* stop → confirm old processes exit → release ports → start → health → ready */
-    for (const service of targets) await stopService(service);
-    for (const service of targets) await waitPortFree(service.port, 10000);
+    await prepareHomeNodePort();
+    homeNodePortResolved = true;
+    const targets = SERVICES.filter(s => RESTART_TARGET_IDS.indexOf(s.componentId) >= 0).sort((left, right) =>
+      (left.componentId === 'homeNode' ? -1 : 0) - (right.componentId === 'homeNode' ? -1 : 0));
+    /* Only children spawned by this Runner take part in the stop phase. Borrowed
+       healthy services remain available to this and other Runner processes. */
+    const ownedTargets = targets.map(service => ({ service, entry: liveChildEntry(service) }))
+      .filter(item => item.entry);
+    for (const item of ownedTargets) await stopService(item.service);
+    for (const item of ownedTargets) {
+      if (!(await waitForOwnedChildExit(item.entry, 10000))) {
+        throw new Error(item.service.name + ' current Runner child did not exit after its verified stop');
+      }
+    }
+    /* start → health → ready; ensureStartPort reuses any exact healthy borrow. */
     const launched = [];
     for (const service of targets) {
-      spawnService(service);
+      const available = await ensureStartPort(service);
+      if (!available.ready) {
+        throw new Error(service.name + ' port is unavailable (' + (available.reason || 'port-conflict') + ')');
+      }
+      if (available.reused) {
+        supervisor.noteHealthy(service.componentId);
+        continue;
+      }
+      const entry = spawnService(service);
       launched.push(service);
+      if (service.componentId === 'homeNode') {
+        const healthy = await waitUntilHealthy(service, 25000, entry);
+        if (!healthy) throw new Error(service.name + ' did not become healthy');
+        supervisor.noteHealthy(service.componentId);
+        appendRestartLog(service.name + ' ready on port ' + service.port);
+      }
     }
     for (const service of launched) {
+      if (service.componentId === 'homeNode') continue;
       const healthy = await waitUntilHealthy(service, 25000);
       if (!healthy) throw new Error(service.name + ' did not become healthy');
       appendRestartLog(service.name + ' ready');
@@ -836,9 +1065,9 @@ async function runRestart() {
 /*
  * P7 graceful stop: used by the Windows installer before it replaces files on
  * upgrade/uninstall. Reuses the exact same verified stop path as restart —
- * stopService() only ever terminates a process whose command line contains both
- * this project directory and the service script, so an unrelated node.exe on
- * the machine is never touched. Bounded waits; then this runner exits.
+ * stopService() can affect only a live ChildProcess handle recorded by this
+ * Runner. Borrowed services stay up when this Runner exits. Bounded waits; then
+ * this runner exits.
  *
  * P11-3H: "the exact same verified stop path" is now literally true — both
  * paths call stopService(), whose first step is a cooperative stop request
@@ -864,15 +1093,16 @@ async function runShutdown() {
   lastShutdown.requestedAt = Date.now();
   lastShutdown.budgetMs = budgetMs;
   try {
-    for (let i = 0; i < SERVICES.length; i += 1) {
-      const service = SERVICES[i];
+    const ownedServices = SERVICES.filter(service => liveChildEntry(service));
+    for (let i = 0; i < ownedServices.length; i += 1) {
+      const service = ownedServices[i];
       const remaining = Math.max(0, deadline - Date.now());
       /* The same per-target budget the installer helper uses, so a component
          cannot get one amount of cooperative time from the runner and another
          from the installer. The floor is raised here because the runner owns
          this cycle and knows how many components it has; the TOTAL is still the
          budget above. */
-      const budget = lifecycle.targetBudget(remaining, SERVICES.length - i, { perTargetFloorMs: 1500, discoveryMs: 1000 });
+      const budget = lifecycle.targetBudget(remaining, ownedServices.length - i, { perTargetFloorMs: 1500, discoveryMs: 1000 });
       const outcome = await stopService(service, {
         deadline: Math.min(deadline, Date.now() + budget.deadlineMs),
         cooperativeMs: budget.cooperativeMs,
@@ -880,7 +1110,12 @@ async function runShutdown() {
       });
       if (outcome) outcomes.push({ id: service.componentId, state: outcome.state, accepted: outcome.accepted });
     }
-    for (const service of SERVICES) await waitPortFree(service.port, 10000);
+    for (const service of ownedServices) {
+      const entry = currentChild[service.name];
+      if (entry && !entry.exited && !(await waitForOwnedChildExit(entry, Math.max(0, deadline - Date.now())))) {
+        appendRestartLog(service.name + ' current Runner child remains alive after shutdown budget');
+      }
+    }
     const notStopped = outcomes.filter(o => o.state !== 'STOPPED' && o.state !== 'NOT_RUNNING');
     lastShutdown.components = outcomes;
     lastShutdown.complete = notStopped.length === 0;
@@ -974,15 +1209,21 @@ async function ensureControlPlane() {
   if (await portBindable(RESTART_PORT, RESTART_HOST)) {
     return startRestartServer();
   }
+  const probe = await probeControlPlane(RESTART_PORT);
+  if (probe.responding && probe.identity) {
+    return {
+      ok: false, reason: 'control-plane-already-running', owner: PORT_OWNER.UNOWNED_COMPONENT,
+      detail: 'another runner for this environment already answers ' + RESTART_HOST + ':' + RESTART_PORT
+    };
+  }
+  if (probe.responding && probe.serviceIdentity && !probe.environmentMatches) {
+    return {
+      ok: false, reason: 'control-plane-environment-mismatch', owner: PORT_OWNER.UNOWNED_COMPONENT,
+      detail: 'the occupied runner endpoint belongs to another environment or instance'
+    };
+  }
   const owner = await classifyPortOwner(RESTART_PORT, path.join(__dirname, 'local-services-runner.js'));
-  if (owner.owner === PORT_OWNER.OWNED_COMPONENT) {
-    const probe = await probeControlPlane(RESTART_PORT);
-    if (probe.responding && probe.identity) {
-      return {
-        ok: false, reason: 'control-plane-already-running', owner: owner.owner,
-        detail: 'another Internal Beyond runner already owns ' + RESTART_HOST + ':' + RESTART_PORT
-      };
-    }
+  if (owner.owner === PORT_OWNER.UNOWNED_COMPONENT) {
     return {
       ok: false, reason: 'control-plane-own-stale', owner: owner.owner,
       detail: 'a runner process holds ' + RESTART_HOST + ':' + RESTART_PORT + ' but does not answer /status'
@@ -1015,6 +1256,7 @@ function startRestartServer() {
         environment: DEV_IDENTITY.mode,
         devInstanceId: DEV_IDENTITY.instanceId || null,
         ports: SERVICE_PORTS,
+        homeNodePortResolved: homeNodePortResolved,
         state: shutdownState.requested ? 'shutting-down' : restartState.state,
         error: restartState.lastError || ''
       }, origin);
@@ -1281,11 +1523,19 @@ function spawnService(service) {
   return entry;
 }
 
-async function waitUntilHealthy(service, timeoutMs) {
+async function waitUntilHealthy(service, timeoutMs, expectedEntry) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (expectedEntry && (currentChild[service.name] !== expectedEntry || expectedEntry.exited ||
+      (expectedEntry.child && expectedEntry.child.killed))) return false;
     const row = await serviceStatus(service);
-    if (row.online) return true;
+    if (expectedEntry && (currentChild[service.name] !== expectedEntry || expectedEntry.exited ||
+      (expectedEntry.child && expectedEntry.child.killed))) return false;
+    if (row.online) {
+      const healthPid = Number(row.details && row.details.pid);
+      if (expectedEntry && Number.isInteger(healthPid) && healthPid > 0 && healthPid !== expectedEntry.pid) return false;
+      return true;
+    }
     await new Promise(resolve => setTimeout(resolve, 300));
   }
   return false;
@@ -1325,6 +1575,12 @@ let spawnPhaseComplete = false;
 
 function onServiceFailure(service, detail) {
   if (recoveryDisabled) return;
+  if (supervisor.recoveryInFlight(service.componentId)) {
+    /* The active recovery attempt owns this child's terminal result. Counting
+       its exit again here would enqueue a second attempt for the same component. */
+    appendRestartLog(service.name + ' failure observed during active recovery; active attempt will record the result');
+    return;
+  }
   const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.PROCESS_EXIT, {
     restartable: service.restartable,
     spawnFailed: detail.spawnFailed === true,
@@ -1339,6 +1595,7 @@ function onServiceFailure(service, detail) {
 
 function scheduleRecovery(service) {
   if (recoveryDisabled) return;
+  if (supervisor.recoveryInFlight(service.componentId)) return;
   const view = supervisor.describe(service.componentId);
   if (!view) return;
   /* One pending attempt per component. A second crash signal must not queue a
@@ -1354,21 +1611,39 @@ function scheduleRecovery(service) {
   if (delay > 0) appendRestartLog(service.name + ' recovery scheduled in ' + delay + 'ms');
 }
 
-async function recoverService(service) {
+async function recoveryPortGate(service) {
+  /* Startup and recovery share the same fail-closed data-directory and PID gate. */
+  return ensureStartPort(service);
+}
+
+async function performRecoveryAttempt(service) {
   if (recoveryDisabled || stopping.has(service.componentId)) return;
+  const generation = recoveryGeneration;
   /* The control plane may be mid-restart. Its own cycle will bring this
      component up; competing with it would mean two processes for one port. */
   if (restartRunning()) {
     appendRestartLog(service.name + ' recovery deferred: a restart cycle is in progress');
-    scheduleRecovery(service);
-    return;
+    return true;
+  }
+  const observed = await serviceStatus(service);
+  if (generation !== recoveryGeneration || recoveryDisabled || shuttingDown) {
+    appendRestartLog(service.name + ' recovery attempt abandoned: a control-plane restart took over');
+    return false;
+  }
+  if (observed.online) {
+    supervisor.noteHealthy(service.componentId);
+    appendRestartLog(service.name + ' health recovered before restart; reusing verified listener pid=' +
+      String((observed.details && observed.details.pid) || '?'));
+    return false;
   }
   /* The budget is checked by the supervisor, not here: this is the only place a
      recovery attempt can be authorized. */
   const authorization = supervisor.authorizeAttempt(service.componentId);
   if (!authorization.allowed) {
+    const lastFailure = supervisor.describe(service.componentId).lastFailureReason;
     supervisor.handle(service.componentId, supervisorModule.EVENT.BUDGET_EXHAUSTED, {
-      reason: service.name + ': no recovery attempt authorized (' + authorization.reason + ')'
+      reason: 'restart budget exhausted for ' + service.label + ' (' + authorization.reason + ')' +
+        (lastFailure ? '; last failure: ' + lastFailure : '')
     });
     appendRestartLog(service.name + ' recovery refused: ' + authorization.reason);
     return;
@@ -1380,7 +1655,37 @@ async function recoverService(service) {
        also marks the exit intentional, so this stop is not itself recovered). */
     appendRestartLog(service.name + ' alive but unhealthy; stopping it before restart');
     await stopService(service);
-    await waitPortFree(service.port, 8000);
+  }
+
+  if (generation !== recoveryGeneration || recoveryDisabled || shuttingDown) {
+    appendRestartLog(service.name + ' recovery attempt abandoned: a control-plane restart took over');
+    return false;
+  }
+  const port = await recoveryPortGate(service);
+  if (port.reused) {
+    supervisor.noteHealthy(service.componentId);
+    appendRestartLog(service.name + ' recovery reused a verified listener pid=' +
+      String((port.row && port.row.details && port.row.details.pid) || '?'));
+    return false;
+  }
+  if (!port.ready) {
+    portConflicts[service.componentId] = {
+      owner: port.holder.owner,
+      reason: port.reason,
+      pids: port.holder.pids,
+      port: service.port
+    };
+    const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.PORT_CONFLICT, {
+      reason: service.name + ' port ' + service.port + ' is held by ' + port.reason +
+        ' (owner=' + port.holder.owner + ', pids=' + port.holder.pids.join(',') + ')',
+      at: Date.now()
+    });
+    appendRestartLog(service.name + ' recovery stopped before spawn: ' + decision.reason);
+    return false;
+  }
+  if (generation !== recoveryGeneration || recoveryDisabled || shuttingDown) {
+    appendRestartLog(service.name + ' recovery attempt abandoned: a control-plane restart took over');
+    return false;
   }
 
   /* Burn the budget slot here — immediately before the real attempt — so a
@@ -1392,9 +1697,8 @@ async function recoverService(service) {
   supervisor.noteAttempt(service.componentId);
   appendRestartLog(service.name + ' recovery attempt ' + attemptNumber + '/' +
     RECOVERY_POLICY_ACTIVE.maxAttempts);
-  const generation = recoveryGeneration;
   const newEntry = spawnService(service);
-  const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 20000);
+  const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 20000, newEntry);
 
   /* A control-plane restart began while this attempt was waiting. That cycle owns
      the component now: this attempt must record NOTHING (a success would count a
@@ -1415,25 +1719,53 @@ async function recoverService(service) {
     return;
   }
 
-  const death = currentChild[service.name];
+  const current = await serviceStatus(service);
+  if (current.online) {
+    supervisor.noteHealthy(service.componentId);
+    appendRestartLog(service.name + ' health recovered independently; reusing verified listener pid=' +
+      String((current.details && current.details.pid) || '?'));
+    return false;
+  }
+
   /* P11-3X-B: the recovery-attempt narration is the LAST thing that lands in the
      terminal state, so a generic sentence here would bury the root cause even after
      the exit handler had recovered it. The child that just failed to come up still
      has its stderr tail, so its own cause travels too; the class is placed before it
      so a 200-character truncation can never eat the part a consumer acts on. */
-  const deathCause = death ? exitCause(service, death) : '';
+  const deathCause = exitCause(service, newEntry);
   const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.RESTART_FAILED, {
     restartable: service.restartable,
     reason: service.name + ' did not become healthy after recovery attempt ' + attemptNumber + '/' +
       RECOVERY_POLICY_ACTIVE.maxAttempts +
-      (death && death.exited ? ' (process exited, code=' + death.exitCode + ')' : ' (process alive, port silent)') +
+      (newEntry.exited ? ' (process exited, code=' + newEntry.exitCode + ')' : ' (process alive, port silent)') +
       (deathCause ? ' — ' + deathCause : ''),
     at: Date.now()
   });
   appendRestartLog(service.name + ' recovery attempt failed → ' + decision.action +
     (decision.inMs ? ' in ' + decision.inMs + 'ms' : '') +
     ' (' + String(decision.reason || '').slice(0, 160) + ')');
-  if (decision.action === 'retry') scheduleRecovery(service);
+  return decision.action === 'retry';
+}
+
+async function recoverService(service) {
+  if (recoveryDisabled || stopping.has(service.componentId)) return;
+  /* The control plane may be mid-restart. Its own cycle will bring this
+     component up; competing with it would mean two processes for one port. */
+  if (restartRunning()) {
+    appendRestartLog(service.name + ' recovery deferred: a restart cycle is in progress');
+    scheduleRecovery(service);
+    return;
+  }
+  if (!supervisor.claimRecovery(service.componentId)) return;
+
+  let retry = false;
+  try {
+    retry = (await performRecoveryAttempt(service)) === true;
+  } finally {
+    supervisor.releaseRecovery(service.componentId);
+  }
+  /* Queue the next bounded attempt after releasing the per-component lock. */
+  if (retry) scheduleRecovery(service);
 }
 
 /* ── Health-driven recovery ───────────────────────────────────────────────
@@ -1450,11 +1782,15 @@ async function healthWatchOnce() {
   for (const service of SERVICES) {
     /* eslint-disable no-await-in-loop -- bounded: one probe per runner-owned
        component, and serial probing keeps a degraded port cheap to diagnose. */
-    if (stopping.has(service.componentId)) continue;
+    if (stopping.has(service.componentId) || supervisor.recoveryInFlight(service.componentId)) continue;
     if (restartRunning()) continue;
     const entry = currentChild[service.name];
     if (!entry || entry.exited) continue;
     const row = await serviceStatus(service);
+    /* The probe was async; a stop/recovery may have taken ownership while it
+       waited. Never turn that old snapshot into a second restart signal. */
+    if (stopping.has(service.componentId) || supervisor.recoveryInFlight(service.componentId) ||
+      currentChild[service.name] !== entry || entry.exited) continue;
     if (row.online) {
       supervisor.noteHealthy(service.componentId);
       continue;
@@ -1484,60 +1820,47 @@ function startHealthWatch() {
 }
 
 async function startServices() {
+  /* Resolve Home Node first because its actual port is inherited by Bridge and
+     every other child that may call canonical Memory. */
+  await prepareHomeNodePort();
+  homeNodePortResolved = true;
   const initial = await allStatus();
   const launched = [];
-  for (let i = 0; i < SERVICES.length; i++) {
-    const service = SERVICES[i];
-    const existing = initial[i];
-    if (existing.online) {
+  let homeNodeBootChecked = false;
+  let homeNodeBootHealthy = false;
+  const startupOrder = SERVICES.slice().sort((left, right) =>
+    (left.componentId === 'homeNode' ? -1 : 0) - (right.componentId === 'homeNode' ? -1 : 0));
+  for (const service of startupOrder) {
+    const existing = initial.find(row => row && row.name === service.name) || null;
+    const available = await ensureStartPort(service);
+    if (!available.ready) {
+      const holder = available.holder || { owner: PORT_OWNER.UNKNOWN, pids: [] };
+      const reason = available.reason || (holder.owner === PORT_OWNER.UNKNOWN ? 'port-owner-unknown' : 'port-owned-by-foreign-process');
+      console.error('[runner] Port ' + service.port + ' is not available for ' + service.name +
+        ' (' + reason + '); nothing was killed.');
+      appendRestartLog(service.name + ' not started: ' + reason + ' on port ' + service.port +
+        ' (owner=' + holder.owner + ', pids=' + (holder.pids || []).join(',') + ')');
+      portConflicts[service.componentId] = { owner: holder.owner, reason: reason, pids: holder.pids || [], port: service.port };
+      continue;
+    }
+    if (available.reused || (existing && existing.online)) {
       console.log('[runner] ' + service.name + ' is already healthy on port ' + service.port + '; leaving it alone.');
       continue;
     }
-    if (existing.conflict) {
-      console.error('[runner] Port ' + service.port + ' answered /health but is not ' + service.name +
-        '; refusing to treat it as healthy or start a competing process.');
-      continue;
-    }
-    /* ── P11-3X-B：启动前的端口归属预检 ─────────────────────────────────
-       "没人回答 /health"有三种完全不同的原因，而它们过去全都被当成"没起来"：
-         · 端口空着                      → 正常启动；
-         · 端口被我们自己的僵尸实例占着  → 明确策略：走已验证的 stop 路径收掉它，
-                                            然后启动（stopService 只会杀被证实的
-                                            Internal Beyond 进程）；
-         · 端口被别人占着 / 身份读不出来 → **拒绝启动**，如实报类别。
-       过去第二种和第三种都会 spawn，然后 child 以 EADDRINUSE 退出、被 3C 恢复
-       五次、最后锁死，而对外理由只有 "exited unexpectedly (code=1)" —— 实测一个
-       静默占端口的监听者就是这样把 Bridge 变成 failed 的，真正的"端口已被占用"
-       只出现在 child 的 stderr 里。不擅自 kill 任何非本方进程。 */
-    if (!(await portBindable(service.port, '127.0.0.1'))) {
-      const holder = await classifyPortOwner(service.port, service.commandArgs[0]);
-      if (holder.owner === PORT_OWNER.OWNED_COMPONENT) {
-        console.error('[runner] Port ' + service.port + ' is held by a stale ' + service.name +
-          ' instance (pid ' + holder.pids.join(',') + ') that is not answering; stopping it before starting a fresh one.');
-        appendRestartLog(service.name + ': stale own instance on port ' + service.port +
-          ' (pid ' + holder.pids.join(',') + ') → verified stop, then start');
-        await stopService(service);
-        await waitPortFree(service.port, 8000);
-      } else {
-        const reason = holder.owner === PORT_OWNER.UNKNOWN ? 'port-owner-unknown' : 'port-owned-by-foreign-process';
-        console.error('[runner] Port ' + service.port + ' is not free (' + holder.owner + '): ' +
-          (holder.reason || 'held by another process') + ' — refusing to start a competing ' + service.name +
-          '. Nothing was killed; free the port or set the component port override.');
-        appendRestartLog(service.name + ' not started: ' + reason + ' on port ' + service.port +
-          ' (owner=' + holder.owner + ', pids=' + holder.pids.join(',') + ')');
-        /* Recorded on the component so /components and the diagnostics page can say
-           WHY it is not running instead of showing a bare `offline`. */
-        portConflicts[service.componentId] = { owner: holder.owner, reason: reason, pids: holder.pids, port: service.port };
-        continue;
-      }
-    }
-    spawnService(service);
+    const entry = spawnService(service);
     launched.push(service);
+    if (service.componentId === 'homeNode') {
+      homeNodeBootChecked = true;
+      homeNodeBootHealthy = await waitUntilHealthy(service, 15000, entry);
+      if (homeNodeBootHealthy) supervisor.noteHealthy(service.componentId);
+      console.log('[runner] Home Node' + (homeNodeBootHealthy ? ' is ready on port ' + service.port + '.' : ' did not become healthy yet; inspect its log.'));
+    }
   }
   /* Every child this pass is going to spawn now exists. From here the pass only
      WAITS, so an operator restart may take over (see the /restart handler). */
   spawnPhaseComplete = true;
   for (const service of launched) {
+    if (service.componentId === 'homeNode' && homeNodeBootChecked) continue;
     const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 15000);
     /* The supervisor's own state must match reality at boot: a service that came
        up healthy is `healthy`, and a service that did not is a failure the
@@ -1712,6 +2035,13 @@ module.exports = {
   classifyPortOwner: classifyPortOwner,
   commandMatchesScript: commandMatchesScript,
   portBindable: portBindable,
+  waitPortFree: waitPortFree,
+  nextHomeNodePort: nextHomeNodePort,
+  applyHomeNodePort: applyHomeNodePort,
+  prepareHomeNodePort: prepareHomeNodePort,
+  servicePorts: () => Object.assign({}, SERVICE_PORTS),
+  servicePortEnvironment: () => Object.fromEntries(SERVICES.map(service =>
+    [service.componentId, String(service.env && service.env.IB_HOME_NODE_PORT || '')])),
   probeControlPlane: probeControlPlane,
   lastCauseLine: lastCauseLine,
   exitCause: exitCause,

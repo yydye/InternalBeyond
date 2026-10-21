@@ -48,7 +48,8 @@ const FROZEN = {
   /* P27-C：activity-runtime.js 的**整文件哈希**已移除（HASH_COUPLING_DEBT 结构性修复）——
      改用 tests/activity-partitions.js 的**语义分区**断言（见本文件下方的 activityRuntimeLegacyPartitionsUnchanged）。 */
   'assets/js/activity/coread.js': ['C3DCBD8D', '1D0ACAAD'],
-  'apps/ib-app-cinema.js': ['CE581CF2', '65B97B58'],
+  /* Reviewed Cinema v1.2 source snapshot: 3A574786. */
+  'apps/ib-app-cinema.js': ['3A574786', 'C1817BCD'],
   'apps/ib-media-adapter.js': null,                       /* 只校验存在与关键 API（见 A14） */
   'assets/js/role-letter-authority.js': ['1743B97D', '39387C90'],
   'assets/js/diary-authority.js': ['BBB7EC88', 'C95E73A9'],
@@ -149,7 +150,7 @@ const EVIDENCE = {
   'cinema.play': [MEDIA_SRC_EARLY, 'play'],
   'cinema.pause': [MEDIA_SRC_EARLY, 'pause'],
   'cinema.seek': [MEDIA_SRC_EARLY, 'seek'],
-  'cinema.progress': [CINEMA_SRC, 'IB.activity.setProgress(_activity.id,{sec:sec'],
+  'cinema.progress': [CINEMA_SRC, 'var saved=await IB.activity.setProgress(item.id,item.progress)'],
   'cinema.subtitle': [CINEMA_SRC, 'function parseSubs(text){'],
   'cinema.frame': [CINEMA_SRC, 'function grabFrame('],
   'cinema.nudge': [CINEMA_SRC, 'IB.activity.nudge({activityId:_activity.id})'],
